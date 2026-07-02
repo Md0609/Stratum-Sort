@@ -3,7 +3,9 @@
 // This file is included at the bottom of DynamicRangeSort.hpp; it is not
 // meant to be included directly.
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace drs {
@@ -45,6 +47,13 @@ typename DynamicRangeSort<T>::AnalysisResult DynamicRangeSort<T>::analyze(
 // ============================================================
 // FORMULAS: range, initialBins, intervalSize, binIndex
 // ============================================================
+// initialBins is capped at the observed value range: a bin narrower than
+// a single value can never be reached (computeBinIndex could never
+// produce that index), so allocating and later iterating it is pure
+// waste. Capping it here means the number of bins DRS ever materializes
+// is proportional to min(length / targetElementsPerBin, range) - the
+// direct fix for the "many empty bins" bottleneck observed with narrow
+// value ranges or heavily duplicated data.
 template <typename T>
 std::vector<Bin<T>> DynamicRangeSort<T>::buildInitialBins(const AnalysisResult& analysis,
                                                             T& outIntervalSize) const {
@@ -57,9 +66,15 @@ std::vector<Bin<T>> DynamicRangeSort<T>::buildInitialBins(const AnalysisResult& 
     const uint64_t range = static_cast<uint64_t>(analysis.maximumValue) -
                             static_cast<uint64_t>(analysis.minimumValue) + 1ULL;
 
-    // initialBins = ceil(length / targetElementsPerBin)
+    // initialBins = ceil(length / targetElementsPerBin), capped by range.
     std::size_t initialBins =
         (analysis.length + targetElementsPerBin_ - 1) / targetElementsPerBin_;
+    if (initialBins == 0) initialBins = 1;
+
+    constexpr uint64_t kMaxSize = std::numeric_limits<std::size_t>::max();
+    const std::size_t rangeAsSize = range > kMaxSize ? std::numeric_limits<std::size_t>::max()
+                                                       : static_cast<std::size_t>(range);
+    initialBins = std::min(initialBins, rangeAsSize);
     if (initialBins == 0) initialBins = 1;
 
     // intervalSize = ceil(range / initialBins)
@@ -93,137 +108,157 @@ std::size_t DynamicRangeSort<T>::computeBinIndex(T value, T rangeStart, T interv
 // ============================================================
 // PRIMERA PASADA
 // ============================================================
-// Each element only updates count / observedMin / observedMax.
-// Nothing is sorted or stored yet.
+// Each element updates count / observedMin / observedMax for its bin,
+// and its bin index is cached in outBinIndices so the grouping step
+// that follows never recomputes the division.
 template <typename T>
 void DynamicRangeSort<T>::firstPass(const std::vector<T>& data, std::vector<Bin<T>>& bins,
-                                     T minimumValue, T intervalSize) const {
+                                     T minimumValue, T intervalSize,
+                                     std::vector<std::size_t>& outBinIndices) const {
     const std::size_t binCount = bins.size();
-    for (const T value : data) {
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        const T value = data[i];
         const std::size_t idx = computeBinIndex(value, minimumValue, intervalSize, binCount);
         bins[idx].updateObserved(value);
+        outBinIndices[i] = idx;
     }
 }
 
 // ============================================================
-// SUBDIVISION
+// REFINAMIENTO RECURSIVO (generalización de SUBDIVISION)
 // ============================================================
-// splits = ceil(count / targetElementsPerBin)
-// observedRange = observedMax - observedMin + 1   (NOT the original range)
-// newIntervalSize = ceil(observedRange / splits)
+// Splits 'elements' using only its own observed range (never the
+// original array's range), exactly as the base rule specifies, but
+// allows the resulting children to be refined again - bounded by
+// MAX_SUBDIVISION_DEPTH - instead of being forced into a comparison
+// sort just because one refinement pass was not enough.
+//
+// Two fast paths keep this close to O(n) in practice:
+//   - A bin whose observed range is a single value is, by definition,
+//     already sorted: it becomes a leaf immediately, with no further
+//     splitting and no comparisons.
+//   - A bin at or below targetElementsPerBin also becomes a leaf.
 template <typename T>
-std::vector<typename DynamicRangeSort<T>::SubdivisionInfo> DynamicRangeSort<T>::subdivideBins(
-    std::vector<Bin<T>>& bins, std::size_t& outFinalBinCount) {
-    std::vector<SubdivisionInfo> infos(bins.size());
-    std::size_t finalBinIndex = 0;
+typename DynamicRangeSort<T>::RefinedBin DynamicRangeSort<T>::refine(std::vector<T>&& elements,
+                                                                      std::size_t depth) {
+    RefinedBin node;
+    const std::size_t count = elements.size();
 
-    for (std::size_t i = 0; i < bins.size(); ++i) {
-        Bin<T>& bin = bins[i];
-        SubdivisionInfo& info = infos[i];
-        info.finalBinOffset = finalBinIndex;
-
-        if (bin.isEmpty() || bin.count <= targetElementsPerBin_) {
-            bin.needsSubdivision = false;
-            info.needsSubdivision = false;
-            info.splits = 1;
-            finalBinIndex += 1;
-            continue;
-        }
-
-        bin.needsSubdivision = true;
-        info.needsSubdivision = true;
-
-        const std::size_t splits =
-            (bin.count + targetElementsPerBin_ - 1) / targetElementsPerBin_;
-
-        const uint64_t observedRange = static_cast<uint64_t>(bin.observedMax) -
-                                        static_cast<uint64_t>(bin.observedMin) + 1ULL;
-        uint64_t newIntervalSize =
-            (observedRange + static_cast<uint64_t>(splits) - 1) / static_cast<uint64_t>(splits);
-        if (newIntervalSize == 0) newIntervalSize = 1;
-
-        info.observedMin = bin.observedMin;
-        info.newIntervalSize = static_cast<T>(newIntervalSize);
-        info.splits = splits;
-
-        finalBinIndex += splits;
-        metrics_.recordSubdivision();
+    if (count == 0) {
+        metrics_.recordBin(0, true);
+        return node;
     }
 
-    outFinalBinCount = finalBinIndex;
-    return infos;
-}
-
-// ============================================================
-// SEGUNDA PASADA
-// ============================================================
-// Every element is routed directly into its definitive bin:
-//   1. Locate its original bin (same formula as Phase 1).
-//   2. If that bin was subdivided, locate its sub-bin using the
-//      bin's own observedMin / newIntervalSize.
-template <typename T>
-std::vector<typename DynamicRangeSort<T>::FinalBin> DynamicRangeSort<T>::secondPass(
-    const std::vector<T>& data, const std::vector<Bin<T>>& originalBins,
-    const std::vector<SubdivisionInfo>& subInfo, T minimumValue, T intervalSize,
-    std::size_t finalBinCount) const {
-    std::vector<FinalBin> finalBins(finalBinCount);
-
-    // Pre-fill bounds for reporting purposes and to keep the final bins
-    // in ascending order (required for a correct UNION FINAL / merge).
-    for (std::size_t i = 0; i < originalBins.size(); ++i) {
-        const SubdivisionInfo& info = subInfo[i];
-        if (!info.needsSubdivision) {
-            FinalBin& fb = finalBins[info.finalBinOffset];
-            fb.lowerBound = originalBins[i].lowerBound;
-            fb.upperBound = originalBins[i].upperBound;
-            continue;
-        }
-        const uint64_t obsMinU64 = static_cast<uint64_t>(info.observedMin);
-        const uint64_t stepU64 = static_cast<uint64_t>(info.newIntervalSize);
-        for (std::size_t s = 0; s < info.splits; ++s) {
-            FinalBin& fb = finalBins[info.finalBinOffset + s];
-            const uint64_t lower = obsMinU64 + static_cast<uint64_t>(s) * stepU64;
-            const uint64_t upper = lower + stepU64 - 1;
-            fb.lowerBound = static_cast<T>(lower);
-            fb.upperBound = static_cast<T>(upper);
-        }
+    if (count <= targetElementsPerBin_ || depth >= MAX_SUBDIVISION_DEPTH) {
+        metrics_.recordBin(count, false);
+        node.elements = std::move(elements);
+        return node;
     }
 
-    const std::size_t originalBinCount = originalBins.size();
-    for (const T value : data) {
-        const std::size_t originalIdx =
-            computeBinIndex(value, minimumValue, intervalSize, originalBinCount);
-        const SubdivisionInfo& info = subInfo[originalIdx];
-
-        std::size_t finalIdx;
-        if (!info.needsSubdivision) {
-            finalIdx = info.finalBinOffset;
-        } else {
-            const std::size_t subIdx =
-                computeBinIndex(value, info.observedMin, info.newIntervalSize, info.splits);
-            finalIdx = info.finalBinOffset + subIdx;
-        }
-        finalBins[finalIdx].elements.push_back(value);
+    T observedMin = elements[0];
+    T observedMax = elements[0];
+    for (const T v : elements) {
+        if (v < observedMin) observedMin = v;
+        if (v > observedMax) observedMax = v;
     }
 
-    return finalBins;
+    if (observedMin == observedMax) {
+        // Every element in this bin is identical: trivially sorted.
+        metrics_.recordBin(count, false);
+        node.elements = std::move(elements);
+        return node;
+    }
+
+    // splits = ceil(count / targetElementsPerBin)
+    const std::size_t splits = (count + targetElementsPerBin_ - 1) / targetElementsPerBin_;
+
+    // observedRange = observedMax - observedMin + 1 (observed range only)
+    const uint64_t observedRange =
+        static_cast<uint64_t>(observedMax) - static_cast<uint64_t>(observedMin) + 1ULL;
+    uint64_t newIntervalSizeU64 =
+        (observedRange + static_cast<uint64_t>(splits) - 1) / static_cast<uint64_t>(splits);
+    if (newIntervalSizeU64 == 0) newIntervalSizeU64 = 1;
+    const T newIntervalSize = static_cast<T>(newIntervalSizeU64);
+
+    metrics_.recordSubdivision(depth + 1);
+
+    std::vector<std::vector<T>> buckets(splits);
+    for (const T v : elements) {
+        const std::size_t idx = computeBinIndex(v, observedMin, newIntervalSize, splits);
+        buckets[idx].push_back(v);
+    }
+    // Elements have been redistributed into buckets; release the parent
+    // vector's storage before recursing so peak memory stays close to a
+    // single extra copy of the data, not one copy per refinement level.
+    elements.clear();
+    elements.shrink_to_fit();
+
+    node.children.reserve(splits);
+    for (auto& bucket : buckets) {
+        node.children.push_back(refine(std::move(bucket), depth + 1));
+    }
+    return node;
 }
 
 // ============================================================
 // ORDENACION LOCAL
 // ============================================================
+// O(k) scan that recognizes a bin that is already fully ascending or
+// fully descending, so it can be finished without a comparison sort at
+// all (ascending: no-op) or with a single O(k) reversal (descending).
+// This directly targets Insertion Sort's worst case: a reversed bin.
 template <typename T>
-void DynamicRangeSort<T>::sortBinLocally(FinalBin& bin) {
-    const std::size_t n = bin.elements.size();
+typename DynamicRangeSort<T>::RunShape DynamicRangeSort<T>::detectRun(const std::vector<T>& arr) {
+    if (arr.size() < 2) return RunShape::Ascending;
+
+    bool ascending = true;
+    bool descending = true;
+    for (std::size_t i = 1; i < arr.size(); ++i) {
+        metrics_.recordComparison();
+        if (arr[i] < arr[i - 1]) ascending = false;
+        if (arr[i] > arr[i - 1]) descending = false;
+        if (!ascending && !descending) return RunShape::Unsorted;
+    }
+    return ascending ? RunShape::Ascending : RunShape::Descending;
+}
+
+template <typename T>
+void DynamicRangeSort<T>::sortLeaf(std::vector<T>& arr) {
+    if (arr.size() < 2) return;
+
+    switch (detectRun(arr)) {
+        case RunShape::Ascending:
+            metrics_.recordAlgorithmUsage("AlreadySorted");
+            return;
+        case RunShape::Descending:
+            std::reverse(arr.begin(), arr.end());
+            metrics_.recordAlgorithmUsage("ReversedRun");
+            return;
+        case RunShape::Unsorted:
+            break;
+    }
+
+    const std::size_t n = arr.size();
     if (n <= INSERTION_SORT_THRESHOLD) {
-        insertionSort(bin.elements);
+        insertionSort(arr);
         metrics_.recordAlgorithmUsage("InsertionSort");
     } else if (n <= QUICKSORT_THRESHOLD) {
-        quickSort(bin.elements, 0, static_cast<long>(n) - 1);
+        quickSort(arr, 0, static_cast<long>(n) - 1);
         metrics_.recordAlgorithmUsage("QuickSort");
     } else {
-        introSort(bin.elements);
+        introSort(arr);
         metrics_.recordAlgorithmUsage("Introsort");
+    }
+}
+
+template <typename T>
+void DynamicRangeSort<T>::sortRefined(RefinedBin& node) {
+    if (node.isLeaf()) {
+        sortLeaf(node.elements);
+        return;
+    }
+    for (RefinedBin& child : node.children) {
+        sortRefined(child);
     }
 }
 
@@ -381,17 +416,20 @@ void DynamicRangeSort<T>::heapSort(std::vector<T>& arr, long left, long right) {
 // ============================================================
 // UNION FINAL
 // ============================================================
-// Final bins were built in ascending value order (both across original
-// bins and across their sub-bins), so a straight concatenation of their
-// locally-sorted elements yields the fully sorted array.
+// Children of a RefinedBin are always produced and visited in
+// ascending value order, so a plain in-order traversal that appends
+// each leaf's (now sorted) elements yields the fully sorted array.
 template <typename T>
-void DynamicRangeSort<T>::mergeResults(std::vector<T>& data,
-                                        std::vector<FinalBin>& finalBins) const {
-    std::size_t pos = 0;
-    for (const FinalBin& bin : finalBins) {
-        for (const T value : bin.elements) {
-            data[pos++] = value;
+void DynamicRangeSort<T>::mergeRefined(const RefinedBin& node, std::vector<T>& out,
+                                        std::size_t& pos) const {
+    if (node.isLeaf()) {
+        for (const T value : node.elements) {
+            out[pos++] = value;
         }
+        return;
+    }
+    for (const RefinedBin& child : node.children) {
+        mergeRefined(child, out, pos);
     }
 }
 
@@ -413,31 +451,39 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
     metrics_.endPhase("buildInitialBins");
 
     metrics_.startPhase("firstPass");
-    firstPass(data, bins, analysis.minimumValue, intervalSize);
+    std::vector<std::size_t> binIndices(data.size());
+    firstPass(data, bins, analysis.minimumValue, intervalSize, binIndices);
     metrics_.endPhase("firstPass");
 
-    metrics_.startPhase("subdivision");
-    std::size_t finalBinCount = 0;
-    std::vector<SubdivisionInfo> subInfo = subdivideBins(bins, finalBinCount);
-    metrics_.endPhase("subdivision");
-
-    metrics_.startPhase("secondPass");
-    std::vector<FinalBin> finalBins =
-        secondPass(data, bins, subInfo, analysis.minimumValue, intervalSize, finalBinCount);
-    metrics_.endPhase("secondPass");
-
-    for (const FinalBin& fb : finalBins) {
-        metrics_.recordBin(fb.elements.size(), fb.elements.empty());
+    metrics_.startPhase("groupElements");
+    std::vector<std::vector<T>> groups(bins.size());
+    for (std::size_t i = 0; i < bins.size(); ++i) {
+        groups[i].reserve(bins[i].count);
     }
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        groups[binIndices[i]].push_back(data[i]);
+    }
+    metrics_.endPhase("groupElements");
+
+    metrics_.startPhase("refine");
+    std::vector<RefinedBin> roots;
+    roots.reserve(bins.size());
+    for (std::size_t i = 0; i < bins.size(); ++i) {
+        roots.push_back(refine(std::move(groups[i]), 0));
+    }
+    metrics_.endPhase("refine");
 
     metrics_.startPhase("localSort");
-    for (FinalBin& bin : finalBins) {
-        sortBinLocally(bin);
+    for (RefinedBin& root : roots) {
+        sortRefined(root);
     }
     metrics_.endPhase("localSort");
 
     metrics_.startPhase("merge");
-    mergeResults(data, finalBins);
+    std::size_t pos = 0;
+    for (const RefinedBin& root : roots) {
+        mergeRefined(root, data, pos);
+    }
     metrics_.endPhase("merge");
 }
 

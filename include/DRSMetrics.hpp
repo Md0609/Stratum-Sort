@@ -59,16 +59,16 @@ public:
 #endif
     }
 
-    // The specification subdivides each over-sized bin exactly once
-    // (subdivision uses the *observed* range, not a recursive scheme),
-    // so the maximum depth reached by this implementation is always
-    // 0 (no bin needed subdivision) or 1 (at least one bin was split).
-    // The field is kept general so a future recursive-subdivision
-    // variant (see IMPROVEMENTS at the end of ANALYSIS.md) can reuse it.
-    void recordSubdivision() {
+    // Called every time a bin is split during recursive refinement.
+    // depthReached is the depth of the children produced by this split
+    // (i.e. current depth + 1), so maxSubdivisionDepth_ always reflects
+    // the deepest level of refinement actually used.
+    void recordSubdivision(std::size_t depthReached) {
 #if DEBUG_METRICS
         ++subdivisions_;
-        maxSubdivisionDepth_ = std::max<std::size_t>(maxSubdivisionDepth_, 1);
+        maxSubdivisionDepth_ = std::max(maxSubdivisionDepth_, depthReached);
+#else
+        (void)depthReached;
 #endif
     }
 

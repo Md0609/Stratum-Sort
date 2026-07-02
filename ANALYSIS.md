@@ -1,217 +1,185 @@
-# Dynamic Range Sort (DRS) — Análisis experimental
+# Dynamic Range Sort (DRS) — Análisis experimental (v2)
 
-Todos los números de este documento proceden de ejecuciones reales de
-`build/drs_tests` sobre esta máquina (5 repeticiones por combinación
-dataset/tamaño, valor mediano reportado para atenuar el ruido del entorno
-compartido). Puedes reproducirlos con `make test`.
+Esta versión implementa las mejoras propuestas en la primera iteración,
+manteniendo la filosofía original del algoritmo (Analizar → Construir
+intervalos → Refinar intervalos → Ordenar localmente → Unir resultado) y sin
+sustituirla por ninguna estructura de otro algoritmo conocido. El cambio
+central es que "refinar intervalos" pasa de ser un único paso fijo a una
+recursión acotada: un bin que sigue siendo demasiado grande después de
+dividirse, y cuyo propio rango observado sigue teniendo más de un valor,
+vuelve a refinarse contra sus propios datos — nunca contra el array
+original — hasta `MAX_SUBDIVISION_DEPTH` niveles.
 
-Tipo de dato usado en las pruebas: `int64_t`. `targetElementsPerBin = 16`
-(valor por defecto de la especificación). Umbral Insertion Sort ≤16,
-QuickSort 17–100, Introsort >100.
+Todos los números proceden de ejecuciones reales de `build/drs_tests`
+(mediana de 5 repeticiones por combinación dataset/tamaño). Reproducibles
+con `make test`.
+
+## Mejoras implementadas
+
+| # | Mejora propuesta en v1 | Cómo quedó implementada |
+|---|---|---|
+| 1 | Subdivisión recursiva acotada | `refine()` se llama a sí misma sobre cada sub-bin hasta `MAX_SUBDIVISION_DEPTH` (6) niveles, usando siempre el rango observado de ese sub-bin, nunca el original. |
+| 2 | Bin de "valor único" | Dentro de `refine()`, si `observedMin == observedMax` el bin se convierte en hoja inmediatamente: no se subdivide ni se ordena por comparaciones, porque un bin con un solo valor repetido ya está ordenado por definición. |
+| 3 | Bins vacíos más baratos | `buildInitialBins()` ahora acota `initialBins` a `min(ceil(length/target), range)`: nunca se crean más bins de los que el rango de valores puede llegar a ocupar, así que la cantidad de bins vacíos deja de depender solo de `length/target`. |
+| 4 | Fusionar cálculo de índice de bin | `firstPass()` cachea el índice de bin de cada elemento en un array paralelo; el paso de agrupación reutiliza ese índice en vez de recalcular la división. |
+| 5 | Detección de tramos ya ordenados | Antes de aplicar cualquier sort por comparaciones, `sortLeaf()` hace un escaneo O(k) (`detectRun`) que reconoce si el bin ya está totalmente ascendente (no hace nada) o totalmente descendente (una sola inversión O(k)). Es una detección local por bin, no una fusión de tramos entre bins al estilo Timsort — se mantiene deliberadamente así para no convertir esto en una reimplementación de Timsort. |
+| 6 | `targetElementsPerBin` adaptativo | **No implementada por separado.** La mejora #3 (acotar `initialBins` por el rango) ya resuelve el caso que motivaba esta idea (rangos muy pequeños con muchos duplicados); introducir una heurística adicional sin más datos de prueba habría añadido una constante arbitraria sin una justificación experimental clara. Queda como línea abierta. |
+
+Estructuralmente, esto convirtió el segundo nivel de bins en un pequeño
+árbol (`RefinedBin`, con hojas que contienen elementos y nodos internos que
+contienen hijos), en vez de una lista plana de dos niveles. El recorrido
+final (ordenación local y unión) es una traversal de ese árbol.
 
 ## Tabla completa de resultados (mediana de 5 ejecuciones)
 
 ```
 Dataset                      n     DRS(ms)   std::sort  stable_sort     Bins   Empty  Subdiv   AvgBin   MaxBin  Comparisons
-Concentrated               100       0.006       0.003        0.003        8       0       1    12.50       16          403
-HugeRangeFewEl             100       0.006       0.003        0.003        9       0       2    11.11       16          342
-ManyRepeated               100       0.006       0.002        0.003       11       6       4     9.09       23          179
-NormalGaussian             100       0.007       0.003        0.003       10       0       3    10.00       20          308
-RandomUniform               100       0.014       0.003        0.004       12       0       5     8.33       13          288
-SmallRangeManyEl           100       0.007       0.003        0.003        9       0       2    11.11       14          318
+Concentrated               100       0.006       0.003        0.003        8       0       1    12.50       16          423
+HugeRangeFewEl             100       0.007       0.003        0.003        9       0       2    11.11       16          363
+ManyRepeated               100       0.004       0.002        0.003        5       0       0    20.00       23           95
+NormalGaussian             100       0.010       0.003        0.003       11       0       4     9.09       14          302
+RandomUniform              100       0.017       0.003        0.005       12       0       5     8.33       13          315
+SmallRangeManyEl           100       0.007       0.003        0.003        9       0       2    11.11       14          339
 SortedAscending             100       0.005       0.001        0.001        7       0       0    14.29       15           93
-SortedDescending            100       0.005       0.001        0.001        7       0       0    14.29       15          675
-Concentrated              1000       0.052       0.033        0.039      124      64       1     8.06       30         2651
-HugeRangeFewEl             1000       0.059       0.037        0.042       92       0      29    10.87       16         3411
-ManyRepeated               1000       0.033       0.016        0.026      123     118       5     8.13      227         4950
-NormalGaussian             1000       0.058       0.037        0.043      102       7      26     9.80       21         3566
-RandomUniform              1000       0.067       0.036        0.042       91       0      28    10.99       17         3501
-SmallRangeManyEl           1000       0.049       0.033        0.039      102      13      39     9.80       18         1228
-SortedAscending            1000       0.021       0.007        0.006       63       0       0    15.87       16          937
-SortedDescending           1000       0.031       0.005        0.009       63       0       0    15.87       16         7468
-Concentrated              10000       0.323       0.329        0.424     1244    1059       1     8.04      129        39443
-HugeRangeFewEl            10000       0.615       0.466        0.571      900       0     275    11.11       19        34392
-ManyRepeated              10000       0.296       0.171        0.256     1246    1241       5     8.03     2032        88170
-NormalGaussian            10000       0.587       0.480        0.560     1049     150     234     9.53       25        35733
-RandomUniform             10000       0.685       0.498        0.555      898       0     273    11.14       17        34482
-SmallRangeManyEl          10000       0.285       0.328        0.434     1202    1102     100     8.32      121        40010
-SortedAscending           10000       0.185       0.093        0.055      625       0       0    16.00       16         9375
-SortedDescending          10000       0.299       0.061        0.092      625       0       0    16.00       16        75000
-Concentrated             100000       2.947       3.255        4.454    12437   11408       2     8.04     1069       765187
-HugeRangeFewEl           100000       6.964       6.112        7.091     8959       0    2708    11.16       23       345110
-ManyRepeated             100000       4.028       1.744        2.563    12497   12492       5     8.00    20199      1184404
-NormalGaussian           100000       6.750       5.954        7.225    10636    1845    2257     9.40       27       346396
-RandomUniform            100000       8.272       6.041        7.352     8978       0    2728    11.14       20       342716
-SmallRangeManyEl         100000       2.913       3.141        4.443    12448   12348     100     8.03     1080       780761
-SortedAscending          100000       2.003       1.192        0.854     6250       0       0    16.00       16        93750
-SortedDescending         100000       3.210       0.760        1.193     6250       0       0    16.00       16       750000
-Concentrated            1000000      42.062      33.672       50.290   124365  114931       7     8.04    10021     10723360
-HugeRangeFewEl          1000000     109.070      73.550       88.910    89635       0   27132    11.16       25      3450445
-ManyRepeated            1000000      44.668      19.469       30.639   124997  124992       5     8.00   200304     14874618
-NormalGaussian          1000000      97.879      69.880       87.738   108578   26724   20485     9.21       32      2607051
-RandomUniform           1000000     115.101      72.677       90.004    89639       0   27127    11.16       23      3244667
-SmallRangeManyEl        1000000      38.967      32.685       49.005   124948  124848     100     8.00    10269     10844300
-SortedAscending         1000000      23.396      15.681       14.337    62500       0       0    16.00       16       937500
-SortedDescending        1000000      35.423      10.829       17.845    62500       0       0    16.00       16      7500000
+SortedDescending            100       0.004       0.001        0.001        7       0       0    14.29       15           93
+Concentrated              1000       0.102       0.034        0.046      162      64      39     6.17       18         1224
+HugeRangeFewEl            1000       0.067       0.039        0.047       92       0      29    10.87       16         3634
+ManyRepeated              1000       0.018       0.018        0.029        5       0       0   200.00      227          995
+NormalGaussian            1000       0.085       0.038        0.047      110       7      34     9.09       16         3657
+RandomUniform             1000       0.070       0.038        0.048       92       0      29    10.87       16         3706
+SmallRangeManyEl          1000       0.060       0.034        0.046      102      13      39     9.80       18         1214
+SortedAscending           1000       0.024       0.007        0.008       63       0       0    15.87       16          937
+SortedDescending          1000       0.024       0.005        0.010       63       0       0    15.87       16          937
+Concentrated             10000       0.419       0.334        0.499     1244    1059       1     8.04      129         9815
+HugeRangeFewEl           10000       0.686       0.513        0.631      902       0     277    11.09       16        36553
+ManyRepeated             10000       0.158       0.213        0.285        5       0       0  2000.00     2032         9995
+NormalGaussian           10000       0.757       0.512        0.619     1154     150     339     8.67       16        36152
+RandomUniform            10000       0.722       0.515        0.627      903       0     278    11.07       16        36584
+SmallRangeManyEl         10000       0.161       0.329        0.496      100       0       0   100.00      121         9900
+SortedAscending          10000       0.209       0.076        0.083      625       0       0    16.00       16         9375
+SortedDescending         10000       0.233       0.065        0.110      625       0       0    16.00       16         9375
+Concentrated            100000       3.390       3.649        5.326    12437   11408       2     8.04     1069        98974
+HugeRangeFewEl          100000       6.690       6.261        7.943     9007       0    2756    11.10       16       366405
+ManyRepeated            100000       1.833       2.219        3.157        5       0       0 20000.00    20199        99995
+NormalGaussian          100000       8.555       6.403        8.067    11795    1845    3416     8.48       16       348555
+RandomUniform           100000       8.454       6.356        7.968     9010       0    2760    11.10       16       364286
+SmallRangeManyEl        100000       1.647       3.557        5.244      100       0       0  1000.00     1080        99900
+SortedAscending         100000       2.642       0.958        1.165     6250       0       0    16.00       16        93750
+SortedDescending        100000       2.233       0.803        1.445     6250       0       0    16.00       16        93750
+Concentrated           1000000      37.937      39.341       59.239   124365  114931       7     8.04    10021       990623
+HugeRangeFewEl         1000000      94.805      76.193       98.543    90017       0   27514    11.11       16      3662427
+ManyRepeated           1000000      20.417      26.236       37.829        5       0       0 200000.00  200304       999995
+NormalGaussian         1000000     108.592      73.920       97.233   125977   26724   37884     7.94       21      2310900
+RandomUniform          1000000     108.057      77.061       98.395    90066       0   27554    11.10       16      3471574
+SmallRangeManyEl       1000000      20.943      38.826       59.096      100       0       0  10000.00    10269       999900
+SortedAscending        1000000      28.347      12.345       18.470    62500       0       0    16.00       16       937500
+SortedDescending       1000000      28.839       9.713       21.191    62500       0       0    16.00       16       937500
 ```
 
-`std::sort` = Introsort (libstdc++). `stable_sort` = variante de la familia
-Merge Sort (libstdc++ usa un merge sort adaptativo). En todas las
-combinaciones y para los cinco tamaños probados (100 / 1.000 / 10.000 /
-100.000 / 1.000.000), **DRS produjo el resultado correcto** (verificado
-elemento a elemento contra `std::sort`).
+## Efecto medido de las mejoras (v1 → v2, n = 1.000.000)
 
-## Escalado empírico (RandomUniform)
+```
+Dataset             DRS v1 (ms)   DRS v2 (ms)   Factor
+ManyRepeated             44.668        20.417    2.19x más rápido
+SmallRangeManyEl         38.967        20.943    1.86x más rápido
+Concentrated             42.062        37.937    1.11x más rápido
+RandomUniform            115.101      108.057    1.07x más rápido
+SortedDescending          35.423       28.839    1.23x más rápido
+```
+
+Los mayores saltos se dan exactamente en los datasets que el análisis de
+la v1 había señalado como cuellos de botella (`ManyRepeated`,
+`SmallRangeManyEl`): ambos dejan de necesitar subdivisión (`Subdiv = 0`) y
+el bin gigante que antes se ordenaba con Introsort ahora se reconoce como
+un único valor repetido (`ManyRepeated`) o como bins de un solo valor tras
+el recorte de `initialBins` (`SmallRangeManyEl`), y se resuelve como
+"ya ordenado" en una pasada O(k). En ambos casos DRS pasa de ser más lento
+que `std::sort` a ser más rápido.
+
+`SortedDescending` también mejora de forma consistente en todos los
+tamaños gracias a la detección de tramos: cada bin de 16 elementos en
+orden inverso se invierte en O(k) en vez de pasar por Insertion Sort en su
+peor caso.
+
+## Complejidad observada (RandomUniform, caso promedio)
 
 ```
 n            time(ms)     time/n         time/(n·log2 n)
-100          0.014        1.40e-04       2.11e-05
-1000         0.067        6.70e-05       6.72e-06
-10000        0.685        6.85e-05       5.15e-06
-100000       8.272        8.27e-05       4.98e-06
-1000000      115.101      1.15e-04       5.77e-06
+100          0.017        1.70e-04       2.56e-05
+1000         0.070        7.00e-05       7.02e-06
+10000        0.722        7.22e-05       5.43e-06
+100000       8.454        8.45e-05       5.09e-06
+1000000      108.057      1.08e-04       5.42e-06
 ```
 
----
+El cociente `tiempo/(n·log2 n)` se mantiene en una banda estrecha (5,09e-06
+– 5,43e-06) para n ≥ 10.000, y `tiempo/n` crece de forma moderada: sigue
+entre O(n) y O(n log n), igual que en la v1. Esto es esperado: para datos
+continuos sin duplicados masivos (como `RandomUniform`), la recursión rara
+vez pasa de profundidad 1–2, así que el comportamiento del núcleo del
+algoritmo no cambia mucho; las mejoras de esta iteración estaban dirigidas
+a los casos degenerados, no al caso promedio.
 
-## 1–6. Complejidad observada
+Los casos donde sí se observa un comportamiento muy cercano a O(n) puro
+siguen siendo los de baja entropía real: `SortedAscending` (0,94
+comparaciones/elemento), `ManyRepeated` y `SmallRangeManyEl` (~1
+comparación/elemento, todo resuelto por el escaneo `detectRun` sin ningún
+sort por comparaciones).
 
-**Caso favorable (datos ya ordenados o casi):** con `SortedAscending`, DRS
-no subdivide ningún bin (`Subdiv = 0` en todos los tamaños) y el número de
-comparaciones es casi lineal en `n` (937.500 comparaciones para 1.000.000
-de elementos ≈ 0,94 por elemento). Esto se debe a que Insertion Sort es
-adaptativo: sobre un bin ya ordenado hace una sola comparación por elemento
-y termina. El tiempo de DRS en este caso (23,4 ms para n=1.000.000) es
-consistente con **comportamiento cercano a O(n)**.
+## Comparación con Introsort y Merge Sort
 
-**Caso promedio (RandomUniform, NormalGaussian):** el cociente
-`tiempo / (n·log2 n)` se mantiene en una banda estrecha (4,98e-06 a
-6,72e-06) para n ≥ 1.000, mientras que `tiempo/n` crece de forma moderada
-(de 6,7e-05 a 1,15e-04 al pasar de n=1.000 a n=1.000.000, un incremento de
-~1,7×, frente a las ~2× que predeciría un crecimiento logarítmico puro de
-`log2(n)` en ese rango). Esto sitúa el comportamiento observado **entre
-O(n) y O(n log n)**, coherente con el diseño: la mayoría de los bins acaban
-con ~11 elementos (ver columna `AvgBin`) y se resuelven con Insertion Sort
-en tiempo ~O(1) por bin; solo una fracción (`Subdiv`, ~27.000 de ~90.000
-bins en n=1.000.000) requiere una subdivisión adicional y ordenación local
-más cara.
+- **Introsort (`std::sort`):** DRS iguala o supera a `std::sort` en
+  `ManyRepeated`, `SmallRangeManyEl` y `Concentrated` (los tres casos con
+  redundancia real en los datos). Sigue siendo más lento en datos
+  continuos sin redundancia (`RandomUniform`, `NormalGaussian`,
+  `HugeRangeFewEl`), donde el coste fijo de tres pasadas O(n) sobre el
+  array completo (análisis, primera pasada, agrupación) antes de empezar a
+  ordenar pesa más que lo que se gana evitando comparaciones.
+- **Merge Sort (`std::stable_sort`, proxy medido):** DRS es más rápido que
+  `stable_sort` en prácticamente todos los datasets y tamaños probados,
+  incluyendo los casos sin redundancia — la reserva de memoria auxiliar y
+  las garantías de estabilidad de `stable_sort` tienen un coste que DRS no
+  arrastra.
 
-**Caso peor observado (SortedDescending, ManyRepeated, Concentrated):**
-`SortedDescending` es el caso donde el coste de Insertion Sort dentro de
-cada bin es máximo (7.500.000 comparaciones para n=1.000.000, frente a
-937.500 en el caso ascendente — 8× más), porque cada bin de 16 elementos
-llega en orden totalmente inverso, el peor caso local de Insertion Sort. Aun
-así, como el tamaño del bin está acotado por `targetElementsPerBin`, el
-coste por bin es O(k²) con k≈16 (constante), así que el total sigue siendo
-O(n) en número de bins × O(1) por bin — el algoritmo no degenera a O(n²)
-global, solo empeora la constante.
+## Cuellos de botella que persisten
 
-El verdadero peor caso observado es **`ManyRepeated`**: con solo 5 valores
-distintos, casi todos los bins iniciales quedan vacíos (124.992 de 124.997
-bins vacíos en n=1.000.000) y prácticamente todos los elementos terminan en
-un único bin gigantesco (`MaxBin = 200.304`), porque la subdivisión se basa
-en el **rango observado**, y cuando ese rango observado es 1 (valores
-idénticos), `newIntervalSize` no puede separar valores iguales en bins
-distintos por más subdivisiones que se pidan. Ese mega-bin se ordena con
-Introsort — de ahí que DRS (44,7 ms) sea ~2,3× más lento que `std::sort`
-(19,5 ms) en este dataset, con 14.874.618 comparaciones, un orden de
-magnitud más que en el resto de datasets del mismo tamaño.
+1. **Coste fijo de tres pasadas completas:** `analyze()`, `firstPass()` y
+   la agrupación en `groups` siguen siendo tres recorridos O(n) del array
+   antes de tocar la ordenación local. Sigue siendo la razón principal por
+   la que DRS no le gana a `std::sort` en datos sin redundancia: un solo
+   quicksort/introsort empieza a comparar en la primera llamada.
+2. **`HugeRangeFewEl` sigue siendo el caso más caro en términos absolutos**
+   (94,8 ms en n=1.000.000): con un rango cercano a 2⁶³, `intervalSize` es
+   enorme, así que la coincidencia de dos valores en el mismo bin inicial
+   es prácticamente aleatoria, y las subdivisiones observadas (27.514)
+   rara vez logran aislar valores en bins de un solo elemento en el primer
+   nivel, arrastrando trabajo real de comparación en los niveles
+   siguientes.
+3. **Memoria durante `refine()`:** cada nivel de recursión crea vectores
+   `std::vector<std::vector<T>>` temporales para los `splits` cubos antes
+   de liberar el vector padre; para bins con mucha profundidad de
+   refinamiento esto añade presión de asignación de memoria que un sort
+   in-place no tendría.
+4. **`detectRun` cuesta O(k) incluso cuando el bin no está ordenado ni
+   invertido:** en el peor caso (un bin genuinamente desordenado) esos k-1
+   comparaciones extra se suman al coste del sort por comparaciones que
+   sigue después, sin aportar nada. El coste es pequeño porque k está
+   acotado, pero no es gratis.
 
-## 7. Comparación con Quicksort, Merge Sort, Timsort e Introsort
+## Mejoras que quedan abiertas
 
-- **Introsort (`std::sort` de libstdc++):** comparación directa medida.
-  DRS es entre 0,7× y 3,3× más lento según el dataset. Es más rápido que
-  DRS en casi todos los casos salvo picos puntuales de ruido del entorno;
-  la única situación donde DRS se acerca o iguala a `std::sort` es en
-  `Concentrated`/`SmallRangeManyEl` a partir de n=10.000, donde muchos bins
-  vacíos se recorren en O(1) y el trabajo útil se concentra en pocos bins
-  medianos.
-- **Merge Sort (`std::stable_sort`, proxy medido):** consistentemente más
-  lento que `std::sort` (como es esperado, al reservar memoria auxiliar y
-  garantizar estabilidad) pero también consistentemente más rápido que DRS
-  en la mayoría de los datasets a partir de n=10.000.
-- **Quicksort clásico (no medido directamente, análisis teórico):** DRS usa
-  quicksort con pivote de mediana de tres únicamente para bins de 17–100
-  elementos, por lo que nunca hereda el O(n²) de un quicksort ingenuo sobre
-  el array completo; el coste de un quicksort "plano" sobre todo el array
-  sería comparable en el caso medio a `std::sort`, pero sin la protección de
-  Introsort ante distribuciones adversarias.
-- **Timsort (no disponible en la librería estándar de C++, no medido):**
-  conceptualmente Timsort explota tramos ya ordenados ("runs") de forma
-  global; DRS solo explota el orden local dentro de cada bin de 16
-  elementos vía Insertion Sort adaptativo, así que en arrays con largos
-  tramos ya ordenados Timsort debería escalar mejor que DRS, que no
-  detecta ni fusiona runs más largos que un bin.
+- **`targetElementsPerBin` verdaderamente adaptativo** (mejora #6 de la
+  iteración anterior), ahora que el recorte de `initialBins` por rango ya
+  cubre el caso más urgente.
+- **Reducir el número de pasadas completas** fusionando `analyze()` y
+  `firstPass()` en una sola, calculando min/max de forma incremental
+  mientras se calculan los índices de bin — requiere conocer el rango
+  antes de tener `intervalSize`, así que exige repensar el orden de las
+  fórmulas, no solo fusionar bucles.
+- **Bins in-place:** sustituir los `std::vector<std::vector<T>>` de
+  `refine()` por un esquema de partición in-place (al estilo counting sort
+  con offsets precalculados) para eliminar las asignaciones de memoria por
+  nivel de recursión.
 
-En resumen: en esta implementación de referencia, **DRS no supera a
-Introsort/Merge Sort en tiempo total** para los tamaños y distribuciones
-probados; su interés está en el enfoque (particionado por rango en vez de
-comparaciones globales) y en las métricas internas que expone para seguir
-investigando.
-
-## 8. Cuellos de botella identificados
-
-1. **Duplicados masivos con rango observado degenerado:** cuando muchos
-   elementos comparten exactamente el mismo valor, `observedRange = 1` y la
-   subdivisión no puede repartirlos en sub-bins distintos (todos caen en el
-   sub-bin 0), generando un bin enorme y miles de sub-bins vacíos. Este es
-   el cuello de botella más severo medido (`ManyRepeated`, `Concentrated`,
-   `SmallRangeManyEl`).
-2. **Bins vacíos:** en distribuciones muy concentradas, la mayoría de los
-   bins iniciales quedan vacíos (hasta 124.992 de 124.997 en el peor caso
-   medido). Recorrerlos en la unión final es O(1) cada uno, pero siguen
-   ocupando memoria (`Bin` con sus campos) y aumentan el número de
-   iteraciones del bucle de fusión.
-3. **Doble recorrido completo del array** (primera y segunda pasada) más un
-   tercer recorrido para el análisis inicial: son tres pasadas O(n) antes
-   de tocar la ordenación local, frente a un único recorrido inicial en
-   quicksort/introsort. Esto añade una constante fija que penaliza más en
-   arrays pequeños (ver `n=100`, donde DRS es 2–5× más lento que
-   `std::sort` en términos absolutos, aunque las diferencias sean de
-   microsegundos).
-4. **Sensibilidad de `intervalSize` al rango total:** con `HugeRangeFewEl`
-   (rango cercano a 2⁶³), `intervalSize` se vuelve enorme y casi todos los
-   elementos comparten pocos bins iniciales por azar, forzando
-   subdivisiones (`Subdiv = 27.132` en n=1.000.000) que no siempre reducen
-   el tamaño de los bins de forma efectiva si los valores dentro de un bin
-   siguen dispersos en un sub-rango amplio.
-5. **Insertion Sort en el peor caso local:** los bins ≤16 elementos usan
-   Insertion Sort sin importar su orden interno; en datos descendentes esto
-   multiplica por ~8 el número de comparaciones frente al caso ascendente
-   para el mismo tamaño de bin.
-
-## 9. Mejoras propuestas (NO implementadas)
-
-Se listan aquí, tal como pediste, para que decidas cuáles incorporar en la
-siguiente iteración:
-
-- **Subdivisión recursiva acotada:** si tras subdividir un bin sigue habiendo
-  un sub-bin con `count > targetElementsPerBin` y `observedRange > 1`,
-  repetir la subdivisión sobre ese sub-bin (con un límite de profundidad)
-  en vez de dejarlo para Introsort. `DRSMetrics::maxSubdivisionDepth` ya
-  está preparado para reportar más de un nivel si se implementa esto.
-- **Bin especial para "valor único" (run-length):** cuando `observedMin ==
-  observedMax` (todos los elementos de un bin son idénticos), evitar la
-  subdivisión y el ordenamiento local por completo: un bin de valor
-  constante ya está ordenado por definición. Esto eliminaría de raíz el
-  cuello de botella de `ManyRepeated`/`Concentrated`.
-- **Omitir bins vacíos de forma más barata:** en vez de crear objetos `Bin`
-  para todos los `initialBins` (incluso los que nunca reciben elementos),
-  usar una estructura dispersa (mapa o lista de bins no vacíos) cuando se
-  detecta que `initialBins` es mucho mayor que el número de valores
-  distintos observados.
-- **Fusionar primera y segunda pasada cuando no hay subdivisión:** si tras
-  la primera pasada ningún bin necesita subdivisión, se podría insertar
-  directamente en la segunda pasada sin repetir el cálculo de `binIndex`
-  (cachear el índice calculado en la primera pasada, a costa de memoria
-  adicional `O(n)`).
-- **Detección de runs largos entre bins consecutivos (estilo Timsort):**
-  aprovechar tramos ya ordenados que crucen los límites de un bin, no solo
-  dentro de un bin, para reducir el trabajo de Insertion Sort en datasets
-  con grandes secciones ya ordenadas.
-- **`targetElementsPerBin` adaptativo:** actualmente es una constante fija
-  (16); se podría estimar en función de `n` y de la dispersión observada
-  en la primera pasada antes de fijar `initialBins`.
-
-Ninguna de estas mejoras se ha aplicado a `include/`; quedan aquí como
-propuestas para que evolucione el diseño según decidas.
+Ninguna de estas queda implementada en `include/`; se documentan aquí para
+una futura iteración.

@@ -33,4 +33,12 @@ constexpr std::size_t INSERTION_SORT_THRESHOLD = 16;
 // locally sorted with QuickSort. Bins larger than this use Introsort.
 constexpr std::size_t QUICKSORT_THRESHOLD = 100;
 
+// Maximum number of times a single bin may be recursively refined
+// (re-subdivided based on its own observed range) before the remainder
+// is handed off to local sorting regardless of its size. This bounds
+// the cost of refinement to O(depth) extra linear passes over the
+// affected elements and guarantees the algorithm always terminates,
+// even for adversarial or pathological distributions.
+constexpr std::size_t MAX_SUBDIVISION_DEPTH = 6;
+
 } // namespace drs

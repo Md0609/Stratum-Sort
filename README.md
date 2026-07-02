@@ -1,13 +1,54 @@
-# Dynamic Range Sort (DRS) — v1
+# Dynamic Range Sort (DRS) — v2
 
-Implementación en C++17 de **Dynamic Range Sort**, un algoritmo de ordenación
-propio basado en la filosofía:
+Dynamic Range Sort (DRS) es un algoritmo de ordenación que, en lugar de
+comparar elementos entre sí de forma global, primero analiza cómo se
+distribuyen los valores de entrada, construye intervalos ("bins") a partir
+de esa distribución, refina esos intervalos cuando hace falta, y solo
+entonces ordena cada intervalo por separado con un algoritmo de comparación
+convencional. El resultado final se obtiene concatenando los intervalos ya
+ordenados, que quedan colocados en orden ascendente por construcción.
+
+La idea general se resume en cinco pasos:
 
 ```
 Analizar -> Construir intervalos -> Refinar intervalos -> Ordenar localmente -> Unir resultado
 ```
 
-Esta es la primera versión funcional, de mi propio algoritmo intentando llegar a O(n) mejorando el ordenamiento local.
+Este repositorio contiene una implementación en C++17 de DRS, junto con un
+sistema de métricas internas y una batería de pruebas que compara su
+rendimiento contra `std::sort` y `std::stable_sort` sobre distintos tipos
+de datos y tamaños.
+
+## Cómo funciona el algoritmo
+
+1. **Análisis (una pasada O(n)):** se recorre el array una vez para
+   obtener el valor mínimo, el máximo, la longitud y si el array ya está
+   ordenado.
+2. **Construcción de intervalos iniciales:** a partir del rango de valores
+   observado y de un tamaño objetivo de elementos por intervalo (16 por
+   defecto), se calcula cuántos intervalos crear y qué ancho debe tener
+   cada uno. El número de intervalos queda acotado por el rango de valores
+   real, para no crear más intervalos de los que ese rango puede llegar a
+   ocupar.
+3. **Primera pasada:** cada elemento actualiza el conteo, el mínimo y el
+   máximo observados de su intervalo, y su índice de intervalo queda
+   guardado para reutilizarlo más adelante sin recalcularlo.
+4. **Refinamiento recursivo:** un intervalo que reúne más elementos de los
+   deseados se subdivide usando únicamente el rango de valores que
+   realmente contiene (no el rango original del array completo). Si
+   después de subdividirse un sub-intervalo sigue siendo demasiado grande,
+   vuelve a subdividirse de la misma forma, hasta un límite de
+   profundidad. Un intervalo en el que todos los elementos son idénticos
+   se reconoce como ya ordenado y no se subdivide ni se compara.
+5. **Ordenación local:** cada intervalo final (hoja del árbol de
+   refinamiento) se ordena con el algoritmo más adecuado a su tamaño:
+   Insertion Sort para intervalos pequeños, QuickSort para intervalos
+   medianos e Introsort para los más grandes. Antes de aplicar cualquier
+   algoritmo de comparación, se comprueba en una sola pasada si el
+   intervalo ya está ordenado ascendente o descendentemente, para
+   resolverlo sin comparaciones adicionales en esos casos.
+6. **Unión final:** los intervalos, ya ordenados y colocados en orden
+   ascendente por construcción, se concatenan en el array de salida.
 
 ## Estructura del proyecto
 
@@ -15,28 +56,28 @@ Esta es la primera versión funcional, de mi propio algoritmo intentando llegar 
 drs_project/
 ├── include/
 │   ├── Config.hpp             # DEBUG_METRICS y constantes globales
-│   ├── Bin.hpp                # Bin<T>: estructura de estadísticas (Fase 1)
+│   ├── Bin.hpp                # Bin<T>: estadísticas de los intervalos iniciales
 │   ├── DRSMetrics.hpp         # Sistema de métricas internas
 │   ├── DynamicRangeSort.hpp   # Declaración de la clase DynamicRangeSort<T>
-│   └── DynamicRangeSort.tpp   # Implementación (una función por fase)
+│   └── DynamicRangeSort.tpp   # Implementación, organizada por fases
 ├── tests/
-│   ├── DatasetGenerator.hpp   # Generador de los 8 tipos de dataset pedidos
-│   └── main.cpp               # Harness de pruebas + benchmarking vs std::sort
+│   ├── DatasetGenerator.hpp   # Generador de distintos tipos de dataset
+│   └── main.cpp               # Batería de pruebas y comparación de rendimiento
 ├── Makefile
 ├── README.md
 └── ANALYSIS.md                # Análisis experimental con datos reales
 ```
 
-## Compilar y ejecutar
+## Compilación y ejecución
+
+Requiere un compilador con soporte para C++17 (probado con `g++`,
+`-std=c++17 -O2 -Wall -Wextra`).
 
 ```bash
 make            # compila tests/main.cpp -> build/drs_tests
 make test       # compila (si hace falta) y ejecuta la batería de pruebas
-make clean      # elimina build/
+make clean      # elimina el directorio build/
 ```
-
-Requiere un compilador con soporte C++17 (probado con `g++`, flags
-`-std=c++17 -O2 -Wall -Wextra`).
 
 ## Uso de la clase
 
@@ -53,55 +94,45 @@ m.print(std::cout);                    // vuelca todas las estadísticas recogid
 ```
 
 `DynamicRangeSort<T>` es una plantilla restringida a tipos enteros
-(`static_assert(std::is_integral<T>::value)`), porque las fórmulas de la
-especificación (`range`, `intervalSize`, `binIndex`, `observedRange`) están
-definidas en términos de aritmética entera.
+(verificado con `static_assert`), porque las fórmulas del algoritmo
+(rango, ancho de intervalo, índice de intervalo) están definidas en
+términos de aritmética entera.
 
 ## Sistema de métricas (DRSMetrics)
 
-Todo el sistema de métricas se activa/desactiva con **una única constante**
-en `include/Config.hpp`:
+El sistema de métricas internas se activa o desactiva con una única
+constante, en `include/Config.hpp`:
 
 ```cpp
-#define DEBUG_METRICS 1   // 1 = recoger métricas, 0 = desactivar por completo
+#define DEBUG_METRICS 1   // 1 = recoger métricas, 0 = desactivarlas por completo
 ```
 
-Cuando `DEBUG_METRICS` es `0`, cada método de `DRSMetrics` (`recordComparison`,
-`recordSubdivision`, `recordBin`, `startPhase`/`endPhase`, etc.) queda con el
-cuerpo vacío, así que no queda coste real en la ruta de ordenación. Se
-verificó experimentalmente: con `DEBUG_METRICS=0` todas las estadísticas
-devuelven cero y los tiempos de ejecución quedan dentro del margen de ruido
-respecto a `DEBUG_METRICS=1` (ver `ANALYSIS.md`).
+Cuando `DEBUG_METRICS` vale `0`, cada método de `DRSMetrics` queda con el
+cuerpo vacío, así que no añade coste en la ruta de ordenación. Esto se
+verificó de forma experimental: con `DEBUG_METRICS=0` todas las
+estadísticas devuelven cero y los tiempos de ejecución quedan dentro del
+margen de ruido respecto a `DEBUG_METRICS=1` (los números se documentan en
+`ANALYSIS.md`).
 
-Métricas recogidas:
+Entre las métricas recogidas están: número de comparaciones, número de
+subdivisiones y profundidad máxima de refinamiento alcanzada, número total
+de intervalos y de intervalos vacíos, tamaño medio y máximo de intervalo,
+tiempo de cada fase, y qué algoritmo local se usó en cada intervalo
+(ya ordenado, invertido, Insertion Sort, QuickSort o Introsort).
 
-- Número de comparaciones (en las fases de ordenación local)
-- Número de subdivisiones realizadas
-- Profundidad máxima de subdivisión
-- Número total de bins, bins vacíos, tamaño medio y máximo de bin
-- Tiempo (ms) de cada fase: `analysis`, `buildInitialBins`, `firstPass`,
-  `subdivision`, `secondPass`, `localSort`, `merge`
-- Qué algoritmo local se usó en cada bin (Insertion Sort / QuickSort / Introsort)
+## Estado del algoritmo
 
-## Fidelidad a la especificación
+Esta es la segunda iteración del proyecto. La primera versión implementaba
+la especificación original de forma directa (subdivisión en un único
+nivel). Un análisis experimental sobre esa primera versión identificó
+varios cuellos de botella — sobre todo con datos muy concentrados o con
+muchos valores duplicados — y propuso una serie de mejoras sin
+implementarlas todavía.
 
-| Sección del documento     | Dónde está implementada                              |
-|---------------------------|-------------------------------------------------------|
-| FASE 1 — Análisis          | `DynamicRangeSort<T>::analyze()`                      |
-| Fórmulas                  | `DynamicRangeSort<T>::buildInitialBins()`, `computeBinIndex()` |
-| Estructura de cada bin    | `Bin<T>` (`include/Bin.hpp`)                          |
-| Primera pasada            | `DynamicRangeSort<T>::firstPass()`                    |
-| Subdivisión                | `DynamicRangeSort<T>::subdivideBins()`                |
-| Segunda pasada             | `DynamicRangeSort<T>::secondPass()`                   |
-| Ordenación local           | `sortBinLocally()` + `insertionSort()` / `quickSort()` / `introSort()` |
-| Unión final                 | `DynamicRangeSort<T>::mergeResults()`                 |
-| Tests                      | `tests/DatasetGenerator.hpp`, `tests/main.cpp`         |
-
-La subdivisión usa exclusivamente el **rango observado** (`observedMin`,
-`observedMax`) del bin, nunca el rango original, tal como pide el documento.
-
-## Próximos pasos
-
-Las posibles mejoras identificadas durante el análisis experimental están
-documentadas al final de `ANALYSIS.md`, sin implementar, para que decidas
-cuáles incorporar.
+Esta versión incorpora esas mejoras generalizando el paso de "refinar
+intervalos" a una recursión acotada por profundidad, en vez de un único
+paso fijo, y añadiendo reconocimiento de intervalos ya ordenados o
+duplicados antes de recurrir a un algoritmo de comparación. El detalle
+completo de qué se implementó, por qué, y con qué efecto medido está en
+`ANALYSIS.md`, junto con los cuellos de botella que persisten y las
+mejoras que quedan abiertas para futuras iteraciones.

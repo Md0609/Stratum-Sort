@@ -12,25 +12,25 @@
 namespace drs {
 
 // ============================================================
-// DynamicRangeSort (DRS)
+// DynamicRangeSort (DRS) - v2
 // ============================================================
 // Custom sorting algorithm following the philosophy:
 //
 //   Analyze -> Build bins -> Refine bins -> Sort locally -> Merge
 //
-// This implementation only supports integral element types, since
-// every binning formula in the specification (range, intervalSize,
-// binIndex, observedRange) is defined over integer arithmetic.
+// This version generalizes "refine bins" into a bounded recursive
+// step: a bin that is still too large after being split, and whose
+// own observed range still spans more than one value, is refined
+// again against its own data (not the original array), up to
+// MAX_SUBDIVISION_DEPTH levels. Elements that are exact duplicates
+// of one another collapse into a single already-sorted leaf without
+// ever being compared, and any bin that turns out to already be
+// sorted (ascending or descending) is detected and finished in
+// O(k) instead of being handed to a comparison sort.
 //
-// The class is split into one private method per phase of the
-// specification, matching the document sections one-to-one:
-//   analyze()            -> FASE 1 / ANALISIS
-//   buildInitialBins()   -> FORMULAS / ESTRUCTURA DE CADA BIN
-//   firstPass()          -> PRIMERA PASADA
-//   subdivideBins()      -> SUBDIVISION
-//   secondPass()         -> SEGUNDA PASADA
-//   sortBinLocally()     -> ORDENACION LOCAL
-//   mergeResults()       -> UNION FINAL
+// This implementation only supports integral element types, since
+// every binning formula (range, intervalSize, binIndex, observedRange)
+// is defined over integer arithmetic.
 // ============================================================
 template <typename T>
 class DynamicRangeSort {
@@ -58,41 +58,44 @@ private:
     AnalysisResult analyze(const std::vector<T>& data) const;
 
     // ---- FORMULAS / ESTRUCTURA DE CADA BIN ------------------------------
+    // Builds the coarse, first-level bins. The bin count is capped at the
+    // observed value range (a bin narrower than one value is meaningless),
+    // which keeps the number of bins - and therefore the number of empty
+    // bins ever materialized - proportional to min(n, range) instead of
+    // always n / targetElementsPerBin.
     std::vector<Bin<T>> buildInitialBins(const AnalysisResult& analysis, T& outIntervalSize) const;
 
     std::size_t computeBinIndex(T value, T rangeStart, T intervalSize, std::size_t binCount) const;
 
     // ---- PRIMERA PASADA --------------------------------------------------
+    // Single O(n) pass that both updates each bin's statistics AND caches
+    // the computed bin index for every element, so the grouping step
+    // below never has to recompute the division.
     void firstPass(const std::vector<T>& data, std::vector<Bin<T>>& bins, T minimumValue,
-                    T intervalSize) const;
+                    T intervalSize, std::vector<std::size_t>& outBinIndices) const;
 
-    // ---- SUBDIVISION -------------------------------------------------------
-    // Per-original-bin routing information used to place elements into
-    // their final (post-subdivision) bin during the second pass.
-    struct SubdivisionInfo {
-        bool needsSubdivision = false;
-        T observedMin{};
-        T newIntervalSize{};
-        std::size_t splits = 1;
-        std::size_t finalBinOffset = 0; // offset into the flat finalBins vector
+    // ---- REFINAMIENTO RECURSIVO (SUBDIVISION generalizada) ------------------
+    // A refined bin is a small recursive tree: a leaf holds the elements
+    // that will be handed to a local sort; an internal node holds the
+    // children produced by splitting its elements according to their own
+    // observed range.
+    struct RefinedBin {
+        std::vector<T> elements;          // meaningful only when children is empty (leaf)
+        std::vector<RefinedBin> children; // meaningful only when non-empty (internal node)
+
+        bool isLeaf() const { return children.empty(); }
     };
 
-    std::vector<SubdivisionInfo> subdivideBins(std::vector<Bin<T>>& bins,
-                                                std::size_t& outFinalBinCount);
-
-    // ---- SEGUNDA PASADA ------------------------------------------------------
-    struct FinalBin {
-        T lowerBound{};
-        T upperBound{};
-        std::vector<T> elements;
-    };
-
-    std::vector<FinalBin> secondPass(const std::vector<T>& data, const std::vector<Bin<T>>& originalBins,
-                                      const std::vector<SubdivisionInfo>& subInfo, T minimumValue,
-                                      T intervalSize, std::size_t finalBinCount) const;
+    // Takes ownership of a bin's element bucket and recursively refines it.
+    RefinedBin refine(std::vector<T>&& elements, std::size_t depth);
 
     // ---- ORDENACION LOCAL -------------------------------------------------
-    void sortBinLocally(FinalBin& bin);
+    enum class RunShape { Ascending, Descending, Unsorted };
+
+    RunShape detectRun(const std::vector<T>& arr);
+    void sortLeaf(std::vector<T>& arr);
+    void sortRefined(RefinedBin& node);
+
     void insertionSort(std::vector<T>& arr);
     void quickSort(std::vector<T>& arr, long left, long right);
     void introSort(std::vector<T>& arr);
@@ -102,7 +105,7 @@ private:
     long partition(std::vector<T>& arr, long left, long right);
 
     // ---- UNION FINAL --------------------------------------------------------
-    void mergeResults(std::vector<T>& data, std::vector<FinalBin>& finalBins) const;
+    void mergeRefined(const RefinedBin& node, std::vector<T>& out, std::size_t& pos) const;
 
     std::size_t targetElementsPerBin_;
     DRSMetrics metrics_;
