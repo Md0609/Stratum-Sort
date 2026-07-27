@@ -125,7 +125,18 @@ public:
     // que a su vez dependen de cuantos grupos hay que alojar en el universo
     // de forma disjunta (esa restriccion es el error C-B que la revision
     // adversaria encontro en la version publicada del teorema).
-    DataVector adversarialPeeling(std::size_t n, std::size_t target = 64) {
+    // 'coreParam' (anadido al resolver la observacion O8 del paso 3) fija el
+    // tamano del NUCLEO contiguo del grupo; 0 significa "usa target", que es
+    // el comportamiento original y deja intactas todas las medidas previas.
+    //
+    // El nucleo determina el regimen del adversario, y con el, el signo del
+    // compromiso entre capar y no capar la profundidad:
+    //   nucleo pequeno  -> splits = 2       -> 1 bit de span por nivel  -> muchos niveles degenerados, residuo diminuto
+    //   nucleo grande   -> splits = C/target -> log2(C/target) bits/nivel -> pocos niveles, residuo enorme
+    // Solo el segundo regimen produce el termino Theta(n log n) que el tope
+    // de profundidad provocaba al entregar un bin grande a Introsort.
+    DataVector adversarialPeeling(std::size_t n, std::size_t target = 64,
+                                   std::size_t coreParam = 0) {
         DataVector v;
         v.reserve(n);
         if (n == 0) return v;
@@ -135,7 +146,7 @@ public:
         // iguales entre los grupos, que deben ser disjuntos en valor.
         // Se usa la mitad positiva del universo para dejar sitio a la
         // separacion entre grupos sin desbordar.
-        const std::size_t coreSize = std::min(target, n);
+        const std::size_t coreSize = std::min(coreParam == 0 ? target : coreParam, n);
         std::size_t groupsEstimate = n / std::max<std::size_t>(coreSize * 2, 1);
         if (groupsEstimate == 0) groupsEstimate = 1;
         const uint64_t budget =
