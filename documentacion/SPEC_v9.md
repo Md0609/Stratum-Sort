@@ -418,9 +418,9 @@ generales:
 | 4 | Medición: fases, asignaciones, memoria, I-TESELADO | **Hecho** (`STEP4_profile.md`) |
 | **4b** | Fase A del 8: barrido de `target` | **Hecho. Criterio FALLADO** (`STEP4b_target_sweep.md`). El retuneo del target fusionado se elimina: `target=64` está a <2 % del óptimo de una curva plana entre 24 y 64 |
 | 5 | CC-C: certificado de ordenado | **Hecho, aceptado** (`STEP5_sorted_certificate.md`). Comparaciones a 0 en 2 datasets y 99,6 % en un tercero, predicción exacta. **Ganancia en producción ~2 %, bajo el suelo de medición**: se acepta por trabajo muerto a coste cero, no por rendimiento |
-| 6 | CC-D: asignaciones por llamada | Pendiente. Objetivo: `refine`, 16 %, en 4 datasets |
-| 7 | CC-E: `data` como buffer | Pendiente. **Sube de prioridad**: `merge` es 31–37 %, no 4 % |
-| 8 | CC-F Fase B: separar `λ` de `t` | Pendiente. **Objetivo cuantificado por 4b:** los 21,4 % que `refine` consume a λ=32. Criterio pre-registrado en `STEP4b_target_sweep.md` §7 |
+| 6 | ~~CC-D: asignaciones~~ → **`merge` con `memcpy`** | **Hecho, aceptado** (`STEP6_merge_memcpy.md`). CC-D descartado por techo (5,8–6,2 %). En su lugar, la medición de techos identifico el bucle de copia con aliasing: **−42 %, −38 %, −23 %** en tres datasets, en produccion, rangos separados |
+| 7 | ~~CC-E: `data` como buffer~~ | **DESCARTADO.** Solo evita copiar las hojas de paridad impar, y esa fraccion es **0,0 %** en los tres datasets donde `merge` era caro. Techo restante ~5,3 % en un solo dataset. Conserva su justificacion de memoria (O16) |
+| 8 | CC-F Fase B: separar `λ` de `t` | **No ejecutado.** Sigue siendo la unica hipotesis viva con techo grande (21,4 % de `refine` a λ=32) y criterio pre-registrado (`STEP4b_target_sweep.md` §7). Queda como la puerta de entrada natural a una v10 |
 | O11 | `INSERTION_SORT_THRESHOLD` no sigue al `target` de ejecución | Pendiente, **prerrequisito** de cualquier trabajo sobre `localSort` |
 
 **Siguiente acción: paso 4b.** No toca el algoritmo — `target` ya es
