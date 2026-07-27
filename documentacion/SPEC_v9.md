@@ -1,549 +1,365 @@
-# DRS v9 — Especificación técnica
+# DRS v9 — Especificación técnica (reescritura tras O8)
 
-**Estado: especificación para implementar. Pendiente de revisión y
-aprobación.** No contiene código. Cada decisión lleva su justificación;
-las decisiones que no están cerradas están marcadas como **[ABIERTO]** y
-se cierran con el barrido de §8, no por criterio del autor.
+**Estado: alineada con la evidencia experimental a fecha del paso 3
+revertido.** Esta versión sustituye por completo a la anterior, que
+prometía cosas que la medición ha descartado. Todo enunciado de este
+documento es o bien **[MEDIDO]** en esta máquina, o bien **[ABIERTO]** y
+pendiente de medir. No queda ningún enunciado derivado sólo de análisis
+asintótico.
+
+> **Qué ha cambiado respecto de la versión anterior de este documento.**
+> Se eliminan **CC1** (refinamiento terminal), **CC7** (borrar los seis
+> algoritmos de ordenación) y **CC8** (unificar los dos caminos de
+> código). Los tres han perdido su justificación: los dos primeros por la
+> medición de O8, el tercero por no tener criterio medible. Con ellos
+> desaparece el objetivo declarado de v9 —«eliminar el término
+> superlineal»—, que la evidencia dice que no existe a las constantes en
+> uso. Ver §2 y `O8_resolucion_y_reversion_paso3.md`.
 
 ---
 
-## 1. Respuestas directas a las ocho preguntas
+## 1. Qué es v9 ahora, honestamente
 
-| Pregunta | Respuesta |
+v9 **ya no es** un cambio de generación del algoritmo. Es:
+
+1. Una corrección de aritmética con efecto grande y medido en una clase
+   de entradas (§3, CC-A). **Hecho.**
+2. La eliminación de trabajo demostrablemente muerto, sin efecto medible
+   en tiempo (§3, CC-B). **Hecho.**
+3. Un conjunto de cambios de coste constante y de memoria cuyo valor
+   está **sin demostrar** y que este documento ordena de forma que se
+   demuestre o se descarte (§5).
+
+La filosofía de cinco pasos, la regla del rango observado, el tope de
+profundidad y el despachador de ordenación local **siguen intactos**.
+
+### 1.1 Respuestas a las ocho preguntas del encargo, corregidas
+
+| Pregunta | Respuesta anterior | Respuesta actual |
+|---|---|---|
+| ¿Debe desaparecer `MAX_SUBDIVISION_DEPTH`? | Sí | **No.** [MEDIDO] Quitarlo cuesta hasta +109 % y no gana en ningún punto del barrido de peor caso. Además ahora tiene justificación cuantitativa (§2.2). |
+| ¿Qué ocurre cuando una hoja sigue siendo grande? | Deja de existir esa categoría | **Sigue existiendo, y es inofensiva.** [MEDIDO] El presupuesto de bits acota el residuo a ~104.000 elementos con `target=64`, independientemente de `n`. |
+| ¿Debe existir todavía `localSort()`? | Sí, colapsado a Insertion Sort | **Sí, con su despachador completo.** Con el tope puesto, QuickSort e Introsort **no** son inalcanzables: se ejecutan 9.346 veces en el adversario de núcleo 64. |
+| ¿Puede el refinamiento completarlo todo por sí solo? | Sí pero no debe | **Sí, y demostrablemente no conviene.** [MEDIDO] |
+| ¿Cómo queda el flujo? | Un solo recorrido en profundidad | **Igual que en v8**, salvo la aritmética de span y el tope de abanico. |
+| ¿Qué estructuras nuevas hacen falta? | Arena; un buffer menos | **[ABIERTO]** — sólo si el paso 4 demuestra que las asignaciones pesan. |
+| ¿Qué se puede eliminar? | ~40 % del algoritmo | **Nada más, por ahora.** Lo eliminado hasta hoy: el recorte de índice y los buckets inalcanzables. |
+| ¿Qué hay que reescribir de cero? | 60 % del `.tpp` | **Nada.** Los cambios restantes son locales. |
+
+---
+
+## 2. Lo que la medición ha establecido
+
+### 2.1 Línea base [MEDIDO]
+
+Apple M4 / arm64 / Apple clang 21 / libc++. `n = 10⁶`, `target = 64`.
+Contadores deterministas idénticos entre ejecuciones; dispersión temporal
+1,5–5,9 %. **Umbral de significación: 6 %.** `ManyRepeated` es atípico
+(18 % de dispersión) y no admite decisiones por reloj.
+
+Detalle en `BASELINE_v8.md`. Puntos que condicionan el resto:
+
+- `SortedAscending` es **6,02x** más lento que `std::sort` — el peor de
+  la batería, y no lo era en la máquina histórica (1,11x). No es una
+  regresión de DRS: la `std::sort` de libc++ resuelve un millón de
+  enteros ya ordenados en 0,73 ms.
+- Los ratios históricos **no transfieren** en datos de baja entropía.
+
+### 2.2 El término superlineal no existe a las constantes en uso [MEDIDO]
+
+Para que un bin de tamaño `m` sobreviva `D` niveles degenerados hace
+falta `D · log₂(m/target) ≤ 64` bits de span. Con `D = 6`:
+
+| `target` | residuo máximo entregable a Introsort |
 |---|---|
-| ¿Debe desaparecer `MAX_SUBDIVISION_DEPTH`? | **Sí, como semántica.** Sobrevive únicamente como aserción de depuración sobre un invariante demostrable (`profundidad ≤ w+1`). Nunca como salida alternativa. |
-| ¿Qué ocurre cuando una hoja sigue siendo grande? | **Deja de existir esa categoría.** Una hoja es (a) de tamaño `≤ t`, o (b) monovaluada. Una hoja monovaluada de 200.000 elementos está ordenada y cuesta cero. |
-| ¿Debe existir todavía `localSort()`? | **Sí, pero deja de ser un algoritmo de ordenación y pasa a ser un caso base.** Solo Insertion Sort. QuickSort, Introsort y HeapSort se eliminan porque son inalcanzables. |
-| ¿Puede el refinamiento completarlo todo por sí solo? | **Sí** (con `t = 1`), pero **no debe**. El caso base no es una concesión: por debajo de `t` elementos, seguir refinando cuesta más pasadas que ordenar directamente. |
-| ¿Cómo queda el flujo? | Un único recorrido en profundidad que **emite salida terminada**. Desaparecen las fases `distribute`, `localSort` y `merge` como etapas separadas. |
-| ¿Qué estructuras nuevas hacen falta? | Una arena de desplazamientos por nivel. Y **una menos**: el árbol de refinamiento desaparece, y uno de los dos buffers también. |
-| ¿Qué se puede eliminar? | ~40 % del algoritmo: 6 funciones de ordenación, la estructura de árbol, dos recorridos recursivos, un buffer de tamaño `n`, un umbral, un miembro muerto y el recorte de índice. |
-| ¿Qué hay que reescribir de cero? | `refine()`, `countAndPlace()`, `computeRangeParameters()` (que se fusiona con `refine`) y la etapa de salida. |
+| 16 | 26.008 |
+| 32 | 52.016 |
+| **64 (actual)** | **104.032** |
+| 256 | 416.128 |
+| **1024** | **1.664.511 ← reabre el problema** |
+
+**Con `target = 64` el residuo está acotado por una constante
+independiente de `n`, luego la caída a Introsort cuesta `O(17n) = O(n)`.**
+El barrido del tamaño de núcleo del adversario (7 puntos, 3 rondas
+alternadas) lo confirma: con núcleo ≥ 1.024 la versión capada entrega **un
+solo bin**, y con núcleo ≥ 16.384, **ninguno**.
+
+> **Límite de validez que hay que respetar:** `target ≥ 1024` reabre el
+> término superlineal. Cualquier cambio del target debe comprobarlo. Es
+> la primera justificación no empírica de `MAX_SUBDIVISION_DEPTH = 6` en
+> todo el proyecto.
+
+### 2.3 Cambios ya aplicados y aceptados
+
+**CC-A — Aritmética de span** (paso 1, `STEP1_span.md`). [MEDIDO]
+El rango se representa como `span = max − min`, nunca como `span + 1`.
+`W = span/s + 1`; el recorte de índice se eliminó por ser demostrablemente
+innecesario (Propiedad 2). `FullRangeExtremes`: 20,16 → 14,19 ms
+(**−29,6 %**), profundidad 3 → 1. Contadores idénticos en los otros nueve
+datasets.
+
+**CC-B — Tope de abanico por rango observado** (paso 2,
+`STEP2_fanout_cap.md`). [MEDIDO]
+`splits ≤ observedSpan + 1` en `refine()`, la misma regla que el nivel
+superior ya aplicaba. Elimina el 100 % de los buckets **inalcanzables**
+(15.368 en `Concentrated`). **Sin efecto medible en tiempo.** Se conserva
+por ser trabajo demostrablemente muerto y de riesgo nulo (el tope no puede
+cambiar la partición: `W = 1` antes y después), no por rendimiento.
+
+### 2.4 Cambio revertido
+
+**CC1 + CC7 — Refinamiento terminal** (paso 3, revertido,
+`O8_resolucion_y_reversion_paso3.md`). El enunciado es cierto —sin tope,
+toda hoja es `≤ t` o monovaluada, verificado con aserciones activas— pero
+el problema que resolvía no se materializa y su coste sí: hasta **+109 %**.
+No se reintenta.
 
 ---
 
-## 2. Premisas aceptadas y prerrequisito de corrección
+## 3. Invariantes vigentes
 
-Se aceptan las tres premisas del encargo. Todas se apoyan en el
-Teorema 4 de `RESEARCH_refinamiento_terminal.md`, que **sobrevivió a la
-revisión adversaria** (`REVIEW_refinamiento_terminal.md`, Parte 3): el
-refinamiento sin corte de profundidad termina, y toda hoja cumple
-`m ≤ t` o es monovaluada.
+Los que se han demostrado y siguen en pie tras O8:
 
-**Ese teorema presupone aritmética exacta sobre el rango, y el código
-actual no la tiene.** El prerrequisito no es opcional: sin él, la
-premisa «`MAX_SUBDIVISION_DEPTH` no forma parte de la esencia» es falsa,
-porque el corte está tapando un caso degenerado.
-
-### 2.1 Prerrequisito: aritmética de *span*
-
-El código actual representa el rango como `R = max − min + 1`, cantidad
-que necesita `w+1` bits y **desborda a 0** cuando `R = 2^64` (verificado:
-`min = INT64_MIN`, `max = INT64_MAX` ⟹ `binCount = 1`,
-`intervalSize = 1`, todo colapsa en el último bucket).
-
-v9 representa el rango por su **span**:
-
-```
-  span = (uint64) max − (uint64) min                     ∈ [0, 2^w − 1]
-```
-
-`span` nunca desborda. Todas las fórmulas se reescriben sobre él:
-
-```
-  monovaluado   ⟺  span == 0
-  tope de abanico:  si span < s   entonces   s ← span + 1      (*)
-  anchura       W  =  span / s + 1                    (división entera)
-  índice        i(v) = ((uint64) v − (uint64) min) / W
-```
-
-**(\*)** es seguro: la rama solo se toma cuando `span < s ≤ S_max`, luego
-`span + 1` es un número pequeño.
-
-**Propiedad 1 (equivalencia).** Donde la fórmula antigua no desbordaba,
-`span/s + 1 = ⌈(span+1)/s⌉`. *Demostración:* con `span = qs + r`,
-`0 ≤ r < s`, se tiene `⌈(qs+r+1)/s⌉ = q + ⌈(r+1)/s⌉ = q + 1` porque
-`1 ≤ r+1 ≤ s`. ∎ (Verificado exhaustivamente para `span < 5000`.)
-
-**Propiedad 2 (el índice está siempre en rango).** `i(v) ≤ s − 1` para
-todo `v ∈ [min, max]`. *Demostración:* `i(v) ≤ span/W` con `W = q+1`,
-`q = ⌊span/s⌋`. Como `span = qs + r < qs + s = s(q+1) = sW`, se sigue
-`span/W < s`, luego `⌊span/W⌋ ≤ s−1`. ∎ (Verificado sobre 27.135 casos,
-incluidos `span = 2^64−1` y barrido exhaustivo de monotonía.)
-
-**Consecuencia inmediata: el recorte defensivo
-`if (index >= binCount) index = binCount − 1` se elimina.** No es una
-optimización: es código que sólo podía activarse por el desbordamiento
-que acabamos de suprimir, y mantenerlo enmascararía cualquier regresión
-futura de esta aritmética.
+- **I-RANGO.** `0 ≤ i(v) ≤ s−1` sin necesidad de recorte (Propiedad 2 de
+  `STEP1_span.md`). Verificado bajo ASan sobre 19 casos límite.
+- **I-TESELADO.** Las hojas teselan `[0, n)` en orden ascendente y cada
+  hoja está ya en su posición final. *No comprobado por aserción todavía*
+  — pendiente del paso 4.
+- **I-PROGRESO.** Toda subdivisión produce ≥ 2 buckets no vacíos, luego
+  `max hijo ≤ m − 1`.
+- **I-BITS.** Cada nivel de refinamiento consume ≥ 1 bit del span, luego
+  ningún camino raíz-hoja supera los 64 niveles. Es lo que acota el
+  residuo de §2.2.
 
 ---
 
-## 3. Cambios conceptuales
+## 4. Paso 4 — Medición, sin cambios en el algoritmo
 
-Ocho cambios. Cada uno altera **qué es** el algoritmo, no cuánto tarda.
-Los cambios que sólo reducen constantes están fuera de esta
-especificación y se tratarán, si procede, después de medir v9.
+**Es obligatorio y va primero.** Los pasos que quedan son conjeturas sobre
+dónde se va el tiempo *en esta máquina*, y **el reparto por fase nunca se
+ha medido aquí**: los porcentajes que la especificación anterior usaba
+(distribute 46,8 %, localSort 34,1 %, refine 13,7 %, merge 4,1 %) son del
+Xeon con GCC, y §2.1 ya demostró que los ratios de esa máquina no
+transfieren.
 
-### CC1 — El refinamiento es terminal
+**Entregables:**
 
-`MAX_SUBDIVISION_DEPTH` desaparece como condición de salida. Las únicas
-condiciones de hoja son:
+1. **Reparto de tiempo por fase** (`analyze`, `distribute`, `refine`,
+   `localSort`, `merge`) para los diez datasets. La instrumentación ya
+   existe (`DRSMetrics::startPhase/endPhase`); nadie la ha tabulado aquí.
+2. **Número de asignaciones de heap por `sort()`**. Determina si CC-D
+   merece existir. Estimación a confirmar: ~7.350 vectores de hijos +
+   ~14.700 de `bucketStart`/`bucketSize` ≈ 22.000 por `sort()` en
+   `RandomUniform`.
+3. **Reparación de `addApproxMemory()`**, que no contabiliza
+   `bucketOfScratch_` y subestima el consumo real en ~50 %. Sin esto, el
+   criterio de CC-E no es medible con la métrica del proyecto.
+4. **Aserción de I-TESELADO** en compilación de depuración
+   (`Σ count de hojas == n` y `start` estrictamente creciente). Es
+   prerrequisito de CC-E, que depende de ese invariante para escribir la
+   salida en el sitio.
 
-```
-  m ≤ t          → caso base (Insertion Sort)
-  span == 0      → monovaluado, ya ordenado, coste cero
-```
+**Criterio de aceptación:** que los cuatro entregables existan y sean
+reproducibles. No hay decisión binaria sobre el algoritmo porque el
+algoritmo no se toca.
 
-**Por qué mejora el algoritmo.** Elimina el único término superlineal:
-hoy, un bin que agota la profundidad se entrega a Introsort con tamaño
-arbitrario, lo que produce el peor caso `Θ(n log n)`. Sin esa salida,
-el peor caso pasa a `O(n·(w + t))`, es decir **`O(n)` para palabra fija,
-sin supuestos sobre la distribución de entrada**.
-
-**Garantía de terminación** (Lemas 3 y 3'): mientras `span ≥ 1` y
-`s ≥ 2`, la anchura es `W ≤ ⌈(span+1)/2⌉`, luego el span de todo hijo es
-`≤ W − 1 < span`. Decrecimiento estricto de un entero positivo.
-
-**Sustituto defensivo.** Se conserva una constante
-`DEPTH_ASSERT_BOUND = 66` usada **solo en una aserción de compilación de
-depuración**. Si se dispara, es un fallo de la aritmética de §2.1, no una
-condición de los datos. **No existe camino alternativo**: en compilación
-de producción no hay comprobación de profundidad en absoluto.
-
-### CC2 — El abanico está acotado por el rango observado
-
-```
-  s = clamp( ⌈m / λ⌉ , 2 , min(span + 1, S_max) )
-```
-
-El tope `s ≤ span + 1` es el cambio conceptual. Cuando se activa,
-`W = 1` y **cada bucket contiene exactamente un valor distinto: el bin
-queda completamente ordenado en esa única pasada, sin recursión y sin
-una sola comparación** (Lema 3).
-
-**Por qué mejora el algoritmo.** Hoy `computeRangeParameters()` aplica
-este tope en el nivel superior ([DynamicRangeSort.tpp:73](../algoritmo/DynamicRangeSort.tpp:73))
-y `refine()` **no** lo aplica ([DynamicRangeSort.tpp:217](../algoritmo/DynamicRangeSort.tpp:217)).
-Esa asimetría no está justificada en ninguna parte y hace que un
-sub-bin de rango estrecho se subdivida durante varios niveles cuando
-podía resolverse en uno. Unificar la regla no es limpieza: es la
-condición que convierte los datos densos o con redundancia en un
-problema de una sola pasada.
-
-Efecto concreto sobre los datasets del proyecto (`n = 10⁶`):
-
-| Dataset | span | `s` efectivo | Resultado |
-|---|---|---|---|
-| `ManyRepeated` | 4 | 5 | `W=1` → 5 hojas monovaluadas. **Una pasada.** |
-| `SmallRangeManyEl` | 99 | 100 | `W=1` → 100 hojas monovaluadas. **Una pasada.** |
-| `RandomUniform` | ~10⁶ | `⌈n/λ⌉` | tope no activo, comportamiento normal |
-
-### CC3 — Ocupación objetivo y umbral de caso base son parámetros distintos
-
-Hoy `targetElementsPerBin` desempeña tres papeles a la vez: ocupación
-media de los bins iniciales, umbral de hoja, y divisor del abanico. v9
-los separa en:
-
-- **`λ`** — ocupación objetivo. Determina `s = ⌈m/λ⌉`.
-- **`t`** — umbral de caso base. Determina cuándo se deja de refinar.
-
-**Por qué mejora el algoritmo.** Con `λ = t`, la ocupación de un bin es
-Poisson(`t`) y `P(X > t) ≈ 0,5`: **la mitad de los elementos entra en
-refinamiento por aritmética, no por los datos**. (Coincide con el 51,6 %
-medido en `ANALYSIS_v8.md`.) Con `λ = t/2`, `P(Poisson(t/2) > t)` cae
-varios órdenes de magnitud y la mayoría de los bins son hoja al primer
-nivel. Los dos parámetros responden a preguntas distintas y fusionarlos
-sólo puede acertar por casualidad.
-
-### CC4 — «Ordenado» es un certificado producido por el refinamiento
-
-Cuando `refine()` determina `span == 0`, **ya sabe** que el bin está
-ordenado. v9 propaga ese hecho al descriptor de la hoja.
-
-**Por qué mejora el algoritmo (y por qué ahora es imprescindible).** En
-v8 esto sería una micro-optimización. Bajo CC1, la hoja monovaluada pasa
-a ser **la categoría principal de hoja grande**: sin el certificado, el
-caso base volvería a recorrer 200.000 elementos con `detectRun()` para
-redescubrir algo que el refinamiento acababa de calcular. El certificado
-es carga estructural, no ahorro.
-
-### CC5 — El árbol de refinamiento no se materializa
-
-`RefinedRange` y su `std::vector<children>` desaparecen.
-
-**Por qué mejora el algoritmo.** El árbol no transporta ninguna
-información que las etapas posteriores consuman. Lo único que necesitan
-es *la lista de hojas en orden ascendente*, y esa lista se obtiene del
-propio recorrido.
-
-**Invariante que lo justifica (I-TESELADO).** Las hojas teselan `[0, n)`
-en orden ascendente, y **cada hoja ya ocupa su posición final**.
-*Demostración:* `countAndPlace` coloca los hijos en desplazamientos
-consecutivos a partir del `start` del padre, en orden de índice de
-bucket; los hijos teselan el rango del padre; por inducción sobre la
-profundidad, las hojas teselan `[0,n)`. Como los intervalos de valor son
-crecientes (A1), el orden de teselado es el orden de valor. ∎
-
-Este invariante ya se cumple en v8 pero **nadie lo había escrito**, y
-`mergeRefined()` lleva un cursor `pos` redundante que siempre vale
-`node.start`.
-
-### CC6 — El array de entrada es uno de los dos buffers
-
-v8 usa `bufferA_` y `bufferB_` (ambos de tamaño `n`) y después copia todo
-a `data`. v9 hace ping-pong entre **`data` y un único buffer scratch**.
-
-**Por qué mejora el algoritmo.** Memoria auxiliar de `2n` a `n`. Y por
-I-TESELADO, una hoja que quede en `data` **ya está en su sitio: coste
-cero**. Sólo las hojas de paridad impar se copian.
-
-*Seguridad:* el nivel 0 lee `data` y escribe `scratch` (arrays
-disjuntos); el nivel 1 lee `scratch` y escribe `data`, cuyo contenido en
-ese rango ya fue consumido. Todos los bins ocupan rangos disjuntos, así
-que escribir la salida de una hoja nunca pisa un bin pendiente.
-
-### CC7 — `localSort()` colapsa a un único caso base
-
-Se elimina el despachador de tres vías. Queda:
-
-```
-  si el certificado dice "ordenado"     → nada
-  si detectRun() == descendente         → invertir  (O(t))
-  en otro caso                          → Insertion Sort (O(t²), t acotado)
-```
-
-**Por qué mejora el algoritmo.** Por CC1, `QuickSort` e `Introsort` son
-**inalcanzables**: ninguna hoja supera `t` elementos salvo las
-monovaluadas, que no se ordenan. Mantener código inalcanzable en el
-camino caliente es una responsabilidad de corrección sin
-contrapartida: hoy nadie puede afirmar que esas ramas se ejecutan, y sin
-embargo `QUICKSORT_THRESHOLD` sigue participando en decisiones.
-
-`detectRun()` se conserva **con una justificación más estrecha que
-antes**: para una hoja ya ascendente, Insertion Sort ya es `O(t)`, así
-que `detectRun` no aporta; su único valor real es la hoja descendente,
-donde convierte `O(t²)` en `O(t)`. Se conserva por eso, y su utilidad es
-medible (§9).
-
-### CC8 — No hay fase `distribute()`: el nivel 0 es el primer refinamiento
-
-`computeRangeParameters()` + `distribute()` desaparecen como concepto
-separado. El nivel 0 es `refine(origen = data, start = 0, count = n)`.
-
-**Por qué mejora el algoritmo.** Hoy hay dos códigos que calculan
-fronteras con reglas ligeramente distintas — y esa divergencia es
-exactamente el defecto que CC2 corrige. Un solo camino de código hace
-imposible que vuelvan a separarse. Es también la consecuencia natural de
-aceptar que el refinamiento es el núcleo: si lo es, el primer nivel no
-puede ser un caso especial.
-
-La única asimetría que queda es la paridad del buffer, que es un
-parámetro de la llamada.
+**Lo que decide:** cada uno de los pasos 5–8 sigue vivo sólo si este paso
+muestra que su magnitud objetivo es suficiente para superar el umbral del
+6 %. Cualquiera que no lo supere se elimina del plan aquí mismo, sin
+implementarlo.
 
 ---
 
-## 4. Especificación del algoritmo
+## 5. Pasos restantes
 
-### 4.1 Parámetros
+Cada uno lleva su motivación **posterior a O8** y su criterio en
+contadores deterministas siempre que sea posible, porque el reloj de esta
+máquina no resuelve por debajo del 6 %.
 
-| Nombre | Significado | Restricción | Valor inicial |
-|---|---|---|---|
-| `λ` | ocupación objetivo | `1 ≤ λ ≤ t` | 16 **[ABIERTO]** |
-| `t` | umbral de caso base | `t ≥ 1` | 32 **[ABIERTO]** |
-| `S_max` | tope de abanico por nivel | `≥ 2` | 2¹⁶ **[ABIERTO]** |
+### Paso 5 — CC-C: certificado de «ya ordenado»
 
-`S_max` **no** es una constante de rendimiento arbitraria: acota la
-memoria del array de desplazamientos de un nivel (`(s+1)` palabras) y
-por tanto el consumo total. Su valor está abierto (§8).
+**Motivación [MEDIDO], independiente de CC1.** Cuando `refine()` detecta
+`span == 0` ya sabe que el bin está ordenado, pero devuelve el nodo sin
+marca y `sortLeaf()` vuelve a recorrerlo entero con `detectRun()`. El
+coste es exactamente visible en los contadores actuales:
 
-### 4.2 Invariantes
+| Dataset | comparaciones | de dónde salen |
+|---|---|---|
+| ManyRepeated | 999.995 | 5 bins monovaluados de ~200.000, reescaneados |
+| SmallRangeManyEl | 999.900 | 100 bins monovaluados de ~10.000 |
+| Concentrated | 993.445 | mayoritariamente lo mismo |
 
-- **I-TERM.** Mientras un bin se refina, `span` decrece estrictamente.
-  ⟹ terminación; profundidad `≤ w + 1`.
-- **I-RANGO.** `0 ≤ i(v) ≤ s−1` para todo `v` del bin (Propiedad 2).
-  ⟹ no hace falta recorte.
-- **I-TESELADO.** Las hojas teselan `[0,n)` en orden ascendente y cada
-  hoja está ya en su posición final.
-- **I-HOJA.** Toda hoja cumple `count ≤ t` **o** `span == 0`.
-- **I-PROGRESO.** Toda subdivisión produce `≥ 2` buckets no vacíos
-  (el elemento igual a `min` cae en el 0; el igual a `max`, en un índice
-  `≥ 1`). ⟹ `max hijo ≤ m − 1`.
+**En `ManyRepeated`, el 100 % de las comparaciones del algoritmo son este
+reescaneo redundante.** Es la magnitud más grande y mejor identificada que
+queda en el proyecto, y no dependía de CC1 en ningún momento.
 
-### 4.3 Flujo
+**Hipótesis única:** propagar el hecho de que un bin es monovaluado
+elimina el reescaneo.
+**Criterio único:** las comparaciones de `ManyRepeated` y
+`SmallRangeManyEl` caen a ≈ 0; las de los otros ocho datasets quedan
+idénticas byte a byte.
+**Riesgo:** ninguno estructural; es propagar información ya calculada.
 
-```
-ORDENAR(data[0..n)):
-    si n < 2: retorno
-    reservar scratch[0..n)                       # sin inicializar
-    (min, max) ← ANALIZAR(data)                  # una pasada O(n)
-    REFINAR(origen=data, destino=scratch, start=0, count=n,
-            min, max, profundidad=0)
+### Paso 6 — CC-D: eliminar las asignaciones por llamada
 
-REFINAR(origen, destino, start, count, min, max, profundidad):
-    span ← (u64)max − (u64)min
+**Motivación, condicionada al paso 4.** `refine()` asigna dos
+`std::vector<std::size_t>` en cada subdivisión, y cada nodo interno del
+árbol asigna su vector de hijos. v7 ya midió 7–10 % de mejora al eliminar
+asignaciones equivalentes en `countAndPlace()`, así que la magnitud es
+plausible — pero **no está medida aquí**.
 
-    # ---- condiciones de hoja (I-HOJA) --------------------------------
-    si span == 0:                                # monovaluado
-        EMITIR_HOJA(origen, start, count, ordenado=verdadero); retorno
-    si count ≤ t:
-        EMITIR_HOJA(origen, start, count, ordenado=falso);     retorno
+Dos partes, que van juntas porque atacan el mismo coste:
+- `bucketStart`/`bucketSize` pasan a una arena indexada por profundidad
+  (la recursión es estrictamente en profundidad y `depth ≤ 64`).
+- El árbol `RefinedRange` se sustituye por una lista plana de hojas,
+  apoyada en I-TESELADO. Elimina un vector por nodo interno y convierte
+  dos recorridos recursivos en dos bucles secuenciales.
 
-    # ---- abanico (CC2) ------------------------------------------------
-    s ← ⌈count / λ⌉
-    s ← max(s, 2);  s ← min(s, S_max)
-    si span < s:  s ← span + 1                   # ⟹ W = 1, hijos monovaluados
-    W ← span / s + 1
+**Hipótesis única:** las asignaciones de heap por `sort()` dominan un
+porcentaje medible del tiempo.
+**Criterio único:** asignaciones por `sort()` de ~22.000 a O(1), **y**
+mejora ≥ 6 % en `RandomUniform` medida alternando.
+**Se elimina del plan si** el paso 4 mide que las asignaciones cuestan
+menos del 6 %.
 
-    # ---- conteo y colocación -----------------------------------------
-    offsets[0..s] ← arena.reservar(s + 1)
-    CONTAR_Y_COLOCAR(origen, destino, start, count, min, W, s, offsets)
+> **Advertencia tomada del paso 2:** reducir el número de bins en un 50 %
+> no produjo ningún efecto medible. Que una magnitud sea grande en
+> unidades no implica que lo sea en tiempo. Este paso debe justificarse
+> con el reparto por fase del paso 4, no con el recuento.
 
-    # ---- descenso, en orden ascendente de bucket ----------------------
-    para b en 0..s−1:
-        c ← offsets[b+1] − offsets[b]
-        si c == 0: continuar                     # los buckets vacíos se descartan
-        si c ≤ t:
-            EMITIR_HOJA(destino, offsets[b], c, ordenado=falso)
-        si no:
-            (mn, mx) ← MINMAX(destino, offsets[b], c)
-            REFINAR(destino, origen, offsets[b], c, mn, mx, profundidad+1)
-    arena.liberar(s + 1)
+### Paso 7 — CC-E: el array de entrada como uno de los dos buffers
 
-EMITIR_HOJA(buffer, start, count, ordenado):
-    si no ordenado y count ≥ 2:
-        segun DETECTAR_TRAMO(buffer, start, count):
-            ascendente  → nada
-            descendente → invertir en el sitio
-            desordenado → INSERTION_SORT en el sitio
-    si buffer ≠ data:
-        copiar buffer[start..start+count) → data[start..start+count)
-```
+**Motivación [MEDIDA en unidades, no en tiempo], independiente de CC1.**
+v8 usa `bufferA_` y `bufferB_` de tamaño `n` cada uno y después copia todo
+a `data`. Usando `data` como uno de los dos buffers:
 
-### 4.4 Notas sobre el flujo
-
-- **La comprobación `c ≤ t` se hace antes de calcular `MINMAX`.** Un bin
-  que va al caso base no necesita su rango observado. Esto ya ocurre en
-  v8 y se conserva deliberadamente.
-- **`EMITIR_HOJA` hace la ordenación y la escritura de salida en el
-  mismo punto**, mientras los datos están calientes en caché tras la
-  pasada de colocación que acaba de escribirlos. Desaparecen las fases
-  `localSort` y `merge` como recorridos separados.
-- **Los buckets vacíos se descartan por completo.** No generan hoja, no
-  ocupan lista, no se recorren después. (En `NormalGaussian` el 15,08 %
-  de los bins están vacíos, según `ANALYSIS_v5.md` §2.4.)
-- **El recorrido es recursivo**, con profundidad demostrablemente
-  `≤ w+1 = 65`. No hace falta pila explícita.
-
----
-
-## 5. Estructuras de datos
-
-### 5.1 Se elimina
-
-| Estructura | Motivo |
-|---|---|
-| `RefinedRange` (nodo + `vector<children>`) | CC5. ~7.276 asignaciones por `sort()` en `RandomUniform` |
-| `bufferB_` | CC6. `n·sizeof(T)` bytes |
-| `bucketStart` / `bucketSize` locales de `refine()` | 2 asignaciones por subdivisión → arena |
-| `bucketSizeScratch_` | Miembro muerto: declarado, nunca usado |
-
-### 5.2 Se conserva o se transforma
-
-| Estructura | Forma en v9 |
-|---|---|
-| `bufferA_` | pasa a ser el único `scratch_`, `n` elementos, **sin inicializar** |
-| `bucketOfScratch_` | `uint32_t` en vez de `size_t` (mitad de tráfico). Requiere `n < 2³²`, comprobado con aserción estática/dinámica |
-| `writeCursorScratch_` | se fusiona con `offsets` (el cursor final del bucket `b` es el inicio del `b+1`) |
-
-### 5.3 Se añade
-
-**Arena de desplazamientos.** Un único `vector<size_t>` con puntero de
-tope. `REFINAR` reserva `s+1` posiciones al entrar y las libera al salir.
-Sustituye a las dos asignaciones por llamada y a cualquier reserva por
-profundidad.
-
-*Dimensionado:* el pico es `Σ_d (s_d + 1)` a lo largo de una rama.
-Como `s_d ≈ s_{d-1}/λ`, la suma converge a `s_0·(1 + 1/λ + 1/λ² + …) ≈
-s_0·λ/(λ−1)`. Para `n = 10⁶`, `λ = 16`, `S_max = 2¹⁶`: `s_0 = 62.500`,
-pico ≈ 66.700 palabras ≈ **534 KB**. Se reserva una vez por `sort()`.
-
-**Descriptor de hoja** (solo en compilación de investigación,
-`DRS_ENABLE_METRICS`): `{start, count, buffer, ordenado, profundidad}`.
-En producción no se materializa ninguna lista de hojas.
-
-### 5.4 Balance de memoria (`n = 10⁶`, `int64_t`)
-
-| | v8 | v9 |
+| | ahora | con CC-E |
 |---|---|---|
 | buffers de datos | `2n·8` = 16,0 MB | `n·8` = 8,0 MB |
-| `bucketOf` | `n·8` = 8,0 MB | `n·4` = 4,0 MB |
-| desplazamientos / árbol | ~1,2 MB (árbol + vectores) | 0,53 MB (arena) |
-| **total auxiliar** | **~25,2 MB** | **~12,5 MB** |
+| `bucketOf` | `n·8` = 8,0 MB | `n·8` = 8,0 MB |
+| **total auxiliar** | **~24 MB** | **~16 MB** |
 
-Reducción del 50 %. Además, la cifra de v8 **no es la que reporta el
-propio proyecto**: `addApproxMemory()` no contabiliza `bucketOfScratch_`
-(§9).
+Por I-TESELADO, además, una hoja que quede en `data` **ya está en su
+sitio**: la fase `merge` sólo copia las hojas de paridad impar.
 
----
+**Hipótesis única:** la memoria auxiliar baja un tercio y la fase `merge`
+copia aproximadamente la mitad de los elementos.
+**Criterio único:** `approxMemoryBytes()` (ya reparado en el paso 4) baja
+según la tabla, **y** correctitud intacta con la aserción de I-TESELADO
+activa. **El criterio es de memoria, no de tiempo**: la fase `merge` era
+el 4,1 % del total en la máquina histórica, así que no se espera —ni se
+exige— efecto temporal.
+**Riesgo:** es el cambio con más riesgo de corrección de los que quedan.
+Escribir la salida de una hoja mientras hay bins pendientes en `data`
+exige que los rangos sean disjuntos, que es exactamente I-TESELADO. Por
+eso su aserción es prerrequisito y va en el paso 4.
 
-## 6. Qué se elimina del código actual
+### Paso 8 — CC-F: separar ocupación objetivo del umbral de hoja
 
-**Funciones que desaparecen por completo** (inalcanzables bajo CC1/CC7):
+**Motivación [MEDIDA en otra máquina], la más grande que queda y la menos
+verificada aquí.** `targetElementsPerBin` hace hoy tres trabajos con el
+mismo número: ocupación media de los bins, umbral de hoja y divisor del
+abanico. Con `λ = t`, la ocupación es Poisson(`t`) y `P(X > t) ≈ 0,5`: la
+mitad de los elementos entra en refinamiento **por aritmética, no por los
+datos**.
 
-```
-quickSort, introSort, introSortImpl, heapSort, siftDown, partition
-```
+`ANALYSIS_v5.md` §2.1 midió, en el Xeon, que `target ≈ 19` era 18–23 %
+más rápido que `target = 64` en los tres datasets sin redundancia, con 27
+repeticiones en 3 ejecuciones independientes. **Ese resultado no se ha
+reproducido en esta máquina, y §2.1 de este documento demuestra que los
+resultados de aquella máquina no transfieren automáticamente.**
 
-≈ 150 líneas. Con ellas, la constante `QUICKSORT_THRESHOLD`.
+**Este paso empieza por medir, no por implementar.**
 
-**Funciones que desaparecen por reestructuración:**
+**Fase A (medición).** Barrido bidimensional `λ × t` sobre
+`{8,16,24,32,48,64} × {16,32,64}`, los diez datasets, midiendo
+`comparisons`, `totalBins`, `workByDepth` y tiempo alternado. Ningún
+barrido anterior fue bidimensional: v4 y v5 movían un único número que
+arrastraba los dos efectos a la vez, con signos opuestos.
 
-```
-computeRangeParameters   → absorbida por REFINAR (CC8)
-distribute               → absorbida por REFINAR (CC8)
-sortRefined              → absorbida por EMITIR_HOJA (CC5)
-mergeRefined             → absorbida por EMITIR_HOJA (CC5, CC6)
-flattenLeaves            → innecesaria: las hojas ya se emiten en orden
-```
+**Fase B (implementación), sólo si la fase A encuentra un punto que
+mejora `RandomUniform` ≥ 6 % sin empeorar ningún dataset > 6 %.**
 
-**Constantes que desaparecen:** `MAX_SUBDIVISION_DEPTH` (semántica),
-`QUICKSORT_THRESHOLD`, `INSERTION_SORT_THRESHOLD` (se funde con `t`).
-
-**Fragmento que desaparece:** el recorte
-`if (index >= binCount) index = binCount − 1` (Propiedad 2).
-
-## 6.1 Qué se reescribe desde cero
-
-`refine()`, `countAndPlace()`, la orquestación de `sort()`, y la etapa de
-salida. Es el 60 % de `DynamicRangeSort.tpp`.
-
-## 6.2 Qué se conserva casi intacto
-
-`analyze()`, `insertionSort()`, `detectRun()`, y todo lo externo
-(`DatasetGenerator`, `SystemInfo`, `Statistics`, las reconstrucciones
-históricas `versions/`).
-
----
-
-## 7. Comportamiento previsto por dataset (`n = 10⁶`, `λ=16`, `t=32`, `S_max=2¹⁶`)
-
-Predicciones **falsables**, para contrastar en el paso 6 del plan:
-
-| Dataset | `s` nivel 0 | `W` | Profundidad | Observación |
-|---|---|---|---|---|
-| `ManyRepeated` | 5 | 1 | **1** | 5 hojas monovaluadas; hoy hace 2 escaneos completos de más |
-| `SmallRangeManyEl` | 100 | 1 | **1** | 100 hojas monovaluadas |
-| `SortedAscending` | 62.500 | 17 | **1** | hojas de ~16 ya ordenadas |
-| `SortedDescending` | 62.500 | 17 | **1** | hojas de ~16 descendentes → `detectRun` + invertir |
-| `RandomUniform` | 62.500 | 16 | **1** (≈99,99 %) | Poisson(16), `P(X>32) ≈ 10⁻⁴` |
-| `NormalGaussian` | 62.500 | 16 | 1–2 | colas ⟹ bins vacíos, ahora descartados |
-| `Concentrated` | 62.500 | 16 | 2–3 | el cúmulo estrecho concentra la masa; CC2 lo resuelve al bajar |
-| `HugeRangeFewEl` | 62.500 | ~2·10¹³ | 1–2 | span enorme, tope inactivo |
-| `FullRangeExtremes` | 62.500 | ~2·10¹⁴ | **1–2** | hoy 3 por el desbordamiento; con §2.1 debe igualar a `HugeRangeFewEl` |
-| `AdversarialPeeling` | 62.500 | — | **≤ 66** | hoy tope 6 + 9.346 hojas a QuickSort; con CC1 debe dar **cero** hojas a sort por comparación |
-
-**Comparaciones previstas en `RandomUniform`:** hojas de tamaño medio
-`λ=16` ⟹ `n·λ/4 ≈ 4,0 M`, frente a los **12,15 M** medidos en v8. La
-predicción del modelo para `target=19` era 4,75 M y lo medido fue 4,0 M
-(`ANALYSIS_v5.md` §2.1), así que el modelo está calibrado en este
-régimen.
+**Restricción obligatoria (§2.2):** cualquier `target` elegido debe
+mantenerse **muy por debajo de 1024**, o el término superlineal reaparece.
+Con los valores del barrido no hay riesgo, pero la comprobación debe
+quedar escrita en `Config.hpp`.
 
 ---
 
-## 8. Parámetros abiertos y cómo se cierran
+## 6. Pasos eliminados del plan, y por qué
 
-Los tres parámetros están **abiertos a propósito**. La revisión adversaria
-(`REVIEW_...`, C-A y H-9) estableció que:
-
-- el cálculo teórico que fijaba `t ∈ [16,32]` era **incorrecto**, y
-  corregido pide `t → 1`;
-- la medición de v5 pidió `t ≈ 19`;
-- las dos discrepan porque el modelo de coste teórico (`Θ(m+s)`) ignora
-  caché y TLB, que es justo lo que decide `S_max`.
-
-**Esta especificación no resuelve esa contradicción por decreto.** Fija
-valores iniciales para poder implementar, y los cierra con un barrido.
-
-**Barrido obligatorio (paso 6 del plan):** `λ × t × S_max` sobre
-`{4,8,16,24,32} × {16,32,64} × {2¹¹, 2¹⁴, 2¹⁶, ∞}`, los ocho datasets,
-midiendo **contadores deterministas además del tiempo**:
-`comparisons`, `bins`, `workByDepth`, profundidad máxima, hojas por
-categoría. `S_max = ∞` es una configuración válida y recupera el
-comportamiento de un solo nivel.
-
-**Criterio de cierre:** se elige el punto que minimiza el tiempo mediano
-en `RandomUniform` sin empeorar ningún otro dataset respecto de v8. Si
-no existe tal punto, se documenta y se decide explícitamente, no por
-omisión.
-
----
-
-## 9. Instrumentación necesaria
-
-Sin esto no se puede validar la especificación:
-
-1. **Corregir `addApproxMemory()`** para contabilizar `bucketOfScratch_`
-   y la arena. Hoy subestima ~50 % y por tanto la tabla de §5.4 no es
-   verificable con la métrica del proyecto.
-2. **Contadores nuevos:** abanico `s` por nivel, bits consumidos
-   (`Σ log₂ s` por camino), profundidad máxima alcanzada, hojas por
-   categoría (monovaluada / caso base), buckets vacíos descartados.
-3. **Aserciones de invariante** (compilación de depuración):
-   `I-TESELADO` (`Σ count de hojas == n` y `start` estrictamente
-   creciente), `I-RANGO`, `I-HOJA`, profundidad `≤ 66`.
-4. **Predicción crítica de CC1/CC7:** `algorithmUsage()` **no debe
-   registrar jamás** `QuickSort` ni `Introsort`. Si lo hace, el
-   Teorema 4 está mal aplicado y hay que parar.
-5. **Dataset adversario ausente.** Ninguno de los ocho datasets activa el
-   peor caso (grupos que pierden un elemento por nivel; ver
-   `REVIEW_...` Teorema 9'). Hay que construir el generador, o el peor
-   caso de v9 seguirá sin verificarse — igual que el de v8.
-6. **Caso límite de rango completo:** un dataset que contenga
-   `INT64_MIN` y `INT64_MAX` con más de `t` elementos.
-   **[AÑADIDO en el paso 0: `fullRangeExtremes`.]** Su justificación,
-   corregida tras medirlo: el desbordamiento **no** produce una hoja
-   gigante (la revisión ya había demostrado que no puede encadenarse);
-   cuesta **2 pasadas O(n) desperdiciadas, +43 % de tiempo a igualdad de
-   comparaciones**, y es **la única violación conocida del Lema 1** — de
-   la cual depende que quitar el tope de profundidad (CC1) sea seguro.
-   Ésa, y no el peor caso, es la razón por la que §2.1 es prerrequisito.
-
----
-
-## 10. Riesgos
-
-| Riesgo | Mitigación |
+| Paso anterior | Motivo de la eliminación |
 |---|---|
-| Un fallo en la aritmética de span produce recursión profunda al no haber tope | Aserción `profundidad ≤ 66`; Propiedades 1 y 2 verificadas antes de implementar |
-| `scratch` sin inicializar ⟹ lectura de memoria no inicializada si I-TESELADO falla | Aserción de teselado en depuración; ejecución bajo sanitizers en el paso 1 |
-| `S_max` pequeño obliga a niveles extra en datos que se resolvían en uno | `S_max = ∞` es configuración válida; el barrido lo decide |
-| Muchos `memcpy` pequeños (uno por hoja) en vez de pocos grandes | Alternativa especificada: coalescer hojas consecutivas del mismo buffer. Requiere lista de hojas ⟹ solo si el barrido lo justifica |
-| `bucketOf` en `uint32_t` limita `n < 2³²` | Aserción explícita; el proyecto mide hasta `5·10⁶` |
-| **`SortedAscending` es ahora el peor caso relativo (6,02x vs `std::sort`) y v9 no lo mejora por construcción** | Detectado en el paso 0 (`BASELINE_v8.md` §5): la `std::sort` de libc++ resuelve un millón de enteros ordenados en 0,73 ms; DRS hace como mínimo 3 pasadas. **Decidir explícitamente en el paso 6 si se acepta**, en vez de descubrirlo al final. Una detección de "ya ordenado" sería una heurística nueva, fuera del alcance de v9 |
-| `λ` pequeño ⟹ más bins ⟹ más presión de TLB en la pasada de colocación | Es exactamente lo que mide el barrido de §8 |
+| **CC1 — refinamiento terminal** | [MEDIDO] Refutado por O8. No gana en ningún punto del barrido de peor caso; pierde hasta +109 %. El problema que resolvía no existe a `target = 64`. |
+| **CC7 — borrar los seis sorts** | Caía con CC1. Con el tope puesto, QuickSort e Introsort se ejecutan 9.346 veces: no son código muerto. |
+| **CC8 — unificar `distribute()` y `refine()`** | **No tiene criterio medible.** Su justificación era evitar que los dos caminos volvieran a divergir, que es un argumento de mantenimiento, no de comportamiento. Tras CC-B ambos aplican ya la misma regla. Si los pasos 6 y 7 dejan las dos funciones idénticas, unificarlas será limpieza gratuita en ese momento; no merece un paso propio. |
 
 ---
 
-## 11. Plan de implementación
+## 7. Limitaciones conocidas que v9 NO resuelve
 
-Cada paso es independiente y **medible**; ninguno avanza sin que el
-anterior pase. Todos contra la línea base v8 re-medida **en esta máquina**
-(los números históricos son de un Xeon x86 con GCC; ésta es arm64 con
-Apple clang).
+Se declaran aquí para que no se descubran al final:
 
-| # | Paso | Criterio de aceptación |
+1. **`SortedAscending`, 6,02x más lento que `std::sort`.** [MEDIDO] Es el
+   peor dataset de la batería y **ningún paso restante lo mejora**. DRS
+   hace como mínimo tres pasadas (contar, colocar, copiar) donde libc++
+   resuelve en una. Arreglarlo exigiría una detección de «ya ordenado» en
+   `analyze()`, es decir **una heurística nueva** — fuera del alcance de
+   v9 y del tipo que v6 y v7 eliminaron por perjudicial. Se acepta
+   explícitamente.
+2. **`SortedDescending` (3,96x) y `ManyRepeated` (1,76x)** por la misma
+   razón. `ManyRepeated` sí mejorará en comparaciones con el paso 5, pero
+   su tiempo está dominado por el movimiento de datos, no por comparar.
+3. **El peor caso de DRS sigue sin estar acotado experimentalmente para
+   `target ≥ 1024`.** §2.2 dice que ahí reaparece el término superlineal;
+   no se ha construido el adversario que lo demuestre.
+4. **El reparto por fase en esta máquina es desconocido** hasta el paso 4.
+   Todo lo que este documento dice sobre dónde conviene optimizar es
+   provisional hasta entonces.
+
+---
+
+## 8. Reglas de trabajo (vigentes, y por qué)
+
+Derivadas de los errores cometidos en los pasos 1–3, no de principios
+generales:
+
+1. **Una hipótesis, una implementación, una medición, una decisión
+   binaria.** Sin excepciones.
+2. **Medir el terreno ANTES de fijar el criterio.** El paso 2 falló su
+   criterio por aplicar un umbral a un denominador que no había
+   descompuesto. El paso 3 pasó su criterio y aun así hubo que
+   revertirlo.
+3. **El criterio debe medir que el cambio SIRVA, no sólo que FUNCIONE.**
+   Es el error exacto del paso 3: el criterio comprobaba que CC1 hiciera
+   lo que decía, no que eso mejorara nada.
+4. **Comparar siempre alternando** las dos versiones en la misma sesión.
+   Comparar tandas recogidas por separado dio un falso +8,8 % en el
+   paso 1.
+5. **Preferir contadores deterministas al reloj.** Son exactos; el reloj
+   no resuelve por debajo del 6 % aquí, ni por debajo del 18 % en
+   `ManyRepeated`.
+6. **Un enunciado asintótico no es una motivación** hasta que se
+   comprueba que es relevante a las constantes reales. La revisión
+   adversaria encontró este patrón tres veces (C-A, C-C, C-E) y O8 lo
+   encontró una cuarta.
+
+---
+
+## 9. Estado y siguiente acción
+
+| Paso | Contenido | Estado |
 |---|---|---|
-| 0 | Re-medir v8 en esta máquina; añadir los dos datasets de §9.5–9.6 | **COMPLETADO** — ver `BASELINE_v8.md`. Criterio corregido: el dataset de rango completo debe mostrar profundidad estrictamente mayor y tiempo ≥ 15 % superior al de un control pareado, a igualdad de comparaciones (medido: 3 vs 1, +43 %) |
-| 1 | Aritmética de span + eliminar el recorte (sin más cambios) | `make test` pasa; `FullRangeExtremes` baja de 20,3 ms a ≈ 14 ms y su profundidad de 3 a 1; **ningún otro dataset se mueve más del 6 %** (umbral de ruido medido) |
-| 2 | CC2 (tope de abanico por span) en `refine()` | `ManyRepeated` y `SmallRangeManyEl` bajan a profundidad 1; comparaciones caen |
-| 3 | CC1 + CC7 (quitar el tope de profundidad; borrar los 6 sorts) | `algorithmUsage()` sin `QuickSort`/`Introsort` en ningún dataset; profundidad máxima ≤ 66 |
-| 4 | CC5 + CC4 (sin árbol; certificado de ordenado; hojas en orden) | Aserción de teselado activa y verde; asignaciones por `sort()` caen a O(1) |
-| 5 | CC6 + CC8 (`data` como buffer; un solo camino de código) | Memoria auxiliar medida ≈ `n·12` bytes; `distribute` ya no existe como fase |
-| 6 | CC3 + barrido `λ × t × S_max` (§8) | Parámetros cerrados con datos, no por criterio |
-| 7 | Informe v9 | Solo si hay algo que justificar; no un documento por defecto |
+| 0 | Línea base + dos datasets | **Hecho** (`BASELINE_v8.md`) |
+| 1 | CC-A: aritmética de span | **Hecho, aceptado** (`STEP1_span.md`) |
+| 2 | CC-B: tope de abanico | **Hecho, aceptado** (`STEP2_fanout_cap.md`) |
+| 3 | CC1 + CC7 | **Revertido** (`O8_resolucion_y_reversion_paso3.md`) |
+| 4 | Medición: fases, asignaciones, memoria, I-TESELADO | **Siguiente** |
+| 5 | CC-C: certificado de ordenado | Pendiente, motivación firme |
+| 6 | CC-D: asignaciones por llamada | Pendiente, **condicionado al paso 4** |
+| 7 | CC-E: `data` como buffer | Pendiente, criterio de memoria |
+| 8 | CC-F: barrido `λ × t` | Pendiente, empieza por medir |
 
-**Los pasos 1–3 son los que aportan la mejora conceptual.** Los pasos
-4–6 la hacen barata. Si el paso 3 falla —si aparece una hoja grande no
-monovaluada— hay que **detenerse** y revisar el Teorema 4, no añadir un
-tope de profundidad de vuelta.
+**Siguiente acción: paso 4.** No toca el algoritmo. Su resultado decide
+si los pasos 6 y 7 siguen existiendo.
