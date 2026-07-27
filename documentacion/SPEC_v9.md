@@ -42,7 +42,7 @@ profundidad y el despachador de ordenación local **siguen intactos**.
 | ¿Debe existir todavía `localSort()`? | Sí, colapsado a Insertion Sort | **Sí, con su despachador completo.** Con el tope puesto, QuickSort e Introsort **no** son inalcanzables: se ejecutan 9.346 veces en el adversario de núcleo 64. |
 | ¿Puede el refinamiento completarlo todo por sí solo? | Sí pero no debe | **Sí, y demostrablemente no conviene.** [MEDIDO] |
 | ¿Cómo queda el flujo? | Un solo recorrido en profundidad | **Igual que en v8**, salvo la aritmética de span y el tope de abanico. |
-| ¿Qué estructuras nuevas hacen falta? | Arena; un buffer menos | **[ABIERTO]** — sólo si el paso 4 demuestra que las asignaciones pesan. |
+| ¿Qué estructuras nuevas hacen falta? | Arena; un buffer menos | **Ambas siguen vivas** [MEDIDO]: 3 asignaciones por subdivisión (22.000–24.500 por `sort()`) y `merge` pesa 31–37 % en dos datasets. |
 | ¿Qué se puede eliminar? | ~40 % del algoritmo | **Nada más, por ahora.** Lo eliminado hasta hoy: el recorte de índice y los buckets inalcanzables. |
 | ¿Qué hay que reescribir de cero? | 60 % del `.tpp` | **Nada.** Los cambios restantes son locales. |
 
@@ -123,8 +123,9 @@ Los que se han demostrado y siguen en pie tras O8:
 - **I-RANGO.** `0 ≤ i(v) ≤ s−1` sin necesidad de recorte (Propiedad 2 de
   `STEP1_span.md`). Verificado bajo ASan sobre 19 casos límite.
 - **I-TESELADO.** Las hojas teselan `[0, n)` en orden ascendente y cada
-  hoja está ya en su posición final. *No comprobado por aserción todavía*
-  — pendiente del paso 4.
+  hoja está ya en su posición final. **[MEDIDO]** Verificado por aserción
+  activa (`pos == node.start` por hoja, `pos == n` al final) en los diez
+  datasets a n = 10⁵ y 10⁶; ninguna se disparó. Precondición del paso 7.
 - **I-PROGRESO.** Toda subdivisión produce ≥ 2 buckets no vacíos, luego
   `max hijo ≤ m − 1`.
 - **I-BITS.** Cada nivel de refinamiento consume ≥ 1 bit del span, luego
@@ -133,48 +134,85 @@ Los que se han demostrado y siguen en pie tras O8:
 
 ---
 
-## 4. Paso 4 — Medición, sin cambios en el algoritmo
+## 4. Paso 4 — Medición [HECHO]
 
-**Es obligatorio y va primero.** Los pasos que quedan son conjeturas sobre
-dónde se va el tiempo *en esta máquina*, y **el reparto por fase nunca se
-ha medido aquí**: los porcentajes que la especificación anterior usaba
-(distribute 46,8 %, localSort 34,1 %, refine 13,7 %, merge 4,1 %) son del
-Xeon con GCC, y §2.1 ya demostró que los ratios de esa máquina no
-transfieren.
+Detalle en `STEP4_profile.md`. Los cuatro entregables existen y son
+reproducibles (`make profile`). El algoritmo no cambió de comportamiento:
+contadores deterministas idénticos a los del paso 2.
 
-**Entregables:**
+### 4.1 Reparto de tiempo por fase [MEDIDO]
 
-1. **Reparto de tiempo por fase** (`analyze`, `distribute`, `refine`,
-   `localSort`, `merge`) para los diez datasets. La instrumentación ya
-   existe (`DRSMetrics::startPhase/endPhase`); nadie la ha tabulado aquí.
-2. **Número de asignaciones de heap por `sort()`**. Determina si CC-D
-   merece existir. Estimación a confirmar: ~7.350 vectores de hijos +
-   ~14.700 de `bucketStart`/`bucketSize` ≈ 22.000 por `sort()` en
-   `RandomUniform`.
-3. **Reparación de `addApproxMemory()`**, que no contabiliza
-   `bucketOfScratch_` y subestima el consumo real en ~50 %. Sin esto, el
-   criterio de CC-E no es medible con la métrica del proyecto.
-4. **Aserción de I-TESELADO** en compilación de depuración
-   (`Σ count de hojas == n` y `start` estrictamente creciente). Es
-   prerrequisito de CC-E, que depende de ese invariante para escribir la
-   salida en el sitio.
+`n = 10⁶`, `target = 64`, mediana de 7, rango sobre 3 ejecuciones. Las
+fases suman 97–101 % del total.
 
-**Criterio de aceptación:** que los cuatro entregables existan y sean
-reproducibles. No hay decisión binaria sobre el algoritmo porque el
-algoritmo no se toca.
+| Dataset | total | analyze | distribute | refine | **localSort** | merge |
+|---|---|---|---|---|---|---|
+| RandomUniform | 13,73 | 1 % | 14–16 % | 16 % | **60–62 %** | 4 % |
+| SortedAscending | 4,39 | 3 % | **74–75 %** | 2 % | 11–12 % | 8 % |
+| SortedDescending | 4,88 | 3 % | **73–75 %** | 2 % | 13–14 % | 6–8 % |
+| ManyRepeated | 4,27 | 3–4 % | 44–54 % | 3–4 % | 8–9 % | **31–34 %** |
+| NormalGaussian | 14,27 | 1 % | 12–14 % | 21–24 % | **56–60 %** | 4–5 % |
+| Concentrated | 6,76 | 2 % | 45–46 % | 26–28 % | 6–7 % | **18–19 %** |
+| SmallRangeManyEl | 3,32 | 4 % | 39–45 % | 4 % | 11 % | **34–37 %** |
+| HugeRangeFewEl | 13,71 | 1 % | 14–15 % | 15 % | **64 %** | 4 % |
+| FullRangeExtremes | 13,70 | 1 % | 15–16 % | 15 % | **63–64 %** | 4 % |
+| AdversarialPeeling | 38,39 | 0 % | 5–6 % | **56 %** | 34–35 % | 2 % |
 
-**Lo que decide:** cada uno de los pasos 5–8 sigue vivo sólo si este paso
-muestra que su magnitud objetivo es suficiente para superar el umbral del
-6 %. Cualquiera que no lo supere se elimina del plan aquí mismo, sin
-implementarlo.
+**Los porcentajes de la máquina histórica no transfieren, y por mucho.**
+`RandomUniform`: `distribute` 46,8 % → **14,3 %**; `localSort` 34,1 % →
+**61,4 %**. Coherente con el hardware — `distribute` está limitado por
+memoria y el M4 la resuelve mucho mejor; `localSort` es Insertion Sort,
+limitado por cómputo.
+
+### 4.2 Asignaciones de heap por `sort()` [MEDIDO]
+
+Exactamente **3 por subdivisión** (`bucketStart`, `bucketSize`, vector de
+hijos), como se estimaba. Pero el reparto importa más que el total:
+
+| Grupo | asignaciones |
+|---|---|
+| `RandomUniform`, `NormalGaussian`, `HugeRangeFewEl`, `FullRangeExtremes` | 22.000–24.500 |
+| `AdversarialPeeling` | 168.293 |
+| `Concentrated` | 50 |
+| **`ManyRepeated`, `SmallRangeManyEl`, `SortedAscending`, `SortedDescending`** | **27–38** |
+
+Los cuatro datasets con `merge` alto **no tienen subdivisiones**, luego el
+paso 6 no puede ayudarles en absoluto.
+
+### 4.3 Instrumentación reparada y verificada
+
+- `addApproxMemory()` ya contabiliza los scratch. La cifra pasa de ~16 MB
+  a **22,89 MB exactos** para `ManyRepeated` (= `2n·8 + n·8`): la
+  subestimación era del **48 %**, exactamente lo predicho.
+- **I-TESELADO verificado experimentalmente por primera vez**: aserciones
+  activas (`pos == node.start` por hoja, `pos == n` al final) en los diez
+  datasets a n = 10⁵ y 10⁶, `make test` y sanitizers. Ninguna se disparó.
+  Es la precondición de corrección del paso 7.
 
 ---
 
 ## 5. Pasos restantes
 
-Cada uno lleva su motivación **posterior a O8** y su criterio en
-contadores deterministas siempre que sea posible, porque el reloj de esta
-máquina no resuelve por debajo del 6 %.
+Cada uno lleva su motivación **posterior a O8**, ahora además contrastada
+con el reparto por fase de §4.1, y su criterio en contadores
+deterministas siempre que sea posible.
+
+> **Reordenación decidida por el paso 4.** El orden anterior
+> (5 → 6 → 7 → 8) dejaba en último lugar el paso que ataca la fase
+> dominante. El nuevo orden es **4b → (5, 6, 7 según lo que diga 4b)**:
+>
+> **Paso 4b = Fase A del paso 8**, un barrido de `targetElementsPerBin`
+> que **no necesita ningún cambio de código** (es parámetro del
+> constructor desde v3). Va primero porque ataca el 60–64 % del tiempo,
+> porque su riesgo es nulo, y sobre todo porque **de-riesga a los otros
+> tres**: bajar `λ` sube el número de bins y baja el tamaño de hoja, es
+> decir cambia la magnitud objetivo de los pasos 6 y 7. Optimizar antes
+> contra un reparto de fases que va a dejar de existir sería trabajo
+> tirado.
+>
+> El argumento original para dejar el 8 al final («que el barrido
+> encuentre el λ\* de la implementación definitiva») sigue siendo válido
+> para su **Fase B**, la implementación, que se mantiene al final.
 
 ### Paso 5 — CC-C: certificado de «ya ordenado»
 
@@ -190,8 +228,15 @@ coste es exactamente visible en los contadores actuales:
 | Concentrated | 993.445 | mayoritariamente lo mismo |
 
 **En `ManyRepeated`, el 100 % de las comparaciones del algoritmo son este
-reescaneo redundante.** Es la magnitud más grande y mejor identificada que
-queda en el proyecto, y no dependía de CC1 en ningún momento.
+reescaneo redundante**, y no dependía de CC1 en ningún momento.
+
+**Magnitud real, acotada por §4.1:** el reescaneo vive dentro de
+`localSort`, que en esos datasets pesa **8–9 %** (`ManyRepeated`),
+**11 %** (`SmallRangeManyEl`) y **6–7 %** (`Concentrated`). Es decir: la
+ganancia máxima ronda el 10 % en tres datasets y cero en los otros siete.
+Roza el umbral de significación. **Comparaciones ≠ tiempo**, y conviene no
+repetir el error del paso 2 de confundir una magnitud grande en unidades
+con una magnitud grande en tiempo.
 
 **Hipótesis única:** propagar el hecho de que un bin es monovaluado
 elimina el reescaneo.
@@ -219,8 +264,11 @@ Dos partes, que van juntas porque atacan el mismo coste:
 porcentaje medible del tiempo.
 **Criterio único:** asignaciones por `sort()` de ~22.000 a O(1), **y**
 mejora ≥ 6 % en `RandomUniform` medida alternando.
-**Se elimina del plan si** el paso 4 mide que las asignaciones cuestan
-menos del 6 %.
+**Alcance medido (§4.2), mucho más estrecho de lo previsto:** sólo cinco
+datasets tienen subdivisiones. `ManyRepeated`, `SmallRangeManyEl`,
+`SortedAscending` y `SortedDescending` hacen **menos de 40 asignaciones en
+total**: este paso no puede hacer nada por ellos. El objetivo real es la
+fase `refine`, que pesa **16 %** en los cuatro datasets sin redundancia.
 
 > **Advertencia tomada del paso 2:** reducir el número de bins en un 50 %
 > no produjo ningún efecto medible. Que una magnitud sea grande en
@@ -242,13 +290,18 @@ a `data`. Usando `data` como uno de los dos buffers:
 Por I-TESELADO, además, una hoja que quede en `data` **ya está en su
 sitio**: la fase `merge` sólo copia las hojas de paridad impar.
 
+> **Corrección obligada por el paso 4.** La versión anterior de este
+> documento decía «el criterio es de memoria, no de tiempo; `merge` era el
+> 4,1 %». **Es falso en esta máquina:** `merge` pesa **31–37 %** en
+> `ManyRepeated` y `SmallRangeManyEl`, y **18–19 %** en `Concentrated`
+> (§4.1). Este paso pasa de ser cosmético a ser el segundo de mayor valor.
+
 **Hipótesis única:** la memoria auxiliar baja un tercio y la fase `merge`
-copia aproximadamente la mitad de los elementos.
-**Criterio único:** `approxMemoryBytes()` (ya reparado en el paso 4) baja
-según la tabla, **y** correctitud intacta con la aserción de I-TESELADO
-activa. **El criterio es de memoria, no de tiempo**: la fase `merge` era
-el 4,1 % del total en la máquina histórica, así que no se espera —ni se
-exige— efecto temporal.
+deja de copiar las hojas que ya están en `data`.
+**Criterio único:** `approxMemoryBytes()` (ya reparado y verificado en el
+paso 4) baja según la tabla, **y** `ManyRepeated` o `SmallRangeManyEl`
+mejoran ≥ 6 % medido alternando, **y** la aserción de I-TESELADO sigue sin
+dispararse.
 **Riesgo:** es el cambio con más riesgo de corrección de los que quedan.
 Escribir la salida de una hoja mientras hay bins pendientes en `data`
 exige que los rangos sean disjuntos, que es exactamente I-TESELADO. Por
@@ -355,11 +408,13 @@ generales:
 | 1 | CC-A: aritmética de span | **Hecho, aceptado** (`STEP1_span.md`) |
 | 2 | CC-B: tope de abanico | **Hecho, aceptado** (`STEP2_fanout_cap.md`) |
 | 3 | CC1 + CC7 | **Revertido** (`O8_resolucion_y_reversion_paso3.md`) |
-| 4 | Medición: fases, asignaciones, memoria, I-TESELADO | **Siguiente** |
-| 5 | CC-C: certificado de ordenado | Pendiente, motivación firme |
-| 6 | CC-D: asignaciones por llamada | Pendiente, **condicionado al paso 4** |
-| 7 | CC-E: `data` como buffer | Pendiente, criterio de memoria |
-| 8 | CC-F: barrido `λ × t` | Pendiente, empieza por medir |
+| 4 | Medición: fases, asignaciones, memoria, I-TESELADO | **Hecho** (`STEP4_profile.md`) |
+| **4b** | **Fase A del 8: barrido de `target`, sin cambios de código** | **Siguiente** |
+| 5 | CC-C: certificado de ordenado | Pendiente. Techo medido ~10 %, en 3 datasets |
+| 6 | CC-D: asignaciones por llamada | Pendiente. Objetivo: `refine`, 16 %, en 4 datasets |
+| 7 | CC-E: `data` como buffer | Pendiente. **Sube de prioridad**: `merge` es 31–37 %, no 4 % |
+| 8 | CC-F Fase B: implementar la separación `λ`/`t` | Pendiente, al final por diseño |
 
-**Siguiente acción: paso 4.** No toca el algoritmo. Su resultado decide
-si los pasos 6 y 7 siguen existiendo.
+**Siguiente acción: paso 4b.** No toca el algoritmo — `target` ya es
+parámetro del constructor. Su resultado fija el orden real de los pasos
+5, 6 y 7, porque bajar `λ` cambia la magnitud objetivo de todos ellos.

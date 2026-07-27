@@ -4,6 +4,7 @@
 // meant to be included directly.
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <utility>
 
@@ -530,6 +531,11 @@ template <typename T>
 void DynamicRangeSort<T>::mergeRefined(const RefinedRange& node, std::vector<T>& out,
                                         std::size_t& pos) const {
     if (node.isLeaf()) {
+        // I-TESELADO, paso inductivo: las hojas se visitan en orden y cada una
+        // ocupa YA su posicion final, luego el cursor de escritura coincide
+        // siempre con el inicio de la hoja. Nunca se habia escrito, y el
+        // cursor 'pos' es por tanto redundante. Ver SPEC_v9.md, paso 4.
+        assert(pos == node.start && "I-TESELADO: hoja fuera de su posicion final");
         const std::vector<T>& buf = node.inBufferA ? bufferA_ : bufferB_;
         for (std::size_t i = node.start; i < node.start + node.count; ++i) {
             out[pos++] = buf[i];
@@ -605,6 +611,22 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
     }
 #ifdef DRS_ENABLE_METRICS
     metrics_.endPhase("merge");
+#endif
+
+    // I-TESELADO: las hojas cubren exactamente [0, n) en orden ascendente.
+    // mergeRefined() comprueba hoja a hoja que pos == node.start; aqui se
+    // cierra la induccion. Es la precondicion de correccion del paso 7 de
+    // SPEC_v9.md (usar 'data' como uno de los dos buffers), que depende de
+    // que los rangos de las hojas sean disjuntos y esten en su sitio.
+    assert(pos == data.size() && "I-TESELADO: las hojas no cubren [0, n)");
+
+#ifdef DRS_ENABLE_METRICS
+    // Los scratch reutilizados NO se contabilizaban, lo que hacia que la
+    // metrica de memoria subestimase el consumo real en ~50% desde v7 (ver
+    // ANALYSIS_v9_propuesta.md 3.5). Se anaden al final, una sola vez, con
+    // su capacidad final: son estructuras persistentes durante todo sort().
+    metrics_.addApproxMemory(bucketOfScratch_.capacity() * sizeof(std::size_t) +
+                              writeCursorScratch_.capacity() * sizeof(std::size_t));
 #endif
 }
 

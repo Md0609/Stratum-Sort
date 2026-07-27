@@ -39,10 +39,11 @@ VERSION_HEADERS := algoritmo/versions/DRSv1.hpp algoritmo/versions/DRSv2.hpp \
 COMMON_HEADERS := $(ALGO_HEADERS) benchmarks/SystemInfo.hpp benchmarks/BenchmarkRunner.hpp \
                    analisis/Statistics.hpp datasets/DatasetGenerator.hpp
 
-.PHONY: all test benchmarks experiments analysis overhead baseline clean
+.PHONY: all test benchmarks experiments analysis overhead baseline profile clean
 
 all: build/drs_tests build/drs_benchmarks build/drs_experiments build/drs_analysis \
-     build/drs_overhead_production build/drs_overhead_research build/drs_baseline_v8
+     build/drs_overhead_production build/drs_overhead_research build/drs_baseline_v8 \
+     build/drs_profile
 
 # ---- Production-configuration binary (correctness only, no metrics) -------
 build/drs_tests: tests/main.cpp $(COMMON_HEADERS)
@@ -83,11 +84,19 @@ build/drs_baseline_v8: benchmarks/BaselineV8.cpp $(COMMON_HEADERS)
 	mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/BaselineV8.cpp -o build/drs_baseline_v8
 
+# ---- Perfil por fase y recuento de asignaciones (SPEC_v9.md, paso 4) -------
+build/drs_profile: benchmarks/PhaseAndAllocProfile.cpp $(COMMON_HEADERS)
+	mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/PhaseAndAllocProfile.cpp -o build/drs_profile
+
 test: build/drs_tests
 	./build/drs_tests
 
 baseline: build/drs_baseline_v8
 	./build/drs_baseline_v8
+
+profile: build/drs_profile
+	./build/drs_profile
 
 benchmarks: build/drs_benchmarks
 	./build/drs_benchmarks
