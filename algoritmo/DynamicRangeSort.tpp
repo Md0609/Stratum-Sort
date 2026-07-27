@@ -241,15 +241,36 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
         return node;
     }
 
-    // splits = ceil(count / targetElementsPerBin). Always >= 2 here, because
-    // this point is only reached when count > targetElementsPerBin_.
-    const std::size_t splits = (count + targetElementsPerBin_ - 1) / targetElementsPerBin_;
-
     // observedSpan = observedMax - observedMin, over this bin's own observed
-    // range only. Never overflows; and with splits >= 2 the width below is at
-    // most 2^63, so it cannot overflow either.
+    // range only. Never overflows, and is >= 1 here (the == case returned above).
     const uint64_t observedSpan =
         static_cast<uint64_t>(observedMax) - static_cast<uint64_t>(observedMin);
+
+    // splits = ceil(count / targetElementsPerBin), capped by the number of
+    // distinct values this bin can possibly hold (observedSpan + 1).
+    //
+    // This is the same cap computeRangeParameters() has always applied at the
+    // top level, and which refine() never did - an asymmetry that was never
+    // justified anywhere. Buckets beyond index observedSpan are UNREACHABLE:
+    // no value in this bin can ever map to them. Without the cap they are
+    // still allocated, zeroed, prefix-summed, iterated and recorded as empty
+    // leaves.
+    //
+    // The cap cannot change the partition. It only binds when
+    // observedSpan < splits, and then the width is
+    //   W  = observedSpan / splits + 1 = 0 + 1 = 1
+    // while after capping
+    //   W' = observedSpan / (observedSpan + 1) + 1 = 0 + 1 = 1.
+    // Identical width => identical value-to-bucket assignment => identical
+    // leaves. Only the unreachable tail of empty buckets disappears.
+    //
+    // splits stays >= 2: when the cap binds, splits becomes observedSpan + 1,
+    // and observedSpan >= 1 here.
+    std::size_t splits = (count + targetElementsPerBin_ - 1) / targetElementsPerBin_;
+    if (observedSpan < static_cast<uint64_t>(splits)) {
+        splits = static_cast<std::size_t>(observedSpan + 1ULL);
+    }
+
     const uint64_t newIntervalSize = observedSpan / static_cast<uint64_t>(splits) + 1ULL;
 
 #ifdef DRS_ENABLE_METRICS

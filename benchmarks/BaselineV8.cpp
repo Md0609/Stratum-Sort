@@ -99,8 +99,9 @@ int main() {
                   << "DRS(ms)" << std::setw(9) << "sd" << std::setw(10) << "std(ms)"
                   << std::setw(8) << "ratio" << std::setw(6) << "OK" << std::setw(9) << "prof"
                   << std::setw(11) << "maxHoja" << std::setw(9) << "Intro" << std::setw(9)
-                  << "Quick" << std::setw(14) << "Comparac." << "\n";
-        std::cout << std::string(115, '-') << "\n";
+                  << "Quick" << std::setw(14) << "Comparac." << std::setw(11) << "bins"
+                  << std::setw(11) << "vacios" << "\n";
+        std::cout << std::string(137, '-') << "\n";
 
         for (const Case& c : allCases()) {
             DatasetGenerator gen; // semilla fija: mismo dataset en cada ejecucion
@@ -116,7 +117,8 @@ int main() {
                       << std::setw(6) << (rep.correct ? "si" : "NO") << std::setw(9)
                       << m.maxSubdivisionDepth() << std::setw(11) << m.maxBinSize()
                       << std::setw(9) << usageOf(m, "Introsort") << std::setw(9)
-                      << usageOf(m, "QuickSort") << std::setw(14) << m.comparisons() << "\n";
+                      << usageOf(m, "QuickSort") << std::setw(14) << m.comparisons()
+                      << std::setw(11) << m.totalBins() << std::setw(11) << m.emptyBins() << "\n";
         }
         std::cout << "\n";
     }
