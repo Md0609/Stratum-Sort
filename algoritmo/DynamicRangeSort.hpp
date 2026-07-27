@@ -89,14 +89,19 @@ private:
     AnalysisResult analyze(const std::vector<T>& data) const;
 
     // ---- FORMULAS ---------------------------------------------------------
+    // The interval width is a magnitude, not a value of T: it is carried as
+    // uint64_t so it can represent widths that do not fit in T. See the
+    // comment on computeRangeParameters() in the .tpp for the span-based
+    // formulation and the two properties it relies on.
     void computeRangeParameters(const AnalysisResult& analysis, std::size_t& outBinCount,
-                                 T& outIntervalSize) const;
+                                 uint64_t& outIntervalSize) const;
 
-    std::size_t computeBinIndex(T value, T rangeStart, T intervalSize, std::size_t binCount) const;
+    std::size_t computeBinIndex(T value, T rangeStart, uint64_t intervalSize) const;
 
     // ---- DISTRIBUCION (primera+segunda pasada fusionadas) ------------------
-    void distribute(const std::vector<T>& data, T minimumValue, T intervalSize, std::size_t binCount,
-                     std::vector<std::size_t>& outBucketStart, std::vector<std::size_t>& outBucketSize);
+    void distribute(const std::vector<T>& data, T minimumValue, uint64_t intervalSize,
+                     std::size_t binCount, std::vector<std::size_t>& outBucketStart,
+                     std::vector<std::size_t>& outBucketSize);
 
     // Shared counting-sort-style distribution step used by distribute()
     // and every refine() split: counts how many elements of
@@ -105,8 +110,9 @@ private:
     // dstStart. Reuses scratch member vectors across calls instead of
     // allocating fresh ones each time (see ANALYSIS_v7.md, "4/7").
     void countAndPlace(const std::vector<T>& src, std::size_t srcStart, std::size_t count,
-                        std::vector<T>& dst, std::size_t dstStart, T rangeStart, T intervalSize,
-                        std::size_t numBuckets, std::vector<std::size_t>& outBucketStart,
+                        std::vector<T>& dst, std::size_t dstStart, T rangeStart,
+                        uint64_t intervalSize, std::size_t numBuckets,
+                        std::vector<std::size_t>& outBucketStart,
                         std::vector<std::size_t>& outBucketSize);
 
     // ---- REFINAMIENTO RECURSIVO (SUBDIVISION generalizada) ------------------

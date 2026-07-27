@@ -187,18 +187,25 @@ int main() {
         printWork(control);
         printWork(test);
 
+        // Predicado del defecto: el desbordamiento NO produce una hoja gigante
+        // (la revision demostro que el colapso no puede encadenarse). Lo que
+        // produce son niveles degenerados de mas: profundidad estrictamente
+        // mayor que el control y tiempo sensiblemente peor, a igualdad de
+        // comparaciones. Sin desbordamiento, ambas entradas deben comportarse
+        // igual porque tienen la misma forma.
         const bool deeper =
             test.metrics.maxSubdivisionDepth() > control.metrics.maxSubdivisionDepth();
         const bool slower = test.medianMs > control.medianMs * 1.15;
-        std::cout << "\n     => DEFECTO " << ((deeper && slower) ? "OBSERVADO" : "NO OBSERVADO")
-                  << ".\n";
-        std::cout << "        El desbordamiento NO provoca una hoja gigante (la revision ya\n";
-        std::cout << "        demostro que no puede encadenarse): colapsa el nivel 0 a un solo\n";
-        std::cout << "        bin y degenera un nivel de refine(), es decir ~2 pasadas O(n)\n";
-        std::cout << "        desperdiciadas. El coste medido es de +"
-                  << std::setprecision(0)
-                  << (control.medianMs > 0 ? (test.medianMs / control.medianMs - 1.0) * 100.0 : 0.0)
-                  << "% de tiempo a igualdad de comparaciones.\n";
+        const double pct =
+            control.medianMs > 0 ? (test.medianMs / control.medianMs - 1.0) * 100.0 : 0.0;
+        std::cout << "\n     => DEFECTO " << ((deeper && slower) ? "PRESENTE" : "AUSENTE") << ": "
+                  << std::setprecision(0) << (pct >= 0 ? "+" : "") << pct
+                  << "% de tiempo y profundidad " << test.metrics.maxSubdivisionDepth() << " vs "
+                  << control.metrics.maxSubdivisionDepth() << " del control.\n";
+        std::cout << "        PRESENTE => el rango se representa como max-min+1 y desborda:\n";
+        std::cout << "                    el nivel 0 colapsa a un solo bin y un nivel de\n";
+        std::cout << "                    refine() degenera (~2 pasadas O(n) desperdiciadas).\n";
+        std::cout << "        AUSENTE  => aritmetica de span (SPEC_v9 s2.1) en vigor.\n";
     }
 
     {

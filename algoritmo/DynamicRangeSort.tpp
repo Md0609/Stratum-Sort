@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <utility>
 
 namespace drs {
@@ -46,51 +45,67 @@ typename DynamicRangeSort<T>::AnalysisResult DynamicRangeSort<T>::analyze(
 // ============================================================
 // FORMULAS: range, initialBins, intervalSize, binIndex
 // ============================================================
+// The observed range is carried as its SPAN (max - min), never as
+// (max - min + 1). The +1 form needs w+1 bits and wraps to 0 exactly when
+// the data spans the whole universe (min = INT64_MIN, max = INT64_MAX),
+// which collapsed the top level to a single bin and degenerated one whole
+// refinement level - two wasted O(n) passes, measured at +43% time on
+// FullRangeExtremes (see BASELINE_v8.md, D1). The span never overflows.
+//
+// Every formula rewrites over the span:
+//
+//   single-valued  <=>  span == 0
+//   width          W  =  span / s + 1        (== ceil((span+1)/s), see below)
+//   index          i  =  (value - rangeStart) / W
+//
+// Property 1 (equivalence). With span = q*s + r, 0 <= r < s:
+//   ceil((span+1)/s) = q + ceil((r+1)/s) = q + 1 = span/s + 1, because
+//   1 <= r+1 <= s. So this matches the old formula wherever the old one
+//   did not overflow.
+//
+// Property 2 (the index is always in range, so no clamping is needed).
+//   s*W = s*floor(span/s) + s = (span - r) + s > span, hence span/W < s
+//   and floor(offset/W) <= s-1 for every offset in [0, span].
+// This holds for any s >= 1 provided W is computed exactly; W can only
+// overflow when s == 1 and span == 2^64-1, and countAndPlace() handles
+// s == 1 without computing an index at all (degenerate partition).
 template <typename T>
 void DynamicRangeSort<T>::computeRangeParameters(const AnalysisResult& analysis,
                                                   std::size_t& outBinCount,
-                                                  T& outIntervalSize) const {
+                                                  uint64_t& outIntervalSize) const {
     if (analysis.length == 0) {
         outBinCount = 0;
-        outIntervalSize = static_cast<T>(1);
+        outIntervalSize = 1;
         return;
     }
 
-    // range = maximumValue - minimumValue + 1
-    const uint64_t range = static_cast<uint64_t>(analysis.maximumValue) -
-                            static_cast<uint64_t>(analysis.minimumValue) + 1ULL;
+    const uint64_t span = static_cast<uint64_t>(analysis.maximumValue) -
+                           static_cast<uint64_t>(analysis.minimumValue);
 
-    // initialBins = ceil(length / targetElementsPerBin), capped by range: a
-    // bin narrower than one value can never be reached, so allocating and
-    // iterating it is pure waste.
+    // initialBins = ceil(length / targetElementsPerBin), capped by the number
+    // of distinct values (span + 1): a bin narrower than one value can never
+    // be reached, so allocating and iterating it is pure waste.
     std::size_t initialBins =
         (analysis.length + targetElementsPerBin_ - 1) / targetElementsPerBin_;
     if (initialBins == 0) initialBins = 1;
 
-    constexpr uint64_t kMaxSize = std::numeric_limits<std::size_t>::max();
-    const std::size_t rangeAsSize = range > kMaxSize ? std::numeric_limits<std::size_t>::max()
-                                                       : static_cast<std::size_t>(range);
-    initialBins = std::min(initialBins, rangeAsSize);
-    if (initialBins == 0) initialBins = 1;
-
-    // intervalSize = ceil(range / initialBins)
-    uint64_t intervalSize = (range + static_cast<uint64_t>(initialBins) - 1) /
-                             static_cast<uint64_t>(initialBins);
-    if (intervalSize == 0) intervalSize = 1;
+    // The cap can only bind when span < initialBins, and then span + 1 is a
+    // small number - it cannot overflow.
+    if (span < static_cast<uint64_t>(initialBins)) {
+        initialBins = static_cast<std::size_t>(span + 1ULL);
+    }
 
     outBinCount = initialBins;
-    outIntervalSize = static_cast<T>(intervalSize);
+    outIntervalSize = span / static_cast<uint64_t>(initialBins) + 1ULL;
 }
 
-// binIndex = floor((value - rangeStart) / intervalSize), clamped defensively
-// to [0, binCount - 1] to absorb rounding at the very last bin.
+// binIndex = floor((value - rangeStart) / intervalSize). No clamping: by
+// Property 2 above the result is always in [0, numBuckets - 1].
 template <typename T>
-std::size_t DynamicRangeSort<T>::computeBinIndex(T value, T rangeStart, T intervalSize,
-                                                   std::size_t binCount) const {
+std::size_t DynamicRangeSort<T>::computeBinIndex(T value, T rangeStart,
+                                                  uint64_t intervalSize) const {
     const uint64_t offset = static_cast<uint64_t>(value) - static_cast<uint64_t>(rangeStart);
-    std::size_t index = static_cast<std::size_t>(offset / static_cast<uint64_t>(intervalSize));
-    if (index >= binCount) index = binCount - 1;
-    return index;
+    return static_cast<std::size_t>(offset / intervalSize);
 }
 
 // ============================================================
@@ -115,14 +130,26 @@ std::size_t DynamicRangeSort<T>::computeBinIndex(T value, T rangeStart, T interv
 template <typename T>
 void DynamicRangeSort<T>::countAndPlace(const std::vector<T>& src, std::size_t srcStart,
                                          std::size_t count, std::vector<T>& dst,
-                                         std::size_t dstStart, T rangeStart, T intervalSize,
+                                         std::size_t dstStart, T rangeStart, uint64_t intervalSize,
                                          std::size_t numBuckets,
                                          std::vector<std::size_t>& outBucketStart,
                                          std::vector<std::size_t>& outBucketSize) {
+    // Degenerate partition: one bucket takes everything, so there is no index
+    // to compute. Handling it here is what lets computeBinIndex() drop its
+    // clamp - it is the only case where the width (span + 1) may not be
+    // representable. refine() never reaches it (its splits are always >= 2);
+    // only distribute() can, when the whole input fits in one bin.
+    if (numBuckets == 1) {
+        outBucketStart.assign(1, dstStart);
+        outBucketSize.assign(1, count);
+        for (std::size_t i = 0; i < count; ++i) dst[dstStart + i] = src[srcStart + i];
+        return;
+    }
+
     outBucketSize.assign(numBuckets, 0);
     if (bucketOfScratch_.size() < count) bucketOfScratch_.resize(count);
     for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t idx = computeBinIndex(src[srcStart + i], rangeStart, intervalSize, numBuckets);
+        const std::size_t idx = computeBinIndex(src[srcStart + i], rangeStart, intervalSize);
         bucketOfScratch_[i] = idx;
         ++outBucketSize[idx];
     }
@@ -146,8 +173,9 @@ void DynamicRangeSort<T>::countAndPlace(const std::vector<T>& src, std::size_t s
 // DISTRIBUCION (primera+segunda pasada fusionadas)
 // ============================================================
 template <typename T>
-void DynamicRangeSort<T>::distribute(const std::vector<T>& data, T minimumValue, T intervalSize,
-                                      std::size_t binCount, std::vector<std::size_t>& outBucketStart,
+void DynamicRangeSort<T>::distribute(const std::vector<T>& data, T minimumValue,
+                                      uint64_t intervalSize, std::size_t binCount,
+                                      std::vector<std::size_t>& outBucketStart,
                                       std::vector<std::size_t>& outBucketSize) {
     bufferA_.assign(data.size(), T{});
     bufferB_.assign(data.size(), T{});
@@ -204,7 +232,7 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
         if (cur[i] > observedMax) observedMax = cur[i];
     }
 
-    if (observedMin == observedMax) {
+    if (observedMin == observedMax) { // observedSpan == 0
         // Every element in this bin is identical: trivially sorted, and
         // the data does not even need to move.
 #ifdef DRS_ENABLE_METRICS
@@ -213,15 +241,16 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
         return node;
     }
 
-    // splits = ceil(count / targetElementsPerBin)
+    // splits = ceil(count / targetElementsPerBin). Always >= 2 here, because
+    // this point is only reached when count > targetElementsPerBin_.
     const std::size_t splits = (count + targetElementsPerBin_ - 1) / targetElementsPerBin_;
 
-    // observedRange = observedMax - observedMin + 1 (observed range only)
-    const uint64_t observedRange =
-        static_cast<uint64_t>(observedMax) - static_cast<uint64_t>(observedMin) + 1ULL;
-    uint64_t newIntervalSizeU64 = (observedRange + splits - 1) / splits;
-    if (newIntervalSizeU64 == 0) newIntervalSizeU64 = 1;
-    const T newIntervalSize = static_cast<T>(newIntervalSizeU64);
+    // observedSpan = observedMax - observedMin, over this bin's own observed
+    // range only. Never overflows; and with splits >= 2 the width below is at
+    // most 2^63, so it cannot overflow either.
+    const uint64_t observedSpan =
+        static_cast<uint64_t>(observedMax) - static_cast<uint64_t>(observedMin);
+    const uint64_t newIntervalSize = observedSpan / static_cast<uint64_t>(splits) + 1ULL;
 
 #ifdef DRS_ENABLE_METRICS
     metrics_.recordSubdivision(depth + 1);
@@ -510,7 +539,7 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
 #endif
 
     std::size_t binCount = 0;
-    T intervalSize{};
+    uint64_t intervalSize = 1;
     computeRangeParameters(analysis, binCount, intervalSize);
 
 #ifdef DRS_ENABLE_METRICS
@@ -588,7 +617,7 @@ std::vector<typename DynamicRangeSort<T>::LeafView> DynamicRangeSort<T>::debugPa
     const AnalysisResult analysis = analyze(data);
 
     std::size_t binCount = 0;
-    T intervalSize{};
+    uint64_t intervalSize = 1;
     computeRangeParameters(analysis, binCount, intervalSize);
 
     std::vector<std::size_t> bucketStart;
