@@ -1,5 +1,41 @@
 # Refinamiento terminal: ¿puede la partición adaptativa por rango observado ordenar por sí misma en tiempo lineal?
 
+> ## ⚠ ERRATA — leer antes que nada
+>
+> Una revisión adversaria posterior encontró **errores que invalidan
+> partes de este documento**. Está pendiente de reescritura. Ver
+> `REVIEW_refinamiento_terminal.md` para el informe completo.
+>
+> **Falso y retirado:**
+> - **§5.3 y §6.3** (óptimo de `t`): la fórmula `κ(t) = w/log₂(ct) + t/4`
+>   evalúa la profundidad en `m ≈ t` en vez de maximizar sobre el tamaño
+>   de grupo que elige el adversario. Corregida, la función es
+>   **monótona creciente** y el óptimo está en `t = 1`, no en `[16,32]`.
+>   La «coincidencia» con el `target ≈ 19` empírico de v5 **es un
+>   artefacto de ese error de cálculo**.
+> - **Corolario 4.2**, en su afirmación de que `t = 1` es subóptimo: es
+>   al revés.
+> - **Teorema 11** (`O(n)` ⟺ `w = O(log n)`): falso. Para
+>   `w = c·log₂n`, `c > 1`, el coste es `Θ(n log n / log log n) = ω(n)`.
+>   Umbral real: `w ≤ log₂ n + O(1)`.
+> - **Teorema 9**: la construcción ignora que los grupos deben ocupar
+>   subrangos disjuntos del universo. El presupuesto por grupo es
+>   `w − log₂(n/g)`, no `w`.
+> - **Teorema 8** y **Corolario 9.1**: la cota superior no se sigue de su
+>   demostración, y por tanto el `Θ` de cotas ajustadas no está
+>   establecido. Sustituir por `O(n(w+t))`, que sí es demostrable.
+> - **§8** (especificación de DRS-Ω) fija `t ∈ [16,32]` citando «dos
+>   derivaciones independientes»: son el mismo error repetido.
+>
+> **Sobrevive sin cambios:** los Lemas 1, 3 y 3', el **Teorema 4**
+> (completitud del refinamiento) y el **Corolario 4.1** (el `Θ(n log n)`
+> es artefacto de `MAX_SUBDIVISION_DEPTH`). La conclusión operativa del
+> documento no depende de ninguna de las partes refutadas.
+>
+> **Sobrevive con hipótesis añadidas:** Teoremas 2, 3, 6, 7 y 10 — ver
+> las nueve hipótesis ocultas de la Parte 2 del informe de revisión. El
+> Teorema 3 generalizado resulta ser **más fuerte** que el publicado.
+
 **Documento de investigación. Sin código, sin implementación, sin
 propuesta de cambio pendiente de medir.** Todo lo que sigue son
 definiciones, invariantes, teoremas, demostraciones y contraejemplos.
