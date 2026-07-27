@@ -409,11 +409,12 @@ generales:
 | 2 | CC-B: tope de abanico | **Hecho, aceptado** (`STEP2_fanout_cap.md`) |
 | 3 | CC1 + CC7 | **Revertido** (`O8_resolucion_y_reversion_paso3.md`) |
 | 4 | Medición: fases, asignaciones, memoria, I-TESELADO | **Hecho** (`STEP4_profile.md`) |
-| **4b** | **Fase A del 8: barrido de `target`, sin cambios de código** | **Siguiente** |
+| **4b** | Fase A del 8: barrido de `target` | **Hecho. Criterio FALLADO** (`STEP4b_target_sweep.md`). El retuneo del target fusionado se elimina: `target=64` está a <2 % del óptimo de una curva plana entre 24 y 64 |
 | 5 | CC-C: certificado de ordenado | Pendiente. Techo medido ~10 %, en 3 datasets |
 | 6 | CC-D: asignaciones por llamada | Pendiente. Objetivo: `refine`, 16 %, en 4 datasets |
 | 7 | CC-E: `data` como buffer | Pendiente. **Sube de prioridad**: `merge` es 31–37 %, no 4 % |
-| 8 | CC-F Fase B: implementar la separación `λ`/`t` | Pendiente, al final por diseño |
+| 8 | CC-F Fase B: separar `λ` de `t` | Pendiente. **Objetivo cuantificado por 4b:** los 21,4 % que `refine` consume a λ=32. Criterio pre-registrado en `STEP4b_target_sweep.md` §7 |
+| O11 | `INSERTION_SORT_THRESHOLD` no sigue al `target` de ejecución | Pendiente, **prerrequisito** de cualquier trabajo sobre `localSort` |
 
 **Siguiente acción: paso 4b.** No toca el algoritmo — `target` ya es
 parámetro del constructor. Su resultado fija el orden real de los pasos

@@ -60,7 +60,7 @@ using drs::testing::DatasetGenerator;
 
 namespace {
 
-constexpr std::size_t kTarget = 64;
+std::size_t kTarget = 64;  // sobreescribible por argv[1] (paso 4b)
 constexpr std::size_t kReps = 7;
 
 const char* kPhases[] = {"analyze", "distribute", "refine", "localSort", "merge"};
@@ -97,7 +97,8 @@ double median(std::vector<double> v) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 1) kTarget = static_cast<std::size_t>(std::atoi(argv[1]));
     std::cout << "================================================================\n";
     std::cout << " DRS - PERFIL POR FASE Y ASIGNACIONES (SPEC_v9.md, paso 4)\n";
     std::cout << "================================================================\n";
