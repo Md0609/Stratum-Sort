@@ -440,6 +440,8 @@ Predicciones **falsables**, para contrastar en el paso 6 del plan:
 | `NormalGaussian` | 62.500 | 16 | 1–2 | colas ⟹ bins vacíos, ahora descartados |
 | `Concentrated` | 62.500 | 16 | 2–3 | el cúmulo estrecho concentra la masa; CC2 lo resuelve al bajar |
 | `HugeRangeFewEl` | 62.500 | ~2·10¹³ | 1–2 | span enorme, tope inactivo |
+| `FullRangeExtremes` | 62.500 | ~2·10¹⁴ | **1–2** | hoy 3 por el desbordamiento; con §2.1 debe igualar a `HugeRangeFewEl` |
+| `AdversarialPeeling` | 62.500 | — | **≤ 66** | hoy tope 6 + 9.346 hojas a QuickSort; con CC1 debe dar **cero** hojas a sort por comparación |
 
 **Comparaciones previstas en `RandomUniform`:** hojas de tamaño medio
 `λ=16` ⟹ `n·λ/4 ≈ 4,0 M`, frente a los **12,15 M** medidos en v8. La
@@ -498,8 +500,14 @@ Sin esto no se puede validar la especificación:
    `REVIEW_...` Teorema 9'). Hay que construir el generador, o el peor
    caso de v9 seguirá sin verificarse — igual que el de v8.
 6. **Caso límite de rango completo:** un dataset que contenga
-   `INT64_MIN` y `INT64_MAX` con más de `t` elementos. Hoy no existe en
-   los tests y es exactamente el que rompía la aritmética de §2.1.
+   `INT64_MIN` y `INT64_MAX` con más de `t` elementos.
+   **[AÑADIDO en el paso 0: `fullRangeExtremes`.]** Su justificación,
+   corregida tras medirlo: el desbordamiento **no** produce una hoja
+   gigante (la revisión ya había demostrado que no puede encadenarse);
+   cuesta **2 pasadas O(n) desperdiciadas, +43 % de tiempo a igualdad de
+   comparaciones**, y es **la única violación conocida del Lema 1** — de
+   la cual depende que quitar el tope de profundidad (CC1) sea seguro.
+   Ésa, y no el peor caso, es la razón por la que §2.1 es prerrequisito.
 
 ---
 
@@ -512,6 +520,7 @@ Sin esto no se puede validar la especificación:
 | `S_max` pequeño obliga a niveles extra en datos que se resolvían en uno | `S_max = ∞` es configuración válida; el barrido lo decide |
 | Muchos `memcpy` pequeños (uno por hoja) en vez de pocos grandes | Alternativa especificada: coalescer hojas consecutivas del mismo buffer. Requiere lista de hojas ⟹ solo si el barrido lo justifica |
 | `bucketOf` en `uint32_t` limita `n < 2³²` | Aserción explícita; el proyecto mide hasta `5·10⁶` |
+| **`SortedAscending` es ahora el peor caso relativo (6,02x vs `std::sort`) y v9 no lo mejora por construcción** | Detectado en el paso 0 (`BASELINE_v8.md` §5): la `std::sort` de libc++ resuelve un millón de enteros ordenados en 0,73 ms; DRS hace como mínimo 3 pasadas. **Decidir explícitamente en el paso 6 si se acepta**, en vez de descubrirlo al final. Una detección de "ya ordenado" sería una heurística nueva, fuera del alcance de v9 |
 | `λ` pequeño ⟹ más bins ⟹ más presión de TLB en la pasada de colocación | Es exactamente lo que mide el barrido de §8 |
 
 ---
@@ -525,8 +534,8 @@ Apple clang).
 
 | # | Paso | Criterio de aceptación |
 |---|---|---|
-| 0 | Re-medir v8 en esta máquina; añadir los dos datasets de §9.5–9.6 | Línea base reproducible; el dataset de rango completo **debe** exhibir el defecto de §2.1 en v8 |
-| 1 | Aritmética de span + eliminar el recorte (sin más cambios) | `make test` pasa; el dataset de rango completo deja de degradarse; tiempos dentro del ruido de v8 |
+| 0 | Re-medir v8 en esta máquina; añadir los dos datasets de §9.5–9.6 | **COMPLETADO** — ver `BASELINE_v8.md`. Criterio corregido: el dataset de rango completo debe mostrar profundidad estrictamente mayor y tiempo ≥ 15 % superior al de un control pareado, a igualdad de comparaciones (medido: 3 vs 1, +43 %) |
+| 1 | Aritmética de span + eliminar el recorte (sin más cambios) | `make test` pasa; `FullRangeExtremes` baja de 20,3 ms a ≈ 14 ms y su profundidad de 3 a 1; **ningún otro dataset se mueve más del 6 %** (umbral de ruido medido) |
 | 2 | CC2 (tope de abanico por span) en `refine()` | `ManyRepeated` y `SmallRangeManyEl` bajan a profundidad 1; comparaciones caen |
 | 3 | CC1 + CC7 (quitar el tope de profundidad; borrar los 6 sorts) | `algorithmUsage()` sin `QuickSort`/`Introsort` en ningún dataset; profundidad máxima ≤ 66 |
 | 4 | CC5 + CC4 (sin árbol; certificado de ordenado; hojas en orden) | Aserción de teselado activa y verde; asignaciones por `sort()` caen a O(1) |

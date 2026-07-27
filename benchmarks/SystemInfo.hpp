@@ -1,8 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <fstream>
 #include <sstream>
 #include <string>
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 
 // DRS_CXXFLAGS is injected by the Makefile (-DDRS_CXXFLAGS="\"...\"") so the
 // binary can report exactly the flags it was built with, instead of
@@ -82,8 +87,8 @@ struct SystemInfo {
         info.operatingSystem = "unknown";
 #endif
 
-        // ---- CPU model (best effort, Linux only) ------------------------------
-        info.cpuModel = readCpuModelLinux();
+        // ---- CPU model (best effort, per platform) ----------------------------
+        info.cpuModel = readCpuModel();
 
         return info;
     }
@@ -97,8 +102,19 @@ struct SystemInfo {
     }
 
 private:
-    static std::string readCpuModelLinux() {
-#if defined(__linux__)
+    // Best effort per platform. macOS was added in the step 0 of SPEC_v9.md:
+    // the whole point of re-establishing a baseline is that it records which
+    // machine produced it, and on macOS every field but this one was already
+    // being filled in.
+    static std::string readCpuModel() {
+#if defined(__APPLE__)
+        char buffer[256];
+        std::size_t size = sizeof(buffer);
+        if (::sysctlbyname("machdep.cpu.brand_string", buffer, &size, nullptr, 0) == 0) {
+            return std::string(buffer, size > 0 ? size - 1 : 0);
+        }
+        return "unknown";
+#elif defined(__linux__)
         std::ifstream cpuinfo("/proc/cpuinfo");
         if (!cpuinfo.is_open()) return "unknown";
 
