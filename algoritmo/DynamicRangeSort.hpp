@@ -118,6 +118,19 @@ private:
     // ---- REFINAMIENTO RECURSIVO (SUBDIVISION generalizada) ------------------
     struct RefinedRange {
         bool inBufferA = true;
+        // Certificado de ordenado. refine() lo pone cuando descubre que el
+        // rango observado del bin es degenerado (observedMin == observedMax):
+        // en ese momento YA SABE que el bin esta ordenado, porque todos sus
+        // elementos son identicos. Sin el certificado, sortLeaf() vuelve a
+        // recorrer el bin entero con detectRun() para redescubrirlo.
+        //
+        // Solo lo llevan las hojas que llegaron a refine() con
+        // count > targetElementsPerBin_; las que salen por tamano retornan
+        // antes de calcular min/max y no tienen nada que certificar.
+        //
+        // Va junto a inBufferA a proposito: cae en el relleno que ya existia,
+        // asi que sizeof(RefinedRange) no cambia.
+        bool sorted = false;
         std::size_t start = 0;
         std::size_t count = 0;
         std::vector<RefinedRange> children;

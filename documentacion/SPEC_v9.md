@@ -393,6 +393,13 @@ generales:
 5. **Preferir contadores deterministas al reloj.** Son exactos; el reloj
    no resuelve por debajo del 6 % aquí, ni por debajo del 18 % en
    `ManyRepeated`.
+5b. **Todo criterio que use tiempo debe declarar la configuración de
+   compilación, y si depende de instrumentación debe cerrarse con una
+   medición de PRODUCCIÓN.** Las fases (`localSort`, `refine`…) sólo
+   existen con `DRS_ENABLE_METRICS`. En el paso 5 el certificado parecía
+   dar −19,8 % en el build de investigación y ~0 % en producción: la
+   diferencia era el millón de `recordComparison()` que el certificado
+   también eliminaba y que en producción no se compilan.
 6. **Un enunciado asintótico no es una motivación** hasta que se
    comprueba que es relevante a las constantes reales. La revisión
    adversaria encontró este patrón tres veces (C-A, C-C, C-E) y O8 lo
@@ -410,7 +417,7 @@ generales:
 | 3 | CC1 + CC7 | **Revertido** (`O8_resolucion_y_reversion_paso3.md`) |
 | 4 | Medición: fases, asignaciones, memoria, I-TESELADO | **Hecho** (`STEP4_profile.md`) |
 | **4b** | Fase A del 8: barrido de `target` | **Hecho. Criterio FALLADO** (`STEP4b_target_sweep.md`). El retuneo del target fusionado se elimina: `target=64` está a <2 % del óptimo de una curva plana entre 24 y 64 |
-| 5 | CC-C: certificado de ordenado | Pendiente. Techo medido ~10 %, en 3 datasets |
+| 5 | CC-C: certificado de ordenado | **Hecho, aceptado** (`STEP5_sorted_certificate.md`). Comparaciones a 0 en 2 datasets y 99,6 % en un tercero, predicción exacta. **Ganancia en producción ~2 %, bajo el suelo de medición**: se acepta por trabajo muerto a coste cero, no por rendimiento |
 | 6 | CC-D: asignaciones por llamada | Pendiente. Objetivo: `refine`, 16 %, en 4 datasets |
 | 7 | CC-E: `data` como buffer | Pendiente. **Sube de prioridad**: `merge` es 31–37 %, no 4 % |
 | 8 | CC-F Fase B: separar `λ` de `t` | Pendiente. **Objetivo cuantificado por 4b:** los 21,4 % que `refine` consume a λ=32. Criterio pre-registrado en `STEP4b_target_sweep.md` §7 |

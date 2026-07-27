@@ -235,7 +235,9 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
 
     if (observedMin == observedMax) { // observedSpan == 0
         // Every element in this bin is identical: trivially sorted, and
-        // the data does not even need to move.
+        // the data does not even need to move. Emit the certificate so the
+        // local sort does not rescan the bin to rediscover this.
+        node.sorted = true;
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordBin(count, false);
 #endif
@@ -367,6 +369,17 @@ void DynamicRangeSort<T>::sortLeaf(std::vector<T>& buf, std::size_t start, std::
 template <typename T>
 void DynamicRangeSort<T>::sortRefined(RefinedRange& node) {
     if (node.isLeaf()) {
+        // Con certificado no hay nada que hacer ni que comprobar: refine() ya
+        // establecio que el bin es monovaluado. Sin el, sortLeaf() gastaria
+        // una pasada O(count) en detectRun() para llegar a la misma
+        // conclusion - el 100% de las comparaciones del algoritmo en
+        // ManyRepeated y SmallRangeManyEl (ver STEP5_sorted_certificate.md).
+        if (node.sorted) {
+#ifdef DRS_ENABLE_METRICS
+            metrics_.recordAlgorithmUsage("AlreadySorted");
+#endif
+            return;
+        }
         std::vector<T>& buf = node.inBufferA ? bufferA_ : bufferB_;
         sortLeaf(buf, node.start, node.count);
         return;
