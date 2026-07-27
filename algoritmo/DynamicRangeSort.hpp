@@ -138,13 +138,11 @@ private:
     void sortLeaf(std::vector<T>& buf, std::size_t start, std::size_t count);
     void sortRefined(RefinedRange& node);
 
+    // The one and only local sorting routine. Refinement is terminal, so no
+    // bin larger than targetElementsPerBin_ can reach it; QuickSort,
+    // Introsort and HeapSort were removed in v9 because they became
+    // unreachable, not because they were slow.
     void insertionSort(std::vector<T>& arr, long left, long right);
-    void quickSort(std::vector<T>& arr, long left, long right);
-    void introSort(std::vector<T>& arr, long left, long right);
-    void introSortImpl(std::vector<T>& arr, long left, long right, int depthLimit);
-    void heapSort(std::vector<T>& arr, long left, long right);
-    void siftDown(std::vector<T>& arr, long start, long end);
-    long partition(std::vector<T>& arr, long left, long right);
 
     // ---- UNION FINAL --------------------------------------------------------
     void mergeRefined(const RefinedRange& node, std::vector<T>& out, std::size_t& pos) const;

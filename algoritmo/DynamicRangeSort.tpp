@@ -4,7 +4,7 @@
 // meant to be included directly.
 
 #include <algorithm>
-#include <cmath>
+#include <cassert>
 #include <utility>
 
 namespace drs {
@@ -218,7 +218,13 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
 
     std::vector<T>& cur = inBufferA ? bufferA_ : bufferB_;
 
-    if (count <= targetElementsPerBin_ || depth >= MAX_SUBDIVISION_DEPTH) {
+    // The depth is bounded by the span arithmetic, not by policy: every
+    // refinement level consumes at least one bit of the observed span. This
+    // assertion states that invariant; it is not a fallback. If it fires,
+    // the span arithmetic is wrong.
+    assert(depth <= DEPTH_ASSERT_BOUND && "refinement depth exceeded the span-derived bound");
+
+    if (count <= targetElementsPerBin_) {
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordBin(count, false);
 #endif
@@ -343,24 +349,17 @@ void DynamicRangeSort<T>::sortLeaf(std::vector<T>& buf, std::size_t start, std::
             break;
     }
 
-    const long left = static_cast<long>(start);
-    const long right = static_cast<long>(start + count - 1);
-    if (count <= INSERTION_SORT_THRESHOLD) {
-        insertionSort(buf, left, right);
+    // Refinement is terminal, so this point is only ever reached with
+    // count <= targetElementsPerBin_ (a single-valued bin of any size exits
+    // above through the Ascending branch). There is no dispatcher and no
+    // general comparison sort left in the algorithm: Insertion Sort is the
+    // base case, not a fallback.
+    assert(count <= targetElementsPerBin_ &&
+           "a leaf larger than the target reached the local sort: refinement is not terminal");
+    insertionSort(buf, static_cast<long>(start), static_cast<long>(start + count - 1));
 #ifdef DRS_ENABLE_METRICS
-        metrics_.recordAlgorithmUsage("InsertionSort");
+    metrics_.recordAlgorithmUsage("InsertionSort");
 #endif
-    } else if (count <= QUICKSORT_THRESHOLD) {
-        quickSort(buf, left, right);
-#ifdef DRS_ENABLE_METRICS
-        metrics_.recordAlgorithmUsage("QuickSort");
-#endif
-    } else {
-        introSort(buf, left, right);
-#ifdef DRS_ENABLE_METRICS
-        metrics_.recordAlgorithmUsage("Introsort");
-#endif
-    }
 }
 
 template <typename T>
@@ -389,133 +388,6 @@ void DynamicRangeSort<T>::insertionSort(std::vector<T>& arr, long left, long rig
             --j;
         }
         arr[j + 1] = key;
-    }
-}
-
-// Median-of-three Hoare-style partition, shared by quickSort() and
-// introSortImpl(). Assumes right - left >= 2.
-template <typename T>
-long DynamicRangeSort<T>::partition(std::vector<T>& arr, long left, long right) {
-    const long mid = left + (right - left) / 2;
-
-#ifdef DRS_ENABLE_METRICS
-    metrics_.recordComparisons(3);
-#endif
-    if (arr[mid] < arr[left]) std::swap(arr[mid], arr[left]);
-    if (arr[right] < arr[left]) std::swap(arr[right], arr[left]);
-    if (arr[right] < arr[mid]) std::swap(arr[right], arr[mid]);
-
-    const T pivot = arr[mid];
-    std::swap(arr[mid], arr[right - 1]);
-
-    long i = left;
-    long j = right - 1;
-    while (true) {
-        do {
-            ++i;
-#ifdef DRS_ENABLE_METRICS
-            metrics_.recordComparison();
-#endif
-        } while (arr[i] < pivot);
-        do {
-            --j;
-#ifdef DRS_ENABLE_METRICS
-            metrics_.recordComparison();
-#endif
-        } while (arr[j] > pivot);
-        if (i >= j) break;
-        std::swap(arr[i], arr[j]);
-    }
-    std::swap(arr[i], arr[right - 1]);
-    return i;
-}
-
-// Iterative-recursive hybrid QuickSort (tail call on the larger partition
-// turned into a loop to bound stack depth), finishing small ranges with
-// Insertion Sort.
-template <typename T>
-void DynamicRangeSort<T>::quickSort(std::vector<T>& arr, long left, long right) {
-    while (right - left > 12) {
-        const long p = partition(arr, left, right);
-        if (p - left < right - p) {
-            quickSort(arr, left, p - 1);
-            left = p + 1;
-        } else {
-            quickSort(arr, p + 1, right);
-            right = p - 1;
-        }
-    }
-    insertionSort(arr, left, right);
-}
-
-template <typename T>
-void DynamicRangeSort<T>::introSort(std::vector<T>& arr, long left, long right) {
-    if (right - left < 1) return;
-    const std::size_t n = static_cast<std::size_t>(right - left + 1);
-    const int depthLimit = static_cast<int>(2.0 * std::log2(static_cast<double>(n)));
-    introSortImpl(arr, left, right, depthLimit);
-}
-
-// QuickSort with a recursion-depth limit; once the limit is exhausted the
-// remaining range is finished with HeapSort (classic Introsort behavior,
-// guarding against QuickSort's O(n^2) worst case).
-template <typename T>
-void DynamicRangeSort<T>::introSortImpl(std::vector<T>& arr, long left, long right,
-                                          int depthLimit) {
-    while (right - left > 12) {
-        if (depthLimit == 0) {
-            heapSort(arr, left, right);
-            return;
-        }
-        --depthLimit;
-        const long p = partition(arr, left, right);
-        if (p - left < right - p) {
-            introSortImpl(arr, left, p - 1, depthLimit);
-            left = p + 1;
-        } else {
-            introSortImpl(arr, p + 1, right, depthLimit);
-            right = p - 1;
-        }
-    }
-    insertionSort(arr, left, right);
-}
-
-template <typename T>
-void DynamicRangeSort<T>::siftDown(std::vector<T>& arr, long start, long end) {
-    long root = start;
-    while (2 * (root - start) + 1 <= end - start) {
-        const long child = start + 2 * (root - start) + 1;
-        long swapIdx = root;
-
-#ifdef DRS_ENABLE_METRICS
-        metrics_.recordComparison();
-#endif
-        if (arr[swapIdx] < arr[child]) swapIdx = child;
-
-        if (child + 1 <= end) {
-#ifdef DRS_ENABLE_METRICS
-            metrics_.recordComparison();
-#endif
-            if (arr[swapIdx] < arr[child + 1]) swapIdx = child + 1;
-        }
-
-        if (swapIdx == root) return;
-        std::swap(arr[root], arr[swapIdx]);
-        root = swapIdx;
-    }
-}
-
-template <typename T>
-void DynamicRangeSort<T>::heapSort(std::vector<T>& arr, long left, long right) {
-    const long n = right - left + 1;
-    if (n < 2) return;
-
-    for (long start = left + (n - 2) / 2; start >= left; --start) {
-        siftDown(arr, start, right);
-    }
-    for (long end = right; end > left; --end) {
-        std::swap(arr[left], arr[end]);
-        siftDown(arr, left, end - 1);
     }
 }
 

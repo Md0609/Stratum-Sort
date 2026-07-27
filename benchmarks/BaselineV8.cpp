@@ -217,7 +217,7 @@ int main() {
         DataVector copy = data;
         sorter.sort(copy);
         const drs::DRSMetrics& m = sorter.metrics();
-        const bool capped = m.maxSubdivisionDepth() >= drs::MAX_SUBDIVISION_DEPTH;
+        const bool capped = m.maxSubdivisionDepth() >= drs::DEPTH_ASSERT_BOUND;
         const bool fellBack = usageOf(m, "Introsort") + usageOf(m, "QuickSort") > 0;
         std::cout << "\n[D2] Peor caso por pelado (REVIEW, Teorema 9')\n";
         std::cout << "     dataset AdversarialPeeling, n=" << n << ", target=" << kTarget << "\n";
@@ -225,7 +225,7 @@ int main() {
         std::cout << "     subdivisiones:       " << m.subdivisions() << "\n";
         std::cout << "     hoja mas grande:     " << m.maxBinSize() << "\n";
         std::cout << "     profundidad maxima:  " << m.maxSubdivisionDepth() << "  (tope="
-                  << drs::MAX_SUBDIVISION_DEPTH << ")\n";
+                  << drs::DEPTH_ASSERT_BOUND << ")\n";
         std::cout << "     hojas a Introsort:   " << usageOf(m, "Introsort") << "\n";
         std::cout << "     hojas a QuickSort:   " << usageOf(m, "QuickSort") << "\n";
         std::cout << "     ordenado correcto:   " << (std::is_sorted(copy.begin(), copy.end()) ? "si" : "NO")
