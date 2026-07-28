@@ -29,6 +29,27 @@ public:
         return v;
     }
 
+    // Uniforme con el rango PROPORCIONAL a n, de modo que la densidad
+    // n/rango se mantiene constante a lo largo de un barrido de tamanos.
+    //
+    // randomUniform() tiene el rango FIJO en 10^6 mientras n recorre desde
+    // 100 hasta 5*10^6: su densidad varia cuatro ordenes de magnitud, asi que
+    // la redundancia -y con ella el atajo observedMin==observedMax de
+    // refine()- crece con n por construccion del dataset. Cualquier ajuste de
+    // complejidad sobre randomUniform mezcla el escalado con n y el aumento
+    // de redundancia, y el segundo empuja hacia abajo justo en los puntos
+    // grandes, que son los que dominan la regresion.
+    //
+    // Este generador aisla la variable. Es el unico de la bateria con el que
+    // tiene sentido estimar un exponente. Ver COMPLEXITY_REVIEW_v9.md.
+    DataVector randomUniformScaled(std::size_t n, uint64_t elementsPerValue = 16) {
+        const uint64_t span = n == 0 ? 1 : static_cast<uint64_t>(n) * elementsPerValue;
+        std::uniform_int_distribution<int64_t> dist(0, static_cast<int64_t>(span));
+        DataVector v(n);
+        for (auto& x : v) x = dist(rng_);
+        return v;
+    }
+
     DataVector sortedAscending(std::size_t n) {
         DataVector v(n);
         for (std::size_t i = 0; i < n; ++i) v[i] = static_cast<int64_t>(i);

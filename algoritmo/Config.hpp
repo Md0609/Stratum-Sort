@@ -39,9 +39,27 @@ constexpr std::size_t INSERTION_SORT_THRESHOLD = DEFAULT_TARGET_ELEMENTS_PER_BIN
 constexpr std::size_t QUICKSORT_THRESHOLD = DEFAULT_TARGET_ELEMENTS_PER_BIN * 6;
 
 // Maximum number of times a single bin may be recursively refined before
-// the remainder is handed to local sorting regardless of its size. Bounds
-// refinement cost to O(depth) extra linear passes and guarantees
-// termination even for adversarial distributions.
+// the remainder is handed to local sorting regardless of its size.
+//
+// This is NOT a safety net that costs asymptotic quality - it is what
+// makes the worst case linear, which is the opposite of what v9 initially
+// assumed. Each refinement level consumes log2(splits) bits of the bin's
+// observed span, and a span has at most w bits, so a bin can only survive
+// D degenerate levels if D * log2(m/target) <= w, i.e.
+//
+//     m  <=  target * 2^(w/D)  =  64 * 2^(64/6)  ~=  104032
+//
+// The residual handed to Introsort is therefore bounded by a CONSTANT
+// independent of n, and its aggregate cost is n*log2(104032) ~= 17n.
+// Measured confirmation: the comparison-count exponent of the adversarial
+// dataset is 0.994 [0.993, 0.995] over three orders of magnitude of n.
+// See documentacion/COMPLEXITY_REVIEW_v9.md and
+// documentacion/O8_resolucion_y_reversion_paso3.md.
+//
+// HARD CONSTRAINT: raising DEFAULT_TARGET_ELEMENTS_PER_BIN to 1024 or
+// beyond makes m_max ~= 1.66e6, which is no longer small compared to
+// realistic n, and the Theta(n log n) term reappears. Any change to the
+// target must re-check this bound.
 constexpr std::size_t MAX_SUBDIVISION_DEPTH = 6;
 
 } // namespace drs
