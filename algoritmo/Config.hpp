@@ -38,13 +38,27 @@ namespace drs {
 // Medido: refine pasa del 16,8% al 2,4% del tiempo en RandomUniform, y el
 // total baja un 16-22% en los cuatro datasets sin redundancia.
 // Ver STEP8_lambda_tau.md.
+//
+// La cota INFERIOR de lambda la fija la cache, no el algoritmo: la fase
+// distribute escribe en n/lambda flujos simultaneos, con una huella de
+// (n/lambda)*64 bytes. Con n=1e6 y una L2 de 4 MiB, lambda=16 ya esta al
+// 0,95x de la L2 y se mide +12,9%; lambda=8, al 1,91x, se mide +43,1%.
+// LUEGO EL LAMBDA OPTIMO ESCALA CON n Y CON EL TAMANO DE CACHE: la
+// condicion es n*64/lambda <~ L2. Para n=1e7 el minimo seria ~160.
+// (32,64) es optimo para n~1e6 en esta maquina, no universalmente.
 constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 32;
 
 // t: umbral del CASO BASE. Un bin con <= t elementos deja de refinarse.
-// Debe ser >= lambda. El barrido del paso 4b de v9 mostro que la curva de
-// tiempo es plana entre 24 y 64 con lambda = t; separandolos, lambda cae al
-// lado barato (menos comparaciones de insercion) y t se queda arriba (nada
-// se refina).
+// Debe ser >= lambda.
+//
+// t NO es un valor ajustado: es una cota inferior segura. El barrido del
+// plano (lambda, t) -21 configuraciones, ver O17_lambda_tau_plane.md-
+// midio que con lambda=32 los contadores de (32,64), (32,96) y (32,128)
+// son IDENTICOS en todos los datasets reales: una vez t supera la cola de
+// Poisson(lambda), subirlo mas no cambia nada. t=64 esta a ~5,7 sigma de
+// la ocupacion media, y cualquier t >= 64 es equivalente.
+//
+// El parametro que importa es lambda. No merece la pena barrer t.
 constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 
 // Los umbrales del despachador local siguen al UMBRAL DE HOJA, no a lambda.
