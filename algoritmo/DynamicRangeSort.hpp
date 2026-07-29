@@ -52,7 +52,20 @@ class DynamicRangeSort {
                   "DynamicRangeSort requires an integral element type");
 
 public:
-    explicit DynamicRangeSort(std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN);
+    // targetElementsPerBin (lambda) fija la OCUPACION objetivo: cuantos bins
+    // se crean (initialBins = ceil(n/lambda)) y en cuantas partes se
+    // subdivide uno que se refina (splits = ceil(count/lambda)).
+    //
+    // leafThreshold (t) fija el CASO BASE: un bin con <= t elementos deja de
+    // refinarse y se ordena localmente.
+    //
+    // Hasta v9 eran el mismo numero, lo que forzaba a que P(ocupacion > t)
+    // fuese ~0,5 para datos uniformes: la mitad de los elementos entraba en
+    // refine() por aritmetica, no por los datos. Separarlos es el objeto del
+    // paso 8. Por defecto t = lambda, es decir el comportamiento de v9 sin
+    // cambio alguno.
+    explicit DynamicRangeSort(std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN,
+                               std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
 
     // Sorts 'data' in place following the DRS specification.
     void sort(std::vector<T>& data);
@@ -162,7 +175,8 @@ private:
     // ---- UNION FINAL --------------------------------------------------------
     void mergeRefined(const RefinedRange& node, std::vector<T>& out, std::size_t& pos) const;
 
-    std::size_t targetElementsPerBin_;
+    std::size_t targetElementsPerBin_;   // lambda: ocupacion objetivo
+    std::size_t leafThreshold_;          // t: umbral del caso base
 
     // Scratch buffers shared by distribute() and refine() for the
     // duration of a single sort() call.

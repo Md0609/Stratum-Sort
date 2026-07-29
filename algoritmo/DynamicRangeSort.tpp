@@ -15,9 +15,14 @@ namespace drs {
 // Construction
 // ============================================================
 template <typename T>
-DynamicRangeSort<T>::DynamicRangeSort(std::size_t targetElementsPerBin)
+DynamicRangeSort<T>::DynamicRangeSort(std::size_t targetElementsPerBin, std::size_t leafThreshold)
     : targetElementsPerBin_(targetElementsPerBin == 0 ? DEFAULT_TARGET_ELEMENTS_PER_BIN
-                                                       : targetElementsPerBin) {}
+                                                       : targetElementsPerBin),
+      // leafThreshold == 0 significa "el mismo que lambda", que reproduce
+      // exactamente el comportamiento de v9. t no puede ser menor que lambda:
+      // un bin de tamano lambda tiene que poder ser hoja.
+      leafThreshold_(leafThreshold == 0 ? targetElementsPerBin_
+                                        : std::max(leafThreshold, targetElementsPerBin_)) {}
 
 // ============================================================
 // FASE 1: ANALISIS
@@ -220,7 +225,9 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
 
     std::vector<T>& cur = inBufferA ? bufferA_ : bufferB_;
 
-    if (count <= targetElementsPerBin_ || depth >= MAX_SUBDIVISION_DEPTH) {
+    // Caso base por TAMANO: usa el umbral de hoja t, no la ocupacion lambda.
+    // El tope de profundidad no cambia.
+    if (count <= leafThreshold_ || depth >= MAX_SUBDIVISION_DEPTH) {
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordBin(count, false);
 #endif
