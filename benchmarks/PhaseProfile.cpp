@@ -1,23 +1,19 @@
 // ============================================================
-// SPEC_v9.md - PASO 4: medicion, sin cambios en el algoritmo
+// Per-phase profile and heap-allocation count
 // ============================================================
-// Los pasos 6 y 7 del plan son conjeturas sobre donde se va el tiempo EN
-// ESTA MAQUINA, y el reparto por fase nunca se ha medido aqui: los
-// porcentajes que la especificacion usaba (distribute 46,8%, localSort
-// 34,1%, refine 13,7%, merge 4,1%) proceden de un Xeon con GCC, y
-// BASELINE_v8.md 5 ya demostro que los ratios de aquella maquina no
-// transfieren.
+// Answers two questions that the wall clock alone cannot:
+//   1. where the time actually goes, phase by phase, per dataset;
+//   2. how many heap allocations one sort() performs, and how many bytes.
 //
-// Este binario entrega:
-//   1. reparto de tiempo por fase, por dataset
-//   2. numero de asignaciones de heap por sort() y bytes pedidos
-//   3. la cifra de memoria de DRSMetrics, ya reparada
+// The allocation count works by replacing the global operator new and
+// delete, so it needs no cooperation from the algorithm: it is switched
+// on only around the call to sort().
 //
-// El recuento de asignaciones se hace sustituyendo operator new/delete
-// globales, asi que NO requiere tocar el algoritmo: se activa solo
-// alrededor de la llamada a sort().
+// The phase timings come from the instrumented build and are therefore
+// NOT release timings. Use them to find where to look, never to claim a
+// speed-up.
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "SystemInfo.hpp"
 
 #include <algorithm>
@@ -60,7 +56,7 @@ using drs::testing::DatasetGenerator;
 
 namespace {
 
-std::size_t kTarget = 64;  // sobreescribible por argv[1] (paso 4b)
+std::size_t kTarget = 64;  // overridable from argv[1]
 constexpr std::size_t kReps = 7;
 
 const char* kPhases[] = {"analyze", "distribute", "refine", "localSort", "merge"};
@@ -100,7 +96,7 @@ double median(std::vector<double> v) {
 int main(int argc, char** argv) {
     if (argc > 1) kTarget = static_cast<std::size_t>(std::atoi(argv[1]));
     std::cout << "================================================================\n";
-    std::cout << " DRS - PERFIL POR FASE Y ASIGNACIONES (SPEC_v9.md, paso 4)\n";
+    std::cout << " DRS - per-phase profile and allocation count\n";
     std::cout << "================================================================\n";
     drs::SystemInfo::collect().print(std::cout);
     std::cout << "target=" << kTarget << "  repeticiones=" << kReps << "\n\n";

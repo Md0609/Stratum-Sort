@@ -1,5 +1,5 @@
 // ============================================================
-// DRS v7 - benchmarks/ProductionVsResearch.cpp
+// Cost of the instrumentation build
 // ============================================================
 // This single source file is compiled TWICE by the Makefile - once
 // without DRS_ENABLE_METRICS (build/drs_overhead_production) and once
@@ -8,7 +8,7 @@
 // production from research. Comparing their output directly answers
 // section 3 of the research brief: how much do all the metrics actually
 // cost.
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "DatasetGenerator.hpp"
 
 #include <algorithm>

@@ -1,17 +1,17 @@
 // ============================================================
-// SPEC_v9.md - PASO 0: linea base de v8 en ESTA maquina
+// Reference baseline over the full dataset battery
 // ============================================================
-// Todos los numeros historicos del proyecto (ANALYSIS.md ... ANALYSIS_v8.md)
-// proceden de un Xeon x86_64 con GCC 13.3 sobre Linux. Ninguna comparacion
-// entre este proyecto y aquellos numeros es valida hasta re-medir v8 aqui.
-// Este binario produce esa linea base, y ademas comprueba explicitamente los
-// dos defectos que SPEC_v9 dice que v8 tiene y que hasta ahora nadie habia
-// podido observar porque faltaban los datasets que los activan.
+// Times DRS against std::sort on every dataset and prints the
+// deterministic counters next to the times, so a change can be judged by
+// the work it does and not only by the clock - the counters are exact and
+// reproducible, the clock is not.
 //
-// No modifica el algoritmo. Solo lo mide.
+// It also runs two targeted checks that the eight historical datasets
+// never exercised: an input spanning the entire key universe, and an
+// adversarial input built to exhaust the refinement depth.
 #include "BenchmarkRunner.hpp"
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "SystemInfo.hpp"
 
 #include <algorithm>
@@ -56,7 +56,7 @@ const std::vector<Case>& allCases() {
         {"SortedDescending", mkSortedDesc},     {"ManyRepeated", mkManyRepeated},
         {"NormalGaussian", mkNormal},           {"Concentrated", mkConcentrated},
         {"SmallRangeManyEl", mkSmallRange},     {"HugeRangeFewEl", mkHugeRange},
-        // Anadidos en el paso 0 (SPEC_v9 s9.5 y s9.6):
+        // Stress datasets: whole-universe span, and depth exhaustion.
         {"FullRangeExtremes", mkFullRange},     {"AdversarialPeeling", mkAdversarial},
     };
     return cases;
@@ -86,10 +86,10 @@ double medianStdSortMs(const DataVector& baseline, std::size_t reps) {
 
 int main() {
     std::cout << "================================================================\n";
-    std::cout << " DRS v8 - LINEA BASE (SPEC_v9.md, paso 0)\n";
+    std::cout << " Dynamic Range Sort - reference baseline\n";
     std::cout << "================================================================\n";
     drs::SystemInfo::collect().print(std::cout);
-    std::cout << "Repeticiones por punto: " << kRepetitions << "   target=" << kTarget << "\n\n";
+    std::cout << "Repetitions per point: " << kRepetitions << "   target=" << kTarget << "\n\n";
 
     const std::vector<std::size_t> sizes = {100000, 1000000};
 
@@ -124,11 +124,10 @@ int main() {
     }
 
     // ------------------------------------------------------------------
-    // Comprobacion explicita de los dos defectos que SPEC_v9 predice.
-    // El criterio de aceptacion del paso 0 exige que se OBSERVEN aqui.
+    // Two targeted checks the eight historical datasets never exercised.
     // ------------------------------------------------------------------
     std::cout << "================================================================\n";
-    std::cout << " Comprobacion de los defectos predichos por SPEC_v9\n";
+    std::cout << " Targeted checks\n";
     std::cout << "================================================================\n";
 
     const std::size_t n = 1000000;
@@ -158,26 +157,26 @@ int main() {
         const Probe control = probe("HugeRangeFewEl", g1.hugeRangeFewElements(n));
         const Probe test = probe("FullRangeExtremes", g2.fullRangeExtremes(n));
 
-        std::cout << "\n[D1] Desbordamiento de rango (SPEC_v9 s2.1) - comparacion pareada\n";
-        std::cout << "     Ambos: uniformes y dispersos sobre un rango enorme, n=" << n << "\n";
-        std::cout << "     Control (span ~ 2^63, sin desbordamiento) vs Test (span = 2^64-1)\n\n";
+        std::cout << "\n[D1] Whole-universe span - paired comparison\n";
+        std::cout << "     Both: uniform and sparse over a huge range, n=" << n << "\n";
+        std::cout << "     Control (span ~ 2^63) vs test (span = 2^64-1)\n\n";
         std::cout << std::left << std::setw(24) << "" << std::right << std::setw(14) << "control"
                   << std::setw(14) << "test" << "\n";
         auto row = [&](const std::string& k, double a, double b) {
             std::cout << std::left << std::setw(24) << k << std::right << std::fixed
                       << std::setprecision(2) << std::setw(14) << a << std::setw(14) << b << "\n";
         };
-        row("tiempo mediano (ms)", control.medianMs, test.medianMs);
-        row("comparaciones (M)", control.metrics.comparisons() / 1e6,
+        row("median time (ms)", control.medianMs, test.medianMs);
+        row("comparisons (M)", control.metrics.comparisons() / 1e6,
             test.metrics.comparisons() / 1e6);
-        row("profundidad maxima", static_cast<double>(control.metrics.maxSubdivisionDepth()),
+        row("max depth", static_cast<double>(control.metrics.maxSubdivisionDepth()),
             static_cast<double>(test.metrics.maxSubdivisionDepth()));
-        row("subdivisiones", static_cast<double>(control.metrics.subdivisions()),
+        row("subdivisions", static_cast<double>(control.metrics.subdivisions()),
             static_cast<double>(test.metrics.subdivisions()));
-        row("hoja mas grande", static_cast<double>(control.metrics.maxBinSize()),
+        row("largest leaf", static_cast<double>(control.metrics.maxBinSize()),
             static_cast<double>(test.metrics.maxBinSize()));
 
-        std::cout << "\n     elementos reprocesados por nivel (workByDepth):\n";
+        std::cout << "\n     elements reprocessed per level (workByDepth):\n";
         auto printWork = [&](const Probe& p) {
             std::cout << "       " << std::left << std::setw(20) << p.label << std::right;
             const auto& w = p.metrics.workByDepth();
@@ -200,14 +199,14 @@ int main() {
         const bool slower = test.medianMs > control.medianMs * 1.15;
         const double pct =
             control.medianMs > 0 ? (test.medianMs / control.medianMs - 1.0) * 100.0 : 0.0;
-        std::cout << "\n     => DEFECTO " << ((deeper && slower) ? "PRESENTE" : "AUSENTE") << ": "
+        std::cout << "\n     => DEFECT " << ((deeper && slower) ? "PRESENTE" : "AUSENTE") << ": "
                   << std::setprecision(0) << (pct >= 0 ? "+" : "") << pct
                   << "% de tiempo y profundidad " << test.metrics.maxSubdivisionDepth() << " vs "
                   << control.metrics.maxSubdivisionDepth() << " del control.\n";
-        std::cout << "        PRESENTE => el rango se representa como max-min+1 y desborda:\n";
+        std::cout << "        PRESENT  => the range is held as max-min+1 and overflows:\n";
         std::cout << "                    el nivel 0 colapsa a un solo bin y un nivel de\n";
         std::cout << "                    refine() degenera (~2 pasadas O(n) desperdiciadas).\n";
-        std::cout << "        AUSENTE  => aritmetica de span (SPEC_v9 s2.1) en vigor.\n";
+        std::cout << "        ABSENT   => span arithmetic in force.\n";
     }
 
     {
@@ -219,19 +218,19 @@ int main() {
         const drs::DRSMetrics& m = sorter.metrics();
         const bool capped = m.maxSubdivisionDepth() >= drs::MAX_SUBDIVISION_DEPTH;
         const bool fellBack = usageOf(m, "Introsort") + usageOf(m, "QuickSort") > 0;
-        std::cout << "\n[D2] Peor caso por pelado (REVIEW, Teorema 9')\n";
+        std::cout << "\n[D2] Depth exhaustion\n";
         std::cout << "     dataset AdversarialPeeling, n=" << n << ", target=" << kTarget << "\n";
-        std::cout << "     bins totales:        " << m.totalBins() << "\n";
-        std::cout << "     subdivisiones:       " << m.subdivisions() << "\n";
-        std::cout << "     hoja mas grande:     " << m.maxBinSize() << "\n";
-        std::cout << "     profundidad maxima:  " << m.maxSubdivisionDepth() << "  (tope="
+        std::cout << "     total bins:          " << m.totalBins() << "\n";
+        std::cout << "     subdivisions:       " << m.subdivisions() << "\n";
+        std::cout << "     largest leaf:     " << m.maxBinSize() << "\n";
+        std::cout << "     max depth:  " << m.maxSubdivisionDepth() << "  (tope="
                   << drs::MAX_SUBDIVISION_DEPTH << ")\n";
-        std::cout << "     hojas a Introsort:   " << usageOf(m, "Introsort") << "\n";
-        std::cout << "     hojas a QuickSort:   " << usageOf(m, "QuickSort") << "\n";
-        std::cout << "     ordenado correcto:   " << (std::is_sorted(copy.begin(), copy.end()) ? "si" : "NO")
+        std::cout << "     leaves to Introsort:   " << usageOf(m, "Introsort") << "\n";
+        std::cout << "     leaves to QuickSort:   " << usageOf(m, "QuickSort") << "\n";
+        std::cout << "     sorted correctly:     " << (std::is_sorted(copy.begin(), copy.end()) ? "si" : "NO")
                   << "\n";
-        std::cout << "     => tope de profundidad " << (capped ? "ALCANZADO" : "no alcanzado")
-                  << "; caida a sort por comparacion: " << (fellBack ? "SI" : "no") << "\n";
+        std::cout << "     => depth cap " << (capped ? "REACHED" : "not reached")
+                  << "; fell back to a comparison sort: " << (fellBack ? "SI" : "no") << "\n";
     }
 
     std::cout << "\n";

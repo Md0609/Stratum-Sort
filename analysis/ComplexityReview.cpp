@@ -1,5 +1,5 @@
 // ============================================================
-// Review de complejidad de DRS v9
+// Complexity review: raw data for an external log-log fit
 // ============================================================
 // Emite datos crudos para un ajuste log-log externo. Corrige los cuatro
 // defectos que ANALYSIS_v9_propuesta.md 3 identifico en el ajuste de
@@ -22,7 +22,7 @@
 // El tiempo se toma con el binario de produccion (contadores a 0) y los
 // contadores con el de investigacion (tiempo ignorado).
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 
 #include <algorithm>
 #include <chrono>

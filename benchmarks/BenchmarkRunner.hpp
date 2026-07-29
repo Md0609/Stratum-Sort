@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 
 #ifndef DRS_ENABLE_METRICS
 #error "BenchmarkRunner.hpp requires the research build (-DDRS_ENABLE_METRICS); it reads sorter.metrics()."

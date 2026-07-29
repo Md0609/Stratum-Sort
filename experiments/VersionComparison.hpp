@@ -1,10 +1,10 @@
 #pragma once
 
-#include "DynamicRangeSort.hpp"
-#include "versions/DRSv1.hpp"
-#include "versions/DRSv2.hpp"
-#include "versions/DRSv3.hpp"
-#include "versions/DRSv6_experimental.hpp"
+#include "drs/DynamicRangeSort.hpp"
+#include "legacy/DRSv1.hpp"
+#include "legacy/DRSv2.hpp"
+#include "legacy/DRSv3.hpp"
+#include "legacy/DRSv6_experimental.hpp"
 
 #include <algorithm>
 #include <chrono>

@@ -2,7 +2,7 @@
 // cardinalidad. Con k=2 la dispersion escribe en DOS flujos separados por
 // (fraccion de ceros)*n*8 bytes. Si la causa es aliasing de conjuntos de
 // cache, el coste debe depender de esa separacion, no de k.
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdint>

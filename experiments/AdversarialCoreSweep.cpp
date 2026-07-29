@@ -17,7 +17,7 @@
 // y los dos binarios se ejecutan alternados desde fuera.
 #include "BenchmarkRunner.hpp"
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 
 #include <algorithm>
 #include <cstdint>

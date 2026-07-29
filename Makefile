@@ -24,21 +24,17 @@
 #                        to measure performance; see the production/
 #                        research overhead comparison in `make overhead`.
 #
-# -O3 replaces -O2 as of v7: a controlled, alternating-trial comparison
-# (ANALYSIS_v7.md section 8) measured -O3 5-8% faster than -O2 on this
-# project's hot path, consistently. -march=native and -flto were also
-# measured and did not show a further consistent improvement beyond -O3
-# in that comparison, so neither is part of the default build (both cost
-# portability - -march=native binaries do not run on other CPUs - for a
-# benefit that did not clear noise here); see ANALYSIS_v7.md for the raw
-# numbers if you want to re-check on your own hardware.
+# -O3 was measured 5-8% faster than -O2 on this project's hot path, in a
+# controlled alternating comparison. -march=native and -flto showed no
+# further consistent gain and cost portability, so neither is default.
+# See docs/BENCHMARKS.md if you want to re-check on your own hardware.
 CXX := g++
 WARN_FLAGS := -Wall -Wextra
 OPT_FLAGS := -O3
 PROD_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS) -DNDEBUG
 TEST_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS)
 RESEARCH_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS) -DDRS_ENABLE_METRICS
-INCLUDES := -Ialgoritmo -Ibenchmarks -Ianalisis -Iexperimentos -Idatasets
+INCLUDES := -Iinclude -Ibenchmarks -Ianalysis -Iexperiments -Idatasets
 
 # Embedded into every binary so SystemInfo (and the docs) can report the
 # exact flags used to build it, instead of guessing.
@@ -46,17 +42,17 @@ BUILD_FLAGS_DEFINE_PROD := -DDRS_CXXFLAGS='"$(PROD_CXXFLAGS) $(INCLUDES)"'
 BUILD_FLAGS_DEFINE_TEST := -DDRS_CXXFLAGS='"$(TEST_CXXFLAGS) $(INCLUDES)"'
 BUILD_FLAGS_DEFINE_RESEARCH := -DDRS_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(INCLUDES)"'
 
-ALGO_HEADERS := algoritmo/Config.hpp algoritmo/DRSMetrics.hpp algoritmo/DynamicRangeSort.hpp \
-                algoritmo/DynamicRangeSort.tpp
-VERSION_HEADERS := algoritmo/versions/DRSv1.hpp algoritmo/versions/DRSv2.hpp \
-                   algoritmo/versions/DRSv3.hpp algoritmo/versions/DRSv6_experimental.hpp
+ALGO_HEADERS := include/drs/Config.hpp include/drs/DRSMetrics.hpp \
+                include/drs/DynamicRangeSort.hpp include/drs/DynamicRangeSort.tpp
+VERSION_HEADERS := experiments/legacy/DRSv1.hpp experiments/legacy/DRSv2.hpp \
+                   experiments/legacy/DRSv3.hpp experiments/legacy/DRSv6_experimental.hpp
 COMMON_HEADERS := $(ALGO_HEADERS) benchmarks/SystemInfo.hpp benchmarks/BenchmarkRunner.hpp \
-                   analisis/Statistics.hpp datasets/DatasetGenerator.hpp
+                   analysis/Statistics.hpp datasets/DatasetGenerator.hpp
 
 .PHONY: all test contract benchmarks experiments analysis overhead baseline profile clean
 
 all: build/drs_tests build/drs_contract build/drs_contract_research build/drs_benchmarks build/drs_experiments build/drs_analysis \
-     build/drs_overhead_production build/drs_overhead_research build/drs_baseline_v8 \
+     build/drs_overhead_production build/drs_overhead_research build/drs_baseline \
      build/drs_profile
 
 # ---- Correctness binaries: TEST configuration, assertions ACTIVE ----------
@@ -69,39 +65,39 @@ build/drs_benchmarks: benchmarks/main.cpp $(COMMON_HEADERS)
 	mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/main.cpp -o build/drs_benchmarks
 
-build/drs_experiments: experimentos/main.cpp $(COMMON_HEADERS) $(VERSION_HEADERS) \
-                       experimentos/TargetStrategies.hpp experimentos/BinSizeHistogram.hpp \
-                       experimentos/DisorderMetrics.hpp experimentos/LocalityExperiment.hpp \
-                       experimentos/VersionComparison.hpp experimentos/SubdivisionQualityAnalysis.hpp
+build/drs_experiments: experiments/main.cpp $(COMMON_HEADERS) $(VERSION_HEADERS) \
+                       experiments/TargetStrategies.hpp experiments/BinSizeHistogram.hpp \
+                       experiments/DisorderMetrics.hpp experiments/LocalityExperiment.hpp \
+                       experiments/VersionComparison.hpp experiments/SubdivisionQualityAnalysis.hpp
 	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) experimentos/main.cpp -o build/drs_experiments
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) experiments/main.cpp -o build/drs_experiments
 
-build/drs_analysis: analisis/main.cpp $(COMMON_HEADERS)
+build/drs_analysis: analysis/main.cpp $(COMMON_HEADERS)
 	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) analisis/main.cpp -o build/drs_analysis
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) analysis/main.cpp -o build/drs_analysis
 
-# ---- Production vs research overhead (section 3): same source file, --------
-# ---- compiled twice, once per configuration. ------------------------------
-build/drs_overhead_production: benchmarks/ProductionVsResearch.cpp $(COMMON_HEADERS)
+# ---- Cost of the instrumentation: one source file, compiled twice, --------
+# ---- once per configuration. ----------------------------------------------
+build/drs_overhead_production: benchmarks/InstrumentationOverhead.cpp $(COMMON_HEADERS)
 	mkdir -p build
-	$(CXX) $(PROD_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_PROD) benchmarks/ProductionVsResearch.cpp -o build/drs_overhead_production
+	$(CXX) $(PROD_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_PROD) benchmarks/InstrumentationOverhead.cpp -o build/drs_overhead_production
 
-build/drs_overhead_research: benchmarks/ProductionVsResearch.cpp $(COMMON_HEADERS)
+build/drs_overhead_research: benchmarks/InstrumentationOverhead.cpp $(COMMON_HEADERS)
 	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/ProductionVsResearch.cpp -o build/drs_overhead_research
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/InstrumentationOverhead.cpp -o build/drs_overhead_research
 
-# ---- Linea base de v8 en la maquina actual (SPEC_v9.md, paso 0) ------------
-# Mide v8 sin modificarlo, sobre los ocho datasets historicos mas los dos
-# anadidos en el paso 0, y comprueba explicitamente los dos defectos que
-# SPEC_v9 predice y que ningun dataset anterior activaba.
-build/drs_baseline_v8: benchmarks/BaselineV8.cpp $(COMMON_HEADERS)
+# ---- Reference baseline over the full dataset battery ---------------------
+# Times every dataset against std::sort and prints the deterministic
+# counters alongside, so a change can be judged by work done and not only
+# by the clock.
+build/drs_baseline: benchmarks/ReferenceBaseline.cpp $(COMMON_HEADERS)
 	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/BaselineV8.cpp -o build/drs_baseline_v8
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/ReferenceBaseline.cpp -o build/drs_baseline
 
-# ---- Perfil por fase y recuento de asignaciones (SPEC_v9.md, paso 4) -------
-build/drs_profile: benchmarks/PhaseAndAllocProfile.cpp $(COMMON_HEADERS)
+# ---- Per-phase time breakdown and heap-allocation count -------------------
+build/drs_profile: benchmarks/PhaseProfile.cpp $(COMMON_HEADERS)
 	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/PhaseAndAllocProfile.cpp -o build/drs_profile
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/PhaseProfile.cpp -o build/drs_profile
 
 # ---- Contract tests for the public API -------------------------------------
 # Built in BOTH configurations: production validates what a caller gets,
@@ -125,8 +121,8 @@ contract: build/drs_contract build/drs_contract_research
 	./build/drs_contract
 	./build/drs_contract_research
 
-baseline: build/drs_baseline_v8
-	./build/drs_baseline_v8
+baseline: build/drs_baseline
+	./build/drs_baseline
 
 profile: build/drs_profile
 	./build/drs_profile

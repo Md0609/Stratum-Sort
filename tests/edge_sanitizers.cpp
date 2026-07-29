@@ -2,7 +2,7 @@
 // si computeBinIndex() devolviera un indice fuera de rango, la escritura en
 // outBucketSize[idx] / dst[writeCursor[b]] seria fuera de limites y ASan lo
 // detectaria. Se ejercitan los casos que los tests actuales NO cubren.
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "DatasetGenerator.hpp"
 #include <algorithm>
 #include <cstdint>

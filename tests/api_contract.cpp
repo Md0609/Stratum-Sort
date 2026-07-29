@@ -16,7 +16,7 @@
 // Built in the PRODUCTION configuration on purpose: it validates the code
 // a caller actually gets. Assertions inside the algorithm are active
 // because the build does not define NDEBUG.
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 
 #include <algorithm>
 #include <cstddef>

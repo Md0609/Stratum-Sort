@@ -1,11 +1,11 @@
 // ============================================================
-// DRS v7 - benchmarks/main.cpp
+//
 // ============================================================
 // The baseline benchmark battery over a wide, dense set of input sizes,
 // plus (section 9 of the v7 brief) a direct comparison against
 // std::sort and std::stable_sort on every standard dataset shape.
 #include "BenchmarkRunner.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "Statistics.hpp"
 #include "SystemInfo.hpp"
 #include "DatasetGenerator.hpp"

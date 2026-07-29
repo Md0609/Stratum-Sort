@@ -1,7 +1,7 @@
 // ============================================================
-// SPEC_v9.md paso 5 - MEDICION PREVIA, antes de fijar el criterio
+// docs/
 // ============================================================
-// La leccion del paso 2 fue que un umbral numerico sobre una magnitud
+// A numeric threshold over a quantity whose origin has not been
 // cuya procedencia no se ha medido es una adivinanza. Antes de tocar
 // nada, este programa descompone de donde salen las comparaciones y
 // cuantas son EXACTAMENTE eliminables por el certificado de ordenado.
@@ -15,7 +15,7 @@
 // Usa debugPartitionOnly() + debugBufferA/B, la API de introspeccion de
 // solo lectura que existe desde v4. No toca el algoritmo.
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 
 #include <algorithm>
 #include <cstdint>

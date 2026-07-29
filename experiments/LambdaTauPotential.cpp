@@ -1,5 +1,5 @@
 // ============================================================
-// SPEC_v9 paso 8 - MEDICION PREVIA, antes de tocar el algoritmo
+// Predicted effect of separating lambda from t, measured before
 // ============================================================
 // Intento de FALSACION. La hipotesis de CC-F dice que con lambda=32 y
 // t=64 la fase refine() se vacia, porque P(Poisson(32) > 64) ~ 1e-8.

@@ -2,7 +2,7 @@
 // target dado. Si la ganancia solo aparece cuando el adversario se construyo
 // contra 64 y desaparece al reconstruirlo contra el t de la configuracion,
 // entonces no es una propiedad del algoritmo sino sobreajuste al generador.
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "DatasetGenerator.hpp"
 #include <algorithm>
 #include <chrono>

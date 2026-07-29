@@ -1,5 +1,5 @@
 // ============================================================
-// SPEC_v9.md - PASO 4b: Fase A del paso 8 (barrido de target)
+// docs/
 // ============================================================
 // El paso 4 midio que localSort() es el 60-64% del tiempo en los cuatro
 // datasets sin redundancia. El coste de Insertion Sort sobre hojas de
@@ -20,7 +20,7 @@
 // cualquier deriva del entorno afecta por igual a todos.
 #include "BenchmarkRunner.hpp"
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "SystemInfo.hpp"
 
 #include <algorithm>
@@ -74,7 +74,7 @@ double median(std::vector<double> v) {
 
 int main() {
     std::cout << "================================================================\n";
-    std::cout << " BARRIDO DE target (SPEC_v9.md, paso 4b - Fase A del paso 8)\n";
+    std::cout << " BARRIDO DE target (docs/
     std::cout << "================================================================\n";
     drs::SystemInfo::collect().print(std::cout);
     std::cout << "n=" << kN << "  repeticiones=" << kReps

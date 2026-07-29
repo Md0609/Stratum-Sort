@@ -1,12 +1,12 @@
 // ============================================================
-// DRS v5 - analisis/main.cpp
+// Complexity-model fitting driver
 // ============================================================
 // Section 7 of the research brief: refits the five complexity models
 // against the expanded size list from section 6, for EVERY dataset
 // shape (not just RandomUniform as in v4), reporting R^2, SSE,
 // coefficients and 95% confidence intervals for each coefficient.
 #include "BenchmarkRunner.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "Statistics.hpp"
 #include "SystemInfo.hpp"
 #include "DatasetGenerator.hpp"

@@ -102,7 +102,7 @@ struct SystemInfo {
     }
 
 private:
-    // Best effort per platform. macOS was added in the step 0 of SPEC_v9.md:
+    // Best effort per platform. macOS was added in the step 0 of docs/
     // the whole point of re-establishing a baseline is that it records which
     // machine produced it, and on macOS every field but this one was already
     // being filled in.

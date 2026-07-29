@@ -1,5 +1,5 @@
 // ============================================================
-// DRS v7 - experimentos/main.cpp
+// Research experiments driver
 // ============================================================
 // v7 removed three mechanisms from the production algorithm (see
 // ANALYSIS_v6.md and ANALYSIS_v7.md): micro-histogram splits,
@@ -15,7 +15,7 @@
 #include "BenchmarkRunner.hpp"
 #include "BinSizeHistogram.hpp"
 #include "DisorderMetrics.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "LocalityExperiment.hpp"
 #include "Statistics.hpp"
 #include "SubdivisionQualityAnalysis.hpp"

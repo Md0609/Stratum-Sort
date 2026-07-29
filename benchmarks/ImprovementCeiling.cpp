@@ -1,23 +1,15 @@
 // ============================================================
-// SPEC_v9.md - Techo de mejora de los pasos 6 y 7, en PRODUCCION
+// Ceiling of each remaining optimisation candidate
 // ============================================================
-// Leccion del paso 5: las fases (refine 16%, merge 31-37%) son cifras del
-// build de INVESTIGACION y estan infladas por la instrumentacion. Antes de
-// implementar nada, este programa mide el techo real de cada candidato en
-// configuracion de produccion.
+// Measures, in a RELEASE build, the most any given change could possibly
+// save - before writing that change. Phase percentages from the
+// instrumented build are inflated by the instrumentation itself, so they
+// cannot be used for this.
 //
-// Se compila SIN DRS_ENABLE_METRICS. El contador de asignaciones y el
-// cronometro de malloc/free viven fuera del algoritmo (operator new/delete
-// globales), asi que funcionan igual en cualquier configuracion.
-//
-// Candidatos medidos:
-//   P6  eliminar las asignaciones por llamada  -> techo = tiempo en malloc/free
-//   P7  usar 'data' como uno de los dos buffers -> techo = copias de merge
-//                                                  evitables + un buffer menos
-//   P2  eliminar el relleno de ceros de los dos buffers (2n escrituras que
-//       nadie lee) -> techo = coste de esos assign()
+// The allocation timer replaces the global operator new and delete, so it
+// works in any configuration and needs no cooperation from the algorithm.
 #include "DatasetGenerator.hpp"
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 
 #include <algorithm>
 #include <chrono>

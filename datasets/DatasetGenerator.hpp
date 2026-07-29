@@ -103,7 +103,7 @@ public:
     }
 
     // ========================================================================
-    // Datasets anadidos en el paso 0 de SPEC_v9.md (secciones 9.5 y 9.6).
+    // Datasets anadidos en el paso 0 de docs/
     // Ninguno de los ocho anteriores ejerce los dos casos que la
     // especificacion de v9 necesita poder observar, asi que ninguna
     // afirmacion sobre ellos estaba verificada.

@@ -10,7 +10,7 @@
 // benchmarks/, analisis/ and experimentos/ (all research-configured);
 // this binary is meant to run in seconds, not minutes, so it is safe to
 // run after every change.
-#include "DynamicRangeSort.hpp"
+#include "drs/DynamicRangeSort.hpp"
 #include "DatasetGenerator.hpp"
 
 #include <algorithm>
