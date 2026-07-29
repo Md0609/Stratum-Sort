@@ -89,6 +89,15 @@ a test caught a documented guarantee that was false in one build
 configuration. An invariant written in a comment is not checked — writing
 it as an assertion or a test is what checks it.
 
+**The rule about research builds was broken in the most visible place.**
+The final review ([VALIDATION_final](history/VALIDATION_final.md)) found
+that the README's own performance table had been measured with
+`make baseline` — a tool that cannot be built without instrumentation,
+because it reads `sorter.metrics()` — while being labelled a release
+build. The distortion was 5–20%, and not even of constant sign. Knowing a
+rule and having the tooling enforce it are different things; there are now
+two separate binaries so that the mistake is not available to make.
+
 ## Iteration index
 
 | | Focus | Outcome |
