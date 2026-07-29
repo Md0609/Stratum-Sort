@@ -1,10 +1,12 @@
 #pragma once
 
-// This header is only ever included when DRS_ENABLE_METRICS is defined
-// (see DynamicRangeSort.hpp) - it is research-only and never part of a
-// production build, so none of its methods need an internal runtime
-// toggle the way v4-v6's DEBUG_METRICS did; simply not including this
-// file removes all of it.
+// Only included when DRS_ENABLE_METRICS is defined (see
+// DynamicRangeSort.hpp). It is research-only and never part of a release
+// build, so none of its methods needs an internal runtime toggle: simply
+// not including this file removes all of it.
+//
+// Nothing here is on any correctness path. A release build must behave
+// identically without it.
 
 #include <algorithm>
 #include <chrono>
@@ -27,8 +29,7 @@ namespace drs {
 // ============================================================
 class DRSMetrics {
 public:
-    // One record per actual subdivision (v6, "Investigacion 1 - Calidad de
-    // las subdivisiones" / "Investigacion 4 - Subdivisiones utiles").
+    // One record per actual subdivision.
     // reductionPct = 1 - (largest child size / original size): how much
     // the worst-case remaining subproblem shrank. A subdivision that
     // barely splits its elements (one dominant child) has reductionPct
@@ -45,9 +46,9 @@ public:
 
     // Thresholds behind SubdivisionQuality: "Useful" requires at least
     // halving the worst-case remaining work; "Useless" means the largest
-    // child kept at least 90% of the original problem. See ANALYSIS_v6.md
-    // for the measured distribution of reductionPct that motivated these
-    // cutoffs instead of picking them arbitrarily.
+    // child kept at least 90% of the original problem. These cutoffs come
+    // from the measured distribution of reductionPct, not from taste;
+    // see documentacion/ for the data.
     static constexpr double kUsefulReductionThreshold = 0.5;
     static constexpr double kUselessReductionThreshold = 0.1;
 
@@ -84,9 +85,8 @@ public:
         maxSubdivisionDepth_ = std::max(maxSubdivisionDepth_, depthReached);
     }
 
-    // Full quality record for a subdivision (Investigacion 1) - also
-    // tallies how many elements were reprocessed at this depth
-    // (Investigacion 7, "trabajo por nivel").
+    // Full quality record for a subdivision  - also
+    //
     void recordSubdivisionQuality(std::size_t originalSize, std::size_t childCount,
                                    std::size_t maxChildSize, std::size_t depth) {
         SubdivisionRecord rec;
@@ -178,7 +178,7 @@ public:
         return sum / static_cast<double>(subdivisionRecords_.size());
     }
 
-    // Investigacion 4: counts of Useful / Marginal / Useless subdivisions.
+    // Counts of Useful / Marginal / Useless subdivisions.
     struct QualityBreakdown {
         std::size_t useful = 0;
         std::size_t marginal = 0;

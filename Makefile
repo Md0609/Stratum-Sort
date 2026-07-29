@@ -1,16 +1,28 @@
 # ============================================================
-# DRS v7 build system
+# Dynamic Range Sort - build system
 # ============================================================
-# Two distinct configurations, per ANALYSIS_v7.md section 2:
+# THREE configurations, differing in two orthogonal switches:
 #
-#   PROD_CXXFLAGS     - no DRS_ENABLE_METRICS. DRSMetrics, the metrics()
-#                        accessor, and debugPartitionOnly() do not exist
-#                        in the resulting object code at all (verified
-#                        with `nm`, not just "disabled" - see
-#                        ANALYSIS_v7.md).
-#   RESEARCH_CXXFLAGS - defines DRS_ENABLE_METRICS. Full instrumentation,
-#                        used by benchmarks/, experimentos/ and analisis/,
-#                        which all call .metrics()/.debugPartitionOnly().
+#   DRS_ENABLE_METRICS - compiles in the instrumentation. Undefined means
+#                        DRSMetrics, the metrics() accessor and the
+#                        introspection API do not exist in the object code
+#                        at all, not merely that they are disabled.
+#   NDEBUG             - compiles OUT the internal assertions.
+#
+#   PROD_CXXFLAGS     - release: no metrics, no assertions. This is what a
+#                        caller gets, and the only configuration whose
+#                        timings are meaningful.
+#   TEST_CXXFLAGS     - release code with ASSERTIONS ON. The invariants
+#                        (index in range, leaves tiling [0,n), partition
+#                        preconditions) are only checked here. One of them
+#                        sits in the innermost loop of the distribution
+#                        pass, so this configuration is measurably slower
+#                        - about 5% on distribution-dominated inputs. It
+#                        is for correctness, never for measurement.
+#   RESEARCH_CXXFLAGS - metrics on, assertions on. A laboratory build,
+#                        several times slower than release. Never use it
+#                        to measure performance; see the production/
+#                        research overhead comparison in `make overhead`.
 #
 # -O3 replaces -O2 as of v7: a controlled, alternating-trial comparison
 # (ANALYSIS_v7.md section 8) measured -O3 5-8% faster than -O2 on this
@@ -23,13 +35,15 @@
 CXX := g++
 WARN_FLAGS := -Wall -Wextra
 OPT_FLAGS := -O3
-PROD_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS)
+PROD_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS) -DNDEBUG
+TEST_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS)
 RESEARCH_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS) -DDRS_ENABLE_METRICS
 INCLUDES := -Ialgoritmo -Ibenchmarks -Ianalisis -Iexperimentos -Idatasets
 
 # Embedded into every binary so SystemInfo (and the docs) can report the
 # exact flags used to build it, instead of guessing.
 BUILD_FLAGS_DEFINE_PROD := -DDRS_CXXFLAGS='"$(PROD_CXXFLAGS) $(INCLUDES)"'
+BUILD_FLAGS_DEFINE_TEST := -DDRS_CXXFLAGS='"$(TEST_CXXFLAGS) $(INCLUDES)"'
 BUILD_FLAGS_DEFINE_RESEARCH := -DDRS_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(INCLUDES)"'
 
 ALGO_HEADERS := algoritmo/Config.hpp algoritmo/DRSMetrics.hpp algoritmo/DynamicRangeSort.hpp \
@@ -39,16 +53,16 @@ VERSION_HEADERS := algoritmo/versions/DRSv1.hpp algoritmo/versions/DRSv2.hpp \
 COMMON_HEADERS := $(ALGO_HEADERS) benchmarks/SystemInfo.hpp benchmarks/BenchmarkRunner.hpp \
                    analisis/Statistics.hpp datasets/DatasetGenerator.hpp
 
-.PHONY: all test benchmarks experiments analysis overhead baseline profile clean
+.PHONY: all test contract benchmarks experiments analysis overhead baseline profile clean
 
-all: build/drs_tests build/drs_benchmarks build/drs_experiments build/drs_analysis \
+all: build/drs_tests build/drs_contract build/drs_contract_research build/drs_benchmarks build/drs_experiments build/drs_analysis \
      build/drs_overhead_production build/drs_overhead_research build/drs_baseline_v8 \
      build/drs_profile
 
-# ---- Production-configuration binary (correctness only, no metrics) -------
+# ---- Correctness binaries: TEST configuration, assertions ACTIVE ----------
 build/drs_tests: tests/main.cpp $(COMMON_HEADERS)
 	mkdir -p build
-	$(CXX) $(PROD_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_PROD) tests/main.cpp -o build/drs_tests
+	$(CXX) $(TEST_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_TEST) tests/main.cpp -o build/drs_tests
 
 # ---- Research-configuration binaries (need DRS_ENABLE_METRICS) ------------
 build/drs_benchmarks: benchmarks/main.cpp $(COMMON_HEADERS)
@@ -89,8 +103,27 @@ build/drs_profile: benchmarks/PhaseAndAllocProfile.cpp $(COMMON_HEADERS)
 	mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/PhaseAndAllocProfile.cpp -o build/drs_profile
 
-test: build/drs_tests
+# ---- Contract tests for the public API -------------------------------------
+# Built in BOTH configurations: production validates what a caller gets,
+# research pins the documented differences between the two.
+build/drs_contract: tests/api_contract.cpp $(ALGO_HEADERS)
+	mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_TEST) tests/api_contract.cpp -o build/drs_contract
+
+build/drs_contract_research: tests/api_contract.cpp $(ALGO_HEADERS)
+	mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) tests/api_contract.cpp -o build/drs_contract_research
+
+test: build/drs_tests build/drs_contract build/drs_contract_research
 	./build/drs_tests
+	@echo
+	./build/drs_contract
+	@echo
+	./build/drs_contract_research
+
+contract: build/drs_contract build/drs_contract_research
+	./build/drs_contract
+	./build/drs_contract_research
 
 baseline: build/drs_baseline_v8
 	./build/drs_baseline_v8

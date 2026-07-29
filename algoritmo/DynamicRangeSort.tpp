@@ -1,12 +1,11 @@
 #pragma once
 
-// This file is included at the bottom of DynamicRangeSort.hpp; it is not
-// meant to be included directly.
+// Included at the bottom of DynamicRangeSort.hpp; not meant to be
+// included directly.
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
-#include <cmath>
 #include <utility>
 
 namespace drs {
@@ -17,150 +16,184 @@ namespace drs {
 template <typename T>
 DynamicRangeSort<T>::DynamicRangeSort(std::size_t targetElementsPerBin, std::size_t leafThreshold)
     : targetElementsPerBin_(targetElementsPerBin == 0 ? DEFAULT_TARGET_ELEMENTS_PER_BIN
-                                                       : targetElementsPerBin),
-      // leafThreshold == 0 significa "el mismo que lambda", que reproduce
-      // exactamente el comportamiento de v9. t no puede ser menor que lambda:
-      // un bin de tamano lambda tiene que poder ser hoja.
-      leafThreshold_(leafThreshold == 0 ? targetElementsPerBin_
-                                        : std::max(leafThreshold, targetElementsPerBin_)) {}
+                                                      : targetElementsPerBin),
+      leafThreshold_(std::max(leafThreshold, targetElementsPerBin_)) {
+    // Both invariants the rest of the file relies on.
+    assert(targetElementsPerBin_ >= 1);
+    assert(leafThreshold_ >= targetElementsPerBin_);
+}
 
 // ============================================================
-// FASE 1: ANALISIS
+// Phase 1: analysis
 // ============================================================
-// Single O(n) pass. Per element: O(1) comparisons/updates only. This is
-// the one pass that cannot be fused with anything else: every later
-// formula (range, intervalSize, binIndex) depends on the minimum and
-// maximum values found here.
+// One pass computing the minimum and maximum. This is the only pass that
+// cannot be fused with anything else: every later formula (span, interval
+// width, bin index) is defined relative to the observed range, which is
+// not known until the last element has been seen.
+//
+// Precondition: data is non-empty (sort() returns earlier for n < 2).
 template <typename T>
-typename DynamicRangeSort<T>::AnalysisResult DynamicRangeSort<T>::analyze(
+typename DynamicRangeSort<T>::ValueRange DynamicRangeSort<T>::analyze(
     const std::vector<T>& data) const {
-    AnalysisResult result;
-    result.length = data.size();
-    if (data.empty()) {
-        return result;
-    }
+    assert(!data.empty());
 
-    result.minimumValue = data[0];
-    result.maximumValue = data[0];
+    ValueRange range;
+    range.minimum = data[0];
+    range.maximum = data[0];
     for (const T value : data) {
-        if (value < result.minimumValue) result.minimumValue = value;
-        if (value > result.maximumValue) result.maximumValue = value;
+        if (value < range.minimum) range.minimum = value;
+        if (value > range.maximum) range.maximum = value;
     }
-    return result;
+    return range;
 }
 
 // ============================================================
-// FORMULAS: range, initialBins, intervalSize, binIndex
+// Interval formulas
 // ============================================================
-// The observed range is carried as its SPAN (max - min), never as
-// (max - min + 1). The +1 form needs w+1 bits and wraps to 0 exactly when
-// the data spans the whole universe (min = INT64_MIN, max = INT64_MAX),
-// which collapsed the top level to a single bin and degenerated one whole
-// refinement level - two wasted O(n) passes, measured at +43% time on
-// FullRangeExtremes (see BASELINE_v8.md, D1). The span never overflows.
+// The observed range is carried as its SPAN, max - min, never as the
+// number of distinct values max - min + 1.
 //
-// Every formula rewrites over the span:
+// WHY: the +1 form needs w+1 bits. For T = int64_t and an input holding
+// both INT64_MIN and INT64_MAX it is exactly 2^64, which wraps to zero in
+// 64-bit arithmetic and collapses the whole partition. The span is at
+// most 2^64 - 1 and always representable.
 //
-//   single-valued  <=>  span == 0
-//   width          W  =  span / s + 1        (== ceil((span+1)/s), see below)
-//   index          i  =  (value - rangeStart) / W
+// The two properties every caller of these formulas depends on:
 //
-// Property 1 (equivalence). With span = q*s + r, 0 <= r < s:
-//   ceil((span+1)/s) = q + ceil((r+1)/s) = q + 1 = span/s + 1, because
-//   1 <= r+1 <= s. So this matches the old formula wherever the old one
-//   did not overflow.
+//   PROPERTY 1 (equivalence). width = span/s + 1 equals ceil((span+1)/s).
+//     Write span = q*s + r with 0 <= r < s. Then
+//       ceil((span+1)/s) = q + ceil((r+1)/s) = q + 1
+//     because 1 <= r+1 <= s. So this matches the natural "range divided
+//     into s equal parts, rounded up" wherever that form is computable.
 //
-// Property 2 (the index is always in range, so no clamping is needed).
-//   s*W = s*floor(span/s) + s = (span - r) + s > span, hence span/W < s
-//   and floor(offset/W) <= s-1 for every offset in [0, span].
-// This holds for any s >= 1 provided W is computed exactly; W can only
-// overflow when s == 1 and span == 2^64-1, and countAndPlace() handles
-// s == 1 without computing an index at all (degenerate partition).
+//   PROPERTY 2 (the index is always in range). No clamping is needed:
+//       s*width = s*floor(span/s) + s = (span - r) + s > span
+//     hence span/width < s, so floor(offset/width) <= s-1 for every
+//     offset in [0, span].
+//
+// Property 2 holds for any s >= 1 provided width is computed exactly.
+// Width can only overflow when s == 1 and span == 2^64 - 1; countAndPlace
+// handles s == 1 without computing an index at all, so that case never
+// reaches the division.
 template <typename T>
-void DynamicRangeSort<T>::computeRangeParameters(const AnalysisResult& analysis,
-                                                  std::size_t& outBinCount,
-                                                  uint64_t& outIntervalSize) const {
-    if (analysis.length == 0) {
-        outBinCount = 0;
-        outIntervalSize = 1;
-        return;
+typename DynamicRangeSort<T>::IntervalGrid DynamicRangeSort<T>::computeRangeParameters(
+    const ValueRange& range, std::size_t length) const {
+    assert(length > 0);
+
+    const uint64_t span =
+        static_cast<uint64_t>(range.maximum) - static_cast<uint64_t>(range.minimum);
+
+    IntervalGrid grid;
+    grid.binCount = (length + targetElementsPerBin_ - 1) / targetElementsPerBin_;
+    if (grid.binCount == 0) grid.binCount = 1;
+
+    // Cap by the number of distinct values the range can hold. A bin
+    // narrower than one value is unreachable: no element can map into it,
+    // so allocating, zeroing, prefix-summing and iterating it is waste.
+    //
+    // The cap cannot change the partition. It only binds when
+    // span < binCount, and then the width is span/binCount + 1 = 1 both
+    // before and after capping - identical widths mean an identical
+    // value-to-bucket assignment. Only the unreachable tail disappears.
+    //
+    // span + 1 cannot overflow here: the branch is only taken when
+    // span < binCount <= length.
+    if (span < static_cast<uint64_t>(grid.binCount)) {
+        grid.binCount = static_cast<std::size_t>(span + 1ULL);
     }
 
-    const uint64_t span = static_cast<uint64_t>(analysis.maximumValue) -
-                           static_cast<uint64_t>(analysis.minimumValue);
+    // With a single bucket the width carries no information - every value
+    // maps to bucket 0 regardless - and its exact value, span + 1, may not
+    // be representable: it is exactly 2^64 when the input spans the whole
+    // universe (both INT64_MIN and INT64_MAX present), which wraps to 0.
+    //
+    // Normalising it to 1 makes the postcondition "width >= 1" hold
+    // unconditionally, so no overflowed value can escape this function.
+    // Before v10 the wrapped 0 did escape, and the code was correct only
+    // because countAndPlace happens to short-circuit numBuckets == 1
+    // before dividing. That was luck, not a contract.
+    grid.width =
+        (grid.binCount == 1) ? 1ULL : (span / static_cast<uint64_t>(grid.binCount) + 1ULL);
 
-    // initialBins = ceil(length / targetElementsPerBin), capped by the number
-    // of distinct values (span + 1): a bin narrower than one value can never
-    // be reached, so allocating and iterating it is pure waste.
-    std::size_t initialBins =
-        (analysis.length + targetElementsPerBin_ - 1) / targetElementsPerBin_;
-    if (initialBins == 0) initialBins = 1;
-
-    // The cap can only bind when span < initialBins, and then span + 1 is a
-    // small number - it cannot overflow.
-    if (span < static_cast<uint64_t>(initialBins)) {
-        initialBins = static_cast<std::size_t>(span + 1ULL);
-    }
-
-    outBinCount = initialBins;
-    outIntervalSize = span / static_cast<uint64_t>(initialBins) + 1ULL;
+    assert(grid.binCount >= 1);
+    assert(grid.width >= 1);
+    return grid;
 }
 
-// binIndex = floor((value - rangeStart) / intervalSize). No clamping: by
-// Property 2 above the result is always in [0, numBuckets - 1].
+// Index of 'value' within a grid of equal-width intervals starting at
+// rangeStart. By Property 2 the result is always a valid bucket index, so
+// there is no clamping: a clamp here would silently absorb an arithmetic
+// bug instead of exposing it.
 template <typename T>
-std::size_t DynamicRangeSort<T>::computeBinIndex(T value, T rangeStart,
-                                                  uint64_t intervalSize) const {
+std::size_t DynamicRangeSort<T>::computeBinIndex(T value, T rangeStart, uint64_t width) const {
     const uint64_t offset = static_cast<uint64_t>(value) - static_cast<uint64_t>(rangeStart);
-    return static_cast<std::size_t>(offset / intervalSize);
+    return static_cast<std::size_t>(offset / width);
 }
 
 // ============================================================
-// countAndPlace: shared counting-sort-style distribution step
+// countAndPlace - the shared distribution step
 // ============================================================
-// Counts how many elements of src[srcStart, srcStart+count) fall into
-// each of 'numBuckets' equal-width buckets (O(count)), then places them
-// into dst at precomputed offsets (O(count)). Used by both distribute()
-// (the top-level split) and every refine() split.
+// Counts how many of src[srcStart, srcStart+count) fall into each of
+// numBuckets equal-width intervals, then places them into
+// dst[dstStart, dstStart+count) grouped by bucket and in ascending bucket
+// order. Used both by the top-level distribution and by every refinement
+// split.
 //
-// bucketOfScratch_ and writeCursorScratch_ are member-level scratch
-// space reused across every call (see the header comment on those
-// fields for why this is safe under DRS's strictly depth-first,
-// single-threaded recursion): resize() only reallocates when a call
-// needs more capacity than any previous call has used, which in
-// practice means only the first few (largest) calls in the recursion
-// tree ever trigger an allocation. outBucketStart/outBucketSize remain
-// ordinary caller-owned vectors, because their contents must stay valid
-// for as long as the caller is iterating over and recursing into the
-// resulting children - unlike bucketOf/writeCursor, they cannot be
-// reused scratch.
+// Guarantees on exit:
+//   - outBucketStart[b] is the offset of bucket b in dst, and the buckets
+//     tile [dstStart, dstStart+count) with no gaps, in ascending order;
+//   - within a bucket, elements keep their relative order in src.
+//
+// bucketOfScratch_ and writeCursorScratch_ are member scratch reused by
+// every call. That is safe because the recursion is strictly depth-first
+// and single-threaded: this function has finished with both before it
+// returns, and nothing nested runs while it is using them.
+// outBucketStart and outBucketSize CANNOT be shared this way - the caller
+// keeps reading them while it recurses into the children.
 template <typename T>
 void DynamicRangeSort<T>::countAndPlace(const std::vector<T>& src, std::size_t srcStart,
-                                         std::size_t count, std::vector<T>& dst,
-                                         std::size_t dstStart, T rangeStart, uint64_t intervalSize,
-                                         std::size_t numBuckets,
-                                         std::vector<std::size_t>& outBucketStart,
-                                         std::vector<std::size_t>& outBucketSize) {
-    // Degenerate partition: one bucket takes everything, so there is no index
-    // to compute. Handling it here is what lets computeBinIndex() drop its
-    // clamp - it is the only case where the width (span + 1) may not be
-    // representable. refine() never reaches it (its splits are always >= 2);
-    // only distribute() can, when the whole input fits in one bin.
+                                        std::size_t count, std::vector<T>& dst,
+                                        std::size_t dstStart, T rangeStart, uint64_t width,
+                                        std::size_t numBuckets,
+                                        std::vector<std::size_t>& outBucketStart,
+                                        std::vector<std::size_t>& outBucketSize) {
+    assert(numBuckets >= 1);
+    assert(width >= 1);
+    // src and dst must be distinct objects: the single-bucket path below
+    // uses memcpy, which is undefined for overlapping regions. Every call
+    // site satisfies this (the top level reads the caller's array and
+    // writes bufferA_; a refinement reads one buffer and writes the
+    // other), but nothing in the signature says so.
+    assert(static_cast<const void*>(&src) != static_cast<const void*>(&dst));
+
+    // Degenerate partition: one bucket takes everything, so there is no
+    // index to compute. Isolating this case is what allows
+    // computeBinIndex() to have no clamp - it is the only case where the
+    // exact width (span + 1) may not be representable.
+    //
+    // Reachable in two ways: an input small enough to fit one bin, and an
+    // input whose span is zero (every element identical), which the cap
+    // in computeRangeParameters() collapses to a single bin.
     if (numBuckets == 1) {
         outBucketStart.assign(1, dstStart);
         outBucketSize.assign(1, count);
-        for (std::size_t i = 0; i < count; ++i) dst[dstStart + i] = src[srcStart + i];
+        if (count > 0) {
+            std::memcpy(dst.data() + dstStart, src.data() + srcStart, count * sizeof(T));
+        }
         return;
     }
 
+    // Pass 1: bucket index of every element, and the histogram.
     outBucketSize.assign(numBuckets, 0);
     if (bucketOfScratch_.size() < count) bucketOfScratch_.resize(count);
     for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t idx = computeBinIndex(src[srcStart + i], rangeStart, intervalSize);
+        const std::size_t idx = computeBinIndex(src[srcStart + i], rangeStart, width);
+        assert(idx < numBuckets); // Property 2
         bucketOfScratch_[i] = idx;
         ++outBucketSize[idx];
     }
 
+    // Prefix sum: turn the histogram into write cursors.
     outBucketStart.assign(numBuckets, 0);
     if (writeCursorScratch_.size() < numBuckets) writeCursorScratch_.resize(numBuckets);
     std::size_t cursor = dstStart;
@@ -169,7 +202,10 @@ void DynamicRangeSort<T>::countAndPlace(const std::vector<T>& src, std::size_t s
         writeCursorScratch_[b] = cursor;
         cursor += outBucketSize[b];
     }
+    assert(cursor == dstStart + count);
 
+    // Pass 2: place. Advancing the cursor as we go is what preserves the
+    // relative order of equal-bucket elements.
     for (std::size_t i = 0; i < count; ++i) {
         const std::size_t b = bucketOfScratch_[i];
         dst[writeCursorScratch_[b]++] = src[srcStart + i];
@@ -177,40 +213,48 @@ void DynamicRangeSort<T>::countAndPlace(const std::vector<T>& src, std::size_t s
 }
 
 // ============================================================
-// DISTRIBUCION (primera+segunda pasada fusionadas)
+// Phases 2 and 3: top-level distribution
 // ============================================================
 template <typename T>
-void DynamicRangeSort<T>::distribute(const std::vector<T>& data, T minimumValue,
-                                      uint64_t intervalSize, std::size_t binCount,
-                                      std::vector<std::size_t>& outBucketStart,
-                                      std::vector<std::size_t>& outBucketSize) {
+void DynamicRangeSort<T>::distribute(const std::vector<T>& data, T minimumValue, uint64_t width,
+                                     std::size_t binCount,
+                                     std::vector<std::size_t>& outBucketStart,
+                                     std::vector<std::size_t>& outBucketSize) {
+    // Both buffers must exist at full size before any refinement runs: a
+    // split writes into the other buffer at the same absolute offsets, so
+    // both are indexed over [0, n) from the first level onwards.
     bufferA_.assign(data.size(), T{});
     bufferB_.assign(data.size(), T{});
-    countAndPlace(data, 0, data.size(), bufferA_, 0, minimumValue, intervalSize, binCount,
-                  outBucketStart, outBucketSize);
+    countAndPlace(data, 0, data.size(), bufferA_, 0, minimumValue, width, binCount, outBucketStart,
+                  outBucketSize);
 #ifdef DRS_ENABLE_METRICS
     metrics_.addApproxMemory(bufferA_.size() * sizeof(T) + bufferB_.size() * sizeof(T));
 #endif
 }
 
 // ============================================================
-// REFINAMIENTO RECURSIVO (generalizacion de SUBDIVISION)
+// Phase 4: recursive refinement
 // ============================================================
-// Splits the range [start, start+count) of whichever buffer currently
-// holds it, using only its own observed range (never the original
-// array's range), into the *other* buffer (the cascading double-buffer
-// scheme). Bounded by MAX_SUBDIVISION_DEPTH.
+// Splits [start, start+count) of whichever buffer currently holds it,
+// using ONLY that bin's own observed range, writing the children into the
+// other buffer at the same absolute offsets.
 //
-// Two fast paths keep this close to O(n) in practice:
-//   - A bin whose observed range is a single value is, by definition,
-//     already sorted: it becomes a leaf immediately, with no further
-//     splitting, no comparisons, and no data movement at all.
-//   - A bin at or below targetElementsPerBin also becomes a leaf.
+// TERMINATION. Let span be the bin's observed span and s >= 2 the number
+// of splits. Every child occupies an interval of exactly width values, so
+// its own span is at most width - 1 = floor(span/s) < span for span >= 1.
+// The span therefore decreases strictly at every level and is a
+// non-negative integer, so the recursion terminates even with no depth
+// cap. MAX_SUBDIVISION_DEPTH bounds the effort spent, not the
+// termination; see Config.hpp for why it also bounds the worst case.
+//
+// EXIT CONDITIONS. A bin becomes a leaf when it is empty, when it holds
+// at most leafThreshold_ elements, when the depth cap is reached, or when
+// its observed span is zero. There is no other way out.
 template <typename T>
 typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBufferA,
-                                                                        std::size_t start,
-                                                                        std::size_t count,
-                                                                        std::size_t depth) {
+                                                                      std::size_t start,
+                                                                      std::size_t count,
+                                                                      std::size_t depth) {
     RefinedRange node;
     node.inBufferA = inBufferA;
     node.start = start;
@@ -223,16 +267,17 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
         return node;
     }
 
-    std::vector<T>& cur = inBufferA ? bufferA_ : bufferB_;
-
-    // Caso base por TAMANO: usa el umbral de hoja t, no la ocupacion lambda.
-    // El tope de profundidad no cambia.
+    // Base case by size, or by exhausted depth. Note this returns BEFORE
+    // scanning for min and max: a bin that stops here never pays for a
+    // range it does not need.
     if (count <= leafThreshold_ || depth >= MAX_SUBDIVISION_DEPTH) {
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordBin(count, false);
 #endif
         return node;
     }
+
+    const std::vector<T>& cur = inBufferA ? bufferA_ : bufferB_;
 
     T observedMin = cur[start];
     T observedMax = cur[start];
@@ -241,10 +286,11 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
         if (cur[i] > observedMax) observedMax = cur[i];
     }
 
-    if (observedMin == observedMax) { // observedSpan == 0
-        // Every element in this bin is identical: trivially sorted, and
-        // the data does not even need to move. Emit the certificate so the
-        // local sort does not rescan the bin to rediscover this.
+    if (observedMin == observedMax) {
+        // Degenerate range: every element is identical, so the bin is
+        // sorted by definition and the data does not need to move.
+        // Recording the certificate saves the local sort a full O(count)
+        // rescan to rediscover the same fact.
         node.sorted = true;
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordBin(count, false);
@@ -252,37 +298,25 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
         return node;
     }
 
-    // observedSpan = observedMax - observedMin, over this bin's own observed
-    // range only. Never overflows, and is >= 1 here (the == case returned above).
+    // Never overflows, and is >= 1 here because the equal case returned.
     const uint64_t observedSpan =
         static_cast<uint64_t>(observedMax) - static_cast<uint64_t>(observedMin);
 
-    // splits = ceil(count / targetElementsPerBin), capped by the number of
-    // distinct values this bin can possibly hold (observedSpan + 1).
+    // Same rule as the top level: aim for lambda elements per child, but
+    // never create more intervals than there are distinct values. See
+    // computeRangeParameters() for why the cap cannot change the
+    // partition.
     //
-    // This is the same cap computeRangeParameters() has always applied at the
-    // top level, and which refine() never did - an asymmetry that was never
-    // justified anywhere. Buckets beyond index observedSpan are UNREACHABLE:
-    // no value in this bin can ever map to them. Without the cap they are
-    // still allocated, zeroed, prefix-summed, iterated and recorded as empty
-    // leaves.
-    //
-    // The cap cannot change the partition. It only binds when
-    // observedSpan < splits, and then the width is
-    //   W  = observedSpan / splits + 1 = 0 + 1 = 1
-    // while after capping
-    //   W' = observedSpan / (observedSpan + 1) + 1 = 0 + 1 = 1.
-    // Identical width => identical value-to-bucket assignment => identical
-    // leaves. Only the unreachable tail of empty buckets disappears.
-    //
-    // splits stays >= 2: when the cap binds, splits becomes observedSpan + 1,
-    // and observedSpan >= 1 here.
+    // splits stays >= 2: count > leafThreshold_ >= targetElementsPerBin_
+    // gives at least 2, and when the cap binds it becomes
+    // observedSpan + 1 >= 2.
     std::size_t splits = (count + targetElementsPerBin_ - 1) / targetElementsPerBin_;
     if (observedSpan < static_cast<uint64_t>(splits)) {
         splits = static_cast<std::size_t>(observedSpan + 1ULL);
     }
+    assert(splits >= 2);
 
-    const uint64_t newIntervalSize = observedSpan / static_cast<uint64_t>(splits) + 1ULL;
+    const uint64_t newWidth = observedSpan / static_cast<uint64_t>(splits) + 1ULL;
 
 #ifdef DRS_ENABLE_METRICS
     metrics_.recordSubdivision(depth + 1);
@@ -291,7 +325,7 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
     std::vector<T>& other = inBufferA ? bufferB_ : bufferA_;
     std::vector<std::size_t> bucketStart;
     std::vector<std::size_t> bucketSize;
-    countAndPlace(cur, start, count, other, start, observedMin, newIntervalSize, splits, bucketStart,
+    countAndPlace(cur, start, count, other, start, observedMin, newWidth, splits, bucketStart,
                   bucketSize);
 
 #ifdef DRS_ENABLE_METRICS
@@ -309,22 +343,29 @@ typename DynamicRangeSort<T>::RefinedRange DynamicRangeSort<T>::refine(bool inBu
 }
 
 // ============================================================
-// ORDENACION LOCAL
+// Phase 5: local sorting
 // ============================================================
-// O(k) scan that recognizes a bin that is already fully ascending or
-// fully descending, so it can be finished without a comparison sort at
-// all (ascending: no-op) or with a single O(k) reversal (descending).
+// One O(k) scan recognising a range that is already fully ascending or
+// fully descending, so it can be finished without a comparison sort:
+// ascending is a no-op, descending is a single reversal.
+//
+// NOTE this is why the sorter is not stable: reversing a descending run
+// swaps elements that compare equal under a weaker ordering. Harmless for
+// the integral keys this class accepts, but it is the reason the class
+// must not be generalised to key/value pairs as written.
 template <typename T>
 typename DynamicRangeSort<T>::RunShape DynamicRangeSort<T>::detectRun(const std::vector<T>& buf,
-                                                                       std::size_t start,
-                                                                       std::size_t count) {
+                                                                     std::size_t start,
+                                                                     std::size_t count) {
     if (count < 2) return RunShape::Ascending;
 
     bool ascending = true;
     bool descending = true;
     for (std::size_t i = start + 1; i < start + count; ++i) {
 #ifdef DRS_ENABLE_METRICS
-        metrics_.recordComparison();
+        // Two comparisons per step, both counted: the counter is meant to
+        // reflect work done, not source lines.
+        metrics_.recordComparisons(2);
 #endif
         if (buf[i] < buf[i - 1]) ascending = false;
         if (buf[i] > buf[i - 1]) descending = false;
@@ -333,6 +374,17 @@ typename DynamicRangeSort<T>::RunShape DynamicRangeSort<T>::detectRun(const std:
     return ascending ? RunShape::Ascending : RunShape::Descending;
 }
 
+// Sorts one leaf in place.
+//
+// The dispatch thresholds describe the LOCAL SORTS and nothing else. They
+// are deliberately independent of leafThreshold_: which algorithm suits a
+// range of k elements is a property of the algorithms, not of the rule
+// that decided to stop refining. Tying them together meant that changing
+// the leaf threshold silently changed which sort ran.
+//
+// A leaf normally holds at most leafThreshold_ elements. Larger ones only
+// arise from exhausting MAX_SUBDIVISION_DEPTH, which is what the second
+// and third branches exist for.
 template <typename T>
 void DynamicRangeSort<T>::sortLeaf(std::vector<T>& buf, std::size_t start, std::size_t count) {
     if (count < 2) return;
@@ -344,8 +396,8 @@ void DynamicRangeSort<T>::sortLeaf(std::vector<T>& buf, std::size_t start, std::
 #endif
             return;
         case RunShape::Descending:
-            std::reverse(buf.begin() + static_cast<long>(start),
-                         buf.begin() + static_cast<long>(start + count));
+            std::reverse(buf.begin() + static_cast<Index>(start),
+                         buf.begin() + static_cast<Index>(start + count));
 #ifdef DRS_ENABLE_METRICS
             metrics_.recordAlgorithmUsage("ReversedRun");
 #endif
@@ -354,14 +406,14 @@ void DynamicRangeSort<T>::sortLeaf(std::vector<T>& buf, std::size_t start, std::
             break;
     }
 
-    const long left = static_cast<long>(start);
-    const long right = static_cast<long>(start + count - 1);
-    if (count <= INSERTION_SORT_THRESHOLD) {
+    const Index left = static_cast<Index>(start);
+    const Index right = static_cast<Index>(start + count - 1);
+    if (count <= LOCAL_INSERTION_MAX_ELEMENTS) {
         insertionSort(buf, left, right);
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordAlgorithmUsage("InsertionSort");
 #endif
-    } else if (count <= QUICKSORT_THRESHOLD) {
+    } else if (count <= LOCAL_QUICKSORT_MAX_ELEMENTS) {
         quickSort(buf, left, right);
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordAlgorithmUsage("QuickSort");
@@ -377,11 +429,9 @@ void DynamicRangeSort<T>::sortLeaf(std::vector<T>& buf, std::size_t start, std::
 template <typename T>
 void DynamicRangeSort<T>::sortRefined(RefinedRange& node) {
     if (node.isLeaf()) {
-        // Con certificado no hay nada que hacer ni que comprobar: refine() ya
-        // establecio que el bin es monovaluado. Sin el, sortLeaf() gastaria
-        // una pasada O(count) en detectRun() para llegar a la misma
-        // conclusion - el 100% de las comparaciones del algoritmo en
-        // ManyRepeated y SmallRangeManyEl (ver STEP5_sorted_certificate.md).
+        // A certified bin needs nothing: refine() already established that
+        // every element is identical. Without the certificate this would
+        // cost a full O(count) scan to reach the same conclusion.
         if (node.sorted) {
 #ifdef DRS_ENABLE_METRICS
             metrics_.recordAlgorithmUsage("AlreadySorted");
@@ -398,10 +448,10 @@ void DynamicRangeSort<T>::sortRefined(RefinedRange& node) {
 }
 
 template <typename T>
-void DynamicRangeSort<T>::insertionSort(std::vector<T>& arr, long left, long right) {
-    for (long i = left + 1; i <= right; ++i) {
+void DynamicRangeSort<T>::insertionSort(std::vector<T>& arr, Index left, Index right) {
+    for (Index i = left + 1; i <= right; ++i) {
         const T key = arr[i];
-        long j = i - 1;
+        Index j = i - 1;
         while (j >= left) {
 #ifdef DRS_ENABLE_METRICS
             metrics_.recordComparison();
@@ -414,11 +464,21 @@ void DynamicRangeSort<T>::insertionSort(std::vector<T>& arr, long left, long rig
     }
 }
 
-// Median-of-three Hoare-style partition, shared by quickSort() and
-// introSortImpl(). Assumes right - left >= 2.
+// Median-of-three Hoare partition, shared by quickSort and introSortImpl.
+//
+// WHY THE UNGUARDED SCANS ARE SAFE. The median-of-three step leaves
+// arr[left] <= pivot <= arr[right], and the pivot itself is parked at
+// right-1. Those two elements are sentinels: the ascending scan cannot
+// run past 'right' because arr[right] >= pivot stops it, and the
+// descending scan cannot run past 'left' because arr[left] <= pivot stops
+// it. This is the reason neither loop tests its bound, and the reason the
+// precondition below is not optional.
 template <typename T>
-long DynamicRangeSort<T>::partition(std::vector<T>& arr, long left, long right) {
-    const long mid = left + (right - left) / 2;
+typename DynamicRangeSort<T>::Index DynamicRangeSort<T>::partition(std::vector<T>& arr, Index left,
+                                                                   Index right) {
+    assert(right - left >= 2 && "partition needs at least three elements for the sentinels");
+
+    const Index mid = left + (right - left) / 2;
 
 #ifdef DRS_ENABLE_METRICS
     metrics_.recordComparisons(3);
@@ -430,8 +490,8 @@ long DynamicRangeSort<T>::partition(std::vector<T>& arr, long left, long right) 
     const T pivot = arr[mid];
     std::swap(arr[mid], arr[right - 1]);
 
-    long i = left;
-    long j = right - 1;
+    Index i = left;
+    Index j = right - 1;
     while (true) {
         do {
             ++i;
@@ -452,13 +512,12 @@ long DynamicRangeSort<T>::partition(std::vector<T>& arr, long left, long right) 
     return i;
 }
 
-// Iterative-recursive hybrid QuickSort (tail call on the larger partition
-// turned into a loop to bound stack depth), finishing small ranges with
-// Insertion Sort.
+// QuickSort that recurses into the smaller side and loops on the larger,
+// which bounds the stack depth at O(log k) instead of O(k).
 template <typename T>
-void DynamicRangeSort<T>::quickSort(std::vector<T>& arr, long left, long right) {
-    while (right - left > 12) {
-        const long p = partition(arr, left, right);
+void DynamicRangeSort<T>::quickSort(std::vector<T>& arr, Index left, Index right) {
+    while (right - left > static_cast<Index>(LOCAL_PARTITION_CUTOFF)) {
+        const Index p = partition(arr, left, right);
         if (p - left < right - p) {
             quickSort(arr, left, p - 1);
             left = p + 1;
@@ -470,27 +529,39 @@ void DynamicRangeSort<T>::quickSort(std::vector<T>& arr, long left, long right) 
     insertionSort(arr, left, right);
 }
 
-template <typename T>
-void DynamicRangeSort<T>::introSort(std::vector<T>& arr, long left, long right) {
-    if (right - left < 1) return;
-    const std::size_t n = static_cast<std::size_t>(right - left + 1);
-    const int depthLimit = static_cast<int>(2.0 * std::log2(static_cast<double>(n)));
-    introSortImpl(arr, left, right, depthLimit);
+// floor(log2(v)) for v >= 1, by integer arithmetic. Replaces a
+// std::log2 call: this class is otherwise entirely integer, and pulling
+// in floating point for a depth bound risks platform-dependent rounding
+// in a value that controls control flow.
+inline std::size_t floorLog2(std::size_t v) {
+    std::size_t r = 0;
+    while (v > 1) {
+        v >>= 1;
+        ++r;
+    }
+    return r;
 }
 
-// QuickSort with a recursion-depth limit; once the limit is exhausted the
-// remaining range is finished with HeapSort (classic Introsort behavior,
-// guarding against QuickSort's O(n^2) worst case).
 template <typename T>
-void DynamicRangeSort<T>::introSortImpl(std::vector<T>& arr, long left, long right,
-                                          int depthLimit) {
-    while (right - left > 12) {
+void DynamicRangeSort<T>::introSort(std::vector<T>& arr, Index left, Index right) {
+    if (right <= left) return;
+    const std::size_t n = static_cast<std::size_t>(right - left + 1);
+    introSortImpl(arr, left, right, INTROSORT_DEPTH_FACTOR * floorLog2(n));
+}
+
+// QuickSort with a partitioning budget; once it is exhausted the rest is
+// finished with HeapSort. This is what turns QuickSort's O(k^2) worst case
+// into a guaranteed O(k log k).
+template <typename T>
+void DynamicRangeSort<T>::introSortImpl(std::vector<T>& arr, Index left, Index right,
+                                        std::size_t depthLimit) {
+    while (right - left > static_cast<Index>(LOCAL_PARTITION_CUTOFF)) {
         if (depthLimit == 0) {
             heapSort(arr, left, right);
             return;
         }
         --depthLimit;
-        const long p = partition(arr, left, right);
+        const Index p = partition(arr, left, right);
         if (p - left < right - p) {
             introSortImpl(arr, left, p - 1, depthLimit);
             left = p + 1;
@@ -502,12 +573,14 @@ void DynamicRangeSort<T>::introSortImpl(std::vector<T>& arr, long left, long rig
     insertionSort(arr, left, right);
 }
 
+// Restores the max-heap property at 'start' within the heap rooted at
+// 'start' and ending at 'end', both absolute indices into arr.
 template <typename T>
-void DynamicRangeSort<T>::siftDown(std::vector<T>& arr, long start, long end) {
-    long root = start;
+void DynamicRangeSort<T>::siftDown(std::vector<T>& arr, Index start, Index end) {
+    Index root = start;
     while (2 * (root - start) + 1 <= end - start) {
-        const long child = start + 2 * (root - start) + 1;
-        long swapIdx = root;
+        const Index child = start + 2 * (root - start) + 1;
+        Index swapIdx = root;
 
 #ifdef DRS_ENABLE_METRICS
         metrics_.recordComparison();
@@ -528,60 +601,74 @@ void DynamicRangeSort<T>::siftDown(std::vector<T>& arr, long start, long end) {
 }
 
 template <typename T>
-void DynamicRangeSort<T>::heapSort(std::vector<T>& arr, long left, long right) {
-    const long n = right - left + 1;
+void DynamicRangeSort<T>::heapSort(std::vector<T>& arr, Index left, Index right) {
+    const Index n = right - left + 1;
     if (n < 2) return;
 
-    for (long start = left + (n - 2) / 2; start >= left; --start) {
+    for (Index start = left + (n - 2) / 2; start >= left; --start) {
         siftDown(arr, start, right);
     }
-    for (long end = right; end > left; --end) {
+    for (Index end = right; end > left; --end) {
         std::swap(arr[left], arr[end]);
         siftDown(arr, left, end - 1);
     }
 }
 
 // ============================================================
-// UNION FINAL
+// Phase 6: join
 // ============================================================
-// Children of a RefinedRange are always produced and visited in
-// ascending value order, so a plain in-order traversal that appends
-// each leaf's (now sorted) elements - read from whichever buffer that
-// leaf currently lives in - yields the fully sorted array.
+// THE TILING INVARIANT. countAndPlace writes the children of a bin at
+// consecutive offsets starting at the parent's own start, in ascending
+// bucket order, and computeBinIndex is monotone in the value. So the
+// children tile the parent's range in ascending value order, and by
+// induction over the depth the leaves tile [0, n) in ascending value
+// order.
+//
+// The consequence used here: EVERY LEAF ALREADY OCCUPIES ITS FINAL
+// POSITION. The join is not a merge and does not even need a write
+// cursor - each leaf is copied to exactly its own offset. The only open
+// question per leaf is which of the two buffers it currently lives in.
+//
+// memcpy is valid without any runtime check:
+//   - 'out' is the caller's vector and 'buf' is bufferA_ or bufferB_:
+//     three distinct objects, so they cannot overlap;
+//   - T is integral by the class-level static_assert, hence trivially
+//     copyable;
+//   - the destination range is exactly the leaf's own range, by the
+//     invariant above.
 template <typename T>
-void DynamicRangeSort<T>::mergeRefined(const RefinedRange& node, std::vector<T>& out,
-                                        std::size_t& pos) const {
+void DynamicRangeSort<T>::appendLeaves(const RefinedRange& node, std::vector<T>& out) const {
     if (node.isLeaf()) {
-        // I-TESELADO, paso inductivo: las hojas se visitan en orden y cada una
-        // ocupa YA su posicion final, luego el cursor de escritura coincide
-        // siempre con el inicio de la hoja. Nunca se habia escrito, y el
-        // cursor 'pos' es por tanto redundante. Ver SPEC_v9.md, paso 4.
-        assert(pos == node.start && "I-TESELADO: hoja fuera de su posicion final");
-        const std::vector<T>& buf = node.inBufferA ? bufferA_ : bufferB_;
-        // Copia en bloque. El bucle elemento a elemento que habia aqui no se
-        // podia vectorizar: 'out' y 'buf' son ambos std::vector<T>&, y el
-        // compilador no puede descartar que se solapen, asi que emitia un
-        // bucle escalar con dependencia entre el almacenamiento y la carga
-        // siguiente. Medido: 15,7 GB/s frente a la banda real de la maquina.
-        //
-        // memcpy es valido aqui y no hace falta comprobar nada en tiempo de
-        // ejecucion:
-        //   - 'out' es el vector del usuario y 'buf' es bufferA_ o bufferB_,
-        //     tres objetos distintos: no pueden solapar.
-        //   - T es entero por el static_assert de la clase, luego trivialmente
-        //     copiable.
-        //   - por I-TESELADO (comprobado en la asercion de arriba) el rango
-        //     destino es exactamente el rango de la hoja.
         if (node.count > 0) {
-            std::memcpy(out.data() + pos, buf.data() + node.start, node.count * sizeof(T));
+            assert(node.start + node.count <= out.size());
+            const std::vector<T>& buf = node.inBufferA ? bufferA_ : bufferB_;
+            std::memcpy(out.data() + node.start, buf.data() + node.start, node.count * sizeof(T));
         }
-        pos += node.count;
         return;
     }
     for (const RefinedRange& child : node.children) {
-        mergeRefined(child, out, pos);
+        appendLeaves(child, out);
     }
 }
+
+#ifndef NDEBUG
+// Debug-only check of the tiling invariant: walks the leaves in order and
+// verifies they cover [0, n) exactly once, with no gap and no overlap.
+// This is the property the join relies on, so it is worth stating
+// executably rather than only in a comment.
+template <typename Node>
+bool verifyTiling(const Node& node, std::size_t& expectedStart) {
+    if (node.isLeaf()) {
+        if (node.start != expectedStart) return false;
+        expectedStart += node.count;
+        return true;
+    }
+    for (const auto& child : node.children) {
+        if (!verifyTiling(child, expectedStart)) return false;
+    }
+    return true;
+}
+#endif
 
 // ============================================================
 // Orchestration
@@ -596,21 +683,19 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
 #ifdef DRS_ENABLE_METRICS
     metrics_.startPhase("analyze");
 #endif
-    const AnalysisResult analysis = analyze(data);
+    const ValueRange range = analyze(data);
 #ifdef DRS_ENABLE_METRICS
     metrics_.endPhase("analyze");
 #endif
 
-    std::size_t binCount = 0;
-    uint64_t intervalSize = 1;
-    computeRangeParameters(analysis, binCount, intervalSize);
+    const IntervalGrid grid = computeRangeParameters(range, data.size());
 
 #ifdef DRS_ENABLE_METRICS
     metrics_.startPhase("distribute");
 #endif
     std::vector<std::size_t> bucketStart;
     std::vector<std::size_t> bucketSize;
-    distribute(data, analysis.minimumValue, intervalSize, binCount, bucketStart, bucketSize);
+    distribute(data, range.minimum, grid.width, grid.binCount, bucketStart, bucketSize);
 #ifdef DRS_ENABLE_METRICS
     metrics_.endPhase("distribute");
 #endif
@@ -619,13 +704,23 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
     metrics_.startPhase("refine");
 #endif
     std::vector<RefinedRange> roots;
-    roots.reserve(binCount);
-    for (std::size_t i = 0; i < binCount; ++i) {
-        // Data placed by distribute() always starts out in bufferA_.
+    roots.reserve(grid.binCount);
+    for (std::size_t i = 0; i < grid.binCount; ++i) {
+        // distribute() always leaves the data in bufferA_.
         roots.push_back(refine(true, bucketStart[i], bucketSize[i], 0));
     }
 #ifdef DRS_ENABLE_METRICS
     metrics_.endPhase("refine");
+#endif
+
+#ifndef NDEBUG
+    {
+        std::size_t expectedStart = 0;
+        for (const RefinedRange& root : roots) {
+            assert(verifyTiling(root, expectedStart) && "leaves do not tile [0, n) in order");
+        }
+        assert(expectedStart == data.size() && "leaves do not cover [0, n)");
+    }
 #endif
 
 #ifdef DRS_ENABLE_METRICS
@@ -638,31 +733,23 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
     metrics_.endPhase("localSort");
 #endif
 
+    // Only from here on is the caller's array modified. Everything above
+    // reads 'data' but never writes it, which is what gives sort() the
+    // strong exception guarantee documented in the header: any allocation
+    // failure happens before the first write.
 #ifdef DRS_ENABLE_METRICS
     metrics_.startPhase("merge");
 #endif
-    std::size_t pos = 0;
     for (const RefinedRange& root : roots) {
-        mergeRefined(root, data, pos);
+        appendLeaves(root, data);
     }
 #ifdef DRS_ENABLE_METRICS
     metrics_.endPhase("merge");
 #endif
 
-    // I-TESELADO: las hojas cubren exactamente [0, n) en orden ascendente.
-    // mergeRefined() comprueba hoja a hoja que pos == node.start; aqui se
-    // cierra la induccion. Es la precondicion de correccion del paso 7 de
-    // SPEC_v9.md (usar 'data' como uno de los dos buffers), que depende de
-    // que los rangos de las hojas sean disjuntos y esten en su sitio.
-    assert(pos == data.size() && "I-TESELADO: las hojas no cubren [0, n)");
-
 #ifdef DRS_ENABLE_METRICS
-    // Los scratch reutilizados NO se contabilizaban, lo que hacia que la
-    // metrica de memoria subestimase el consumo real en ~50% desde v7 (ver
-    // ANALYSIS_v9_propuesta.md 3.5). Se anaden al final, una sola vez, con
-    // su capacidad final: son estructuras persistentes durante todo sort().
     metrics_.addApproxMemory(bucketOfScratch_.capacity() * sizeof(std::size_t) +
-                              writeCursorScratch_.capacity() * sizeof(std::size_t));
+                             writeCursorScratch_.capacity() * sizeof(std::size_t));
 #endif
 }
 
@@ -681,6 +768,12 @@ void DynamicRangeSort<T>::flattenLeaves(const RefinedRange& node, std::vector<Le
     }
 }
 
+// Runs the partitioning phases only, without sorting or joining, and
+// returns the resulting leaves.
+//
+// NOTE this deliberately mirrors the first three phases of sort(). If
+// sort() ever changes shape, this must change with it, or the
+// introspection will describe a partition that sort() no longer produces.
 template <typename T>
 std::vector<typename DynamicRangeSort<T>::LeafView> DynamicRangeSort<T>::debugPartitionOnly(
     const std::vector<T>& data) {
@@ -693,17 +786,14 @@ std::vector<typename DynamicRangeSort<T>::LeafView> DynamicRangeSort<T>::debugPa
         return leaves;
     }
 
-    const AnalysisResult analysis = analyze(data);
-
-    std::size_t binCount = 0;
-    uint64_t intervalSize = 1;
-    computeRangeParameters(analysis, binCount, intervalSize);
+    const ValueRange range = analyze(data);
+    const IntervalGrid grid = computeRangeParameters(range, data.size());
 
     std::vector<std::size_t> bucketStart;
     std::vector<std::size_t> bucketSize;
-    distribute(data, analysis.minimumValue, intervalSize, binCount, bucketStart, bucketSize);
+    distribute(data, range.minimum, grid.width, grid.binCount, bucketStart, bucketSize);
 
-    for (std::size_t i = 0; i < binCount; ++i) {
+    for (std::size_t i = 0; i < grid.binCount; ++i) {
         const RefinedRange root = refine(true, bucketStart[i], bucketSize[i], 0);
         flattenLeaves(root, leaves);
     }

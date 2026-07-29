@@ -14,71 +14,117 @@
 namespace drs {
 
 // ============================================================
-// DynamicRangeSort (DRS) - v7
+// DynamicRangeSort
 // ============================================================
-// Custom sorting algorithm following the philosophy:
+// A distribution sort for integer keys. Instead of comparing elements
+// against each other globally, it looks at how the values are spread,
+// cuts the observed value range into equal-width intervals, refines the
+// intervals that are still too crowded using ONLY that interval's own
+// observed range, sorts each final interval locally, and concatenates.
 //
-//   Analyze -> Build bins -> Refine bins -> Sort locally -> Merge
+//     analyse -> build intervals -> refine -> sort locally -> join
 //
-// v7 is a pure performance pass, not a new heuristic. Three mechanisms
-// investigated in v6 (micro-histogram splits, density-aware initial
-// bins, Difficulty-Score-based subdivision skipping) were all measured
-// as net-negative and are gone from this class entirely - not disabled,
-// removed. Their code still exists, isolated, in
-// algoritmo/versions/DRSv6_experimental.hpp for archival comparison
-// only; it is never included here. See ANALYSIS_v6.md for why each one
-// was removed and ANALYSIS_v7.md for the cleanup.
+// The join is a plain concatenation, never a merge: the intervals are
+// value-ordered by construction, so element i of interval j is <= every
+// element of interval j+1.
 //
-// The other v7 change is the production/research split: every
-// DRSMetrics call site, the metrics() accessor, and the debug-only
-// introspection API (debugPartitionOnly) are now compiled out entirely
-// unless DRS_ENABLE_METRICS is defined. A production build (the
-// Makefile's default) produces a binary with zero instrumentation
-// code - not disabled counters, no counters at all. See
-// ANALYSIS_v7.md, "2/3", for the measured production-vs-research
-// overhead this replaces.
+// ---- Complexity ---------------------------------------------------
+// Theta(n) time and Theta(n) auxiliary space, treating the key width w
+// as a constant - the same sense in which radix sort is linear. This is
+// NOT a bound in the comparison model and does not contradict the
+// Omega(n log n) comparison lower bound: the algorithm does arithmetic on
+// the keys, not only comparisons.
 //
-// The five-step philosophy, and the rule that any subdivision only ever
-// uses a bin's own observed range, are unchanged from the original
-// specification.
+// The constant is bounded because the refinement depth is bounded by
+// min(w, MAX_SUBDIVISION_DEPTH) and the largest range that can reach a
+// comparison sort is bounded by lambda * 2^(w/D), a constant independent
+// of n. See Config.hpp and the proofs next to refine().
 //
-// This implementation only supports integral element types, since every
-// binning formula (range, intervalSize, binIndex, observedRange) is
-// defined over integer arithmetic.
+// ---- Guarantees ---------------------------------------------------
+// STABILITY: none. This sorter is NOT stable. For the integral key types
+//   it accepts, equal elements are indistinguishable, so this is
+//   unobservable - but it does mean the implementation must not be
+//   generalised to key/value pairs without revisiting detectRun(), which
+//   reverses runs in place.
+//
+// THREAD SAFETY: a single instance is NOT safe to use from more than one
+//   thread; it owns mutable scratch buffers that are reused across the
+//   whole recursion. Distinct instances are independent and may be used
+//   concurrently. There is no shared global state.
+//
+// EXCEPTIONS: strong guarantee IN THE PRODUCTION CONFIGURATION. The only
+//   operations that can throw are the internal allocations, and all of
+//   them happen before the first write to the caller's array - the output
+//   is only produced in the final join. If sort() throws, the input is
+//   left exactly as it was.
+//   This does NOT hold when DRS_ENABLE_METRICS is defined: the
+//   instrumentation records the timing of the join phase *after* the join
+//   has run, and that record allocates. A research build can therefore
+//   throw with the output already written. The research build is a
+//   measurement tool, not a product, and is not fixed for this - but the
+//   difference is real and tests/api_contract.cpp pins it.
+//
+// MEMORY: sort() allocates about 3n * sizeof(T) bytes of scratch on first
+//   use and REUSES it across subsequent calls on the same instance. The
+//   memory is released when the instance is destroyed, not between calls;
+//   an instance used once on a huge array keeps that memory alive.
+//
+// ---- Element type -------------------------------------------------
+// Restricted to integral types: every formula (span, interval width, bin
+// index) is defined over exact integer arithmetic, and the range
+// arithmetic relies on two's-complement wrap-around being well defined.
 // ============================================================
 template <typename T>
 class DynamicRangeSort {
     static_assert(std::is_integral<T>::value,
                   "DynamicRangeSort requires an integral element type");
+    // std::is_integral<bool> is true, but std::vector<bool> is the packed
+    // specialisation: it has no data() and its elements are not
+    // addressable, so the block copies below cannot work on it. Rejecting
+    // it here gives a readable message instead of a template error deep
+    // inside memcpy.
+    static_assert(!std::is_same<typename std::remove_cv<T>::type, bool>::value,
+                  "DynamicRangeSort does not support bool: std::vector<bool> is a packed "
+                  "specialisation with no contiguous storage");
 
 public:
-    // targetElementsPerBin (lambda) fija la OCUPACION objetivo: cuantos bins
-    // se crean (initialBins = ceil(n/lambda)) y en cuantas partes se
-    // subdivide uno que se refina (splits = ceil(count/lambda)).
+    // targetElementsPerBin (lambda) is the target occupancy per bin, and
+    // leafThreshold (t) is the size at which refinement stops. See
+    // Config.hpp for what each one controls and how to choose it.
     //
-    // leafThreshold (t) fija el CASO BASE: un bin con <= t elementos deja de
-    // refinarse y se ordena localmente.
+    // Both arguments are clamped rather than rejected, so that no
+    // combination can produce undefined behaviour:
+    //   - lambda == 0 is replaced by the default (a bin must hold at
+    //     least one element);
+    //   - t < lambda is raised to lambda (a bin of the target occupancy
+    //     must be allowed to become a leaf).
+    // The clamping is silent by design: these are tuning hints, not a
+    // contract the caller can violate.
     //
-    // Hasta v9 eran el mismo numero, lo que forzaba a que P(ocupacion > t)
-    // fuese ~0,5 para datos uniformes: la mitad de los elementos entraba en
-    // refine() por aritmetica, no por los datos. Separarlos es el objeto del
-    // paso 8. Por defecto t = lambda, es decir el comportamiento de v9 sin
-    // cambio alguno.
+    // NOTE: the two parameters are both std::size_t and adjacent, so
+    // swapping them at a call site compiles. `DynamicRangeSort(64, 32)`
+    // is silently read as (64, 64). A named-parameter struct would remove
+    // the hazard; it is deliberately not introduced here to keep the
+    // public interface unchanged.
     explicit DynamicRangeSort(std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN,
-                               std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
+                              std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
 
-    // Sorts 'data' in place following the DRS specification.
+    // Sorts 'data' in place into ascending order.
     void sort(std::vector<T>& data);
 
+    // The effective parameters after clamping. Exposed because the
+    // clamping is silent: this is the only way a caller can confirm what
+    // the instance is actually doing.
+    std::size_t targetElementsPerBin() const { return targetElementsPerBin_; }
+    std::size_t leafThreshold() const { return leafThreshold_; }
+
 #ifdef DRS_ENABLE_METRICS
-    // Read-only access to the metrics gathered during the last sort()
-    // call. Only exists in the research build.
+    // Statistics from the last sort() call. Research build only.
     const DRSMetrics& metrics() const { return metrics_; }
 
-    // ---- Research-only introspection --------------------------------------
-    // Exists purely so external analysis code (see experimentos/) can
-    // inspect the bins DRS would produce, without sorting or merging
-    // them. sort() never calls any of this.
+    // ---- Research-only introspection --------------------------------
+    // Lets analysis code inspect the partition DRS would produce without
+    // sorting or joining it. sort() never calls any of this.
     struct LeafView {
         bool inBufferA;
         std::size_t start;
@@ -92,58 +138,58 @@ public:
 #endif
 
 private:
-    // ---- FASE 1: ANALISIS ----------------------------------------------
-    struct AnalysisResult {
-        T minimumValue{};
-        T maximumValue{};
-        std::size_t length = 0;
+    // Signed index type for the local sorts. std::ptrdiff_t rather than
+    // long: long is 32 bits on Windows, which would silently break for
+    // ranges above 2^31.
+    using Index = std::ptrdiff_t;
+
+    // ---- Phase 1: analysis ------------------------------------------
+    struct ValueRange {
+        T minimum{};
+        T maximum{};
     };
 
-    AnalysisResult analyze(const std::vector<T>& data) const;
+    ValueRange analyze(const std::vector<T>& data) const;
 
-    // ---- FORMULAS ---------------------------------------------------------
-    // The interval width is a magnitude, not a value of T: it is carried as
-    // uint64_t so it can represent widths that do not fit in T. See the
-    // comment on computeRangeParameters() in the .tpp for the span-based
-    // formulation and the two properties it relies on.
-    void computeRangeParameters(const AnalysisResult& analysis, std::size_t& outBinCount,
-                                 uint64_t& outIntervalSize) const;
+    // ---- Interval formulas ------------------------------------------
+    // The interval width is a magnitude, not a value of T: it is carried
+    // as uint64_t because a width can exceed the representable range of
+    // T. See the proof next to computeRangeParameters().
+    struct IntervalGrid {
+        std::size_t binCount = 1;
+        uint64_t width = 1;
+    };
 
-    std::size_t computeBinIndex(T value, T rangeStart, uint64_t intervalSize) const;
+    IntervalGrid computeRangeParameters(const ValueRange& range, std::size_t length) const;
 
-    // ---- DISTRIBUCION (primera+segunda pasada fusionadas) ------------------
-    void distribute(const std::vector<T>& data, T minimumValue, uint64_t intervalSize,
-                     std::size_t binCount, std::vector<std::size_t>& outBucketStart,
-                     std::vector<std::size_t>& outBucketSize);
+    std::size_t computeBinIndex(T value, T rangeStart, uint64_t width) const;
 
-    // Shared counting-sort-style distribution step used by distribute()
-    // and every refine() split: counts how many elements of
-    // src[srcStart, srcStart+count) fall into each of 'numBuckets'
-    // equal-width buckets, then places them into dst starting at
-    // dstStart. Reuses scratch member vectors across calls instead of
-    // allocating fresh ones each time (see ANALYSIS_v7.md, "4/7").
+    // ---- Phase 2 and 3: distribution --------------------------------
+    void distribute(const std::vector<T>& data, T minimumValue, uint64_t width,
+                    std::size_t binCount, std::vector<std::size_t>& outBucketStart,
+                    std::vector<std::size_t>& outBucketSize);
+
     void countAndPlace(const std::vector<T>& src, std::size_t srcStart, std::size_t count,
-                        std::vector<T>& dst, std::size_t dstStart, T rangeStart,
-                        uint64_t intervalSize, std::size_t numBuckets,
-                        std::vector<std::size_t>& outBucketStart,
-                        std::vector<std::size_t>& outBucketSize);
+                       std::vector<T>& dst, std::size_t dstStart, T rangeStart, uint64_t width,
+                       std::size_t numBuckets, std::vector<std::size_t>& outBucketStart,
+                       std::vector<std::size_t>& outBucketSize);
 
-    // ---- REFINAMIENTO RECURSIVO (SUBDIVISION generalizada) ------------------
+    // ---- Phase 4: recursive refinement ------------------------------
     struct RefinedRange {
         bool inBufferA = true;
-        // Certificado de ordenado. refine() lo pone cuando descubre que el
-        // rango observado del bin es degenerado (observedMin == observedMax):
-        // en ese momento YA SABE que el bin esta ordenado, porque todos sus
-        // elementos son identicos. Sin el certificado, sortLeaf() vuelve a
-        // recorrer el bin entero con detectRun() para redescubrirlo.
+
+        // Set by refine() when it discovers the bin's observed span is
+        // zero, i.e. every element is identical. Such a bin is sorted by
+        // definition; the flag lets the local sort skip it instead of
+        // re-scanning the whole bin to rediscover the same fact.
         //
-        // Solo lo llevan las hojas que llegaron a refine() con
-        // count > targetElementsPerBin_; las que salen por tamano retornan
-        // antes de calcular min/max y no tienen nada que certificar.
+        // Only bins that actually entered refine() carry it: a bin that
+        // returns because it is already at or below the leaf threshold
+        // never computes its min and max, so it has nothing to certify.
         //
-        // Va junto a inBufferA a proposito: cae en el relleno que ya existia,
-        // asi que sizeof(RefinedRange) no cambia.
+        // Placed next to inBufferA so it lands in existing padding.
         bool sorted = false;
+
         std::size_t start = 0;
         std::size_t count = 0;
         std::vector<RefinedRange> children;
@@ -157,38 +203,37 @@ private:
     void flattenLeaves(const RefinedRange& node, std::vector<LeafView>& out) const;
 #endif
 
-    // ---- ORDENACION LOCAL -------------------------------------------------
+    // ---- Phase 5: local sorting -------------------------------------
     enum class RunShape { Ascending, Descending, Unsorted };
 
     RunShape detectRun(const std::vector<T>& buf, std::size_t start, std::size_t count);
     void sortLeaf(std::vector<T>& buf, std::size_t start, std::size_t count);
     void sortRefined(RefinedRange& node);
 
-    void insertionSort(std::vector<T>& arr, long left, long right);
-    void quickSort(std::vector<T>& arr, long left, long right);
-    void introSort(std::vector<T>& arr, long left, long right);
-    void introSortImpl(std::vector<T>& arr, long left, long right, int depthLimit);
-    void heapSort(std::vector<T>& arr, long left, long right);
-    void siftDown(std::vector<T>& arr, long start, long end);
-    long partition(std::vector<T>& arr, long left, long right);
+    void insertionSort(std::vector<T>& arr, Index left, Index right);
+    void quickSort(std::vector<T>& arr, Index left, Index right);
+    void introSort(std::vector<T>& arr, Index left, Index right);
+    void introSortImpl(std::vector<T>& arr, Index left, Index right, std::size_t depthLimit);
+    void heapSort(std::vector<T>& arr, Index left, Index right);
+    void siftDown(std::vector<T>& arr, Index start, Index end);
+    Index partition(std::vector<T>& arr, Index left, Index right);
 
-    // ---- UNION FINAL --------------------------------------------------------
-    void mergeRefined(const RefinedRange& node, std::vector<T>& out, std::size_t& pos) const;
+    // ---- Phase 6: join ----------------------------------------------
+    void appendLeaves(const RefinedRange& node, std::vector<T>& out) const;
 
-    std::size_t targetElementsPerBin_;   // lambda: ocupacion objetivo
-    std::size_t leafThreshold_;          // t: umbral del caso base
+    std::size_t targetElementsPerBin_;   // lambda: target occupancy
+    std::size_t leafThreshold_;          // t: base-case size
 
-    // Scratch buffers shared by distribute() and refine() for the
-    // duration of a single sort() call.
+    // The two cascading buffers. A bin at even refinement depth lives in
+    // bufferA_, at odd depth in bufferB_; a split reads one and writes the
+    // other at the SAME absolute offsets.
     std::vector<T> bufferA_;
     std::vector<T> bufferB_;
 
-    // Reused across every countAndPlace() call (top-level and every
-    // recursive split) to avoid a heap allocation per call - recursion
-    // is strictly depth-first and single-threaded, so each call fully
-    // consumes these before any nested call reuses them.
+    // Reused by every countAndPlace() call. This is safe because the
+    // recursion is strictly depth-first and single-threaded: a call has
+    // finished reading both of these before any nested call reuses them.
     std::vector<std::size_t> bucketOfScratch_;
-    std::vector<std::size_t> bucketSizeScratch_;
     std::vector<std::size_t> writeCursorScratch_;
 
 #ifdef DRS_ENABLE_METRICS
