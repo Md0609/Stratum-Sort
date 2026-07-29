@@ -229,13 +229,21 @@ typename DynamicRangeSort<T>::Partitioning DynamicRangeSort<T>::planRefinement(
     return grid;
 }
 
-// Bucket index of a value within a grid. By Property 2 the result is
-// always valid, so there is no clamp: a clamp here would silently absorb
-// an arithmetic bug instead of exposing it.
+// Bucket index of a value. By Property 2 the result is always valid, so
+// there is no clamp: a clamp here would silently absorb an arithmetic bug
+// instead of exposing it.
+//
+// The subtraction is done in unsigned arithmetic on purpose. For a signed
+// T with a range straddling zero, max - min overflows in signed
+// arithmetic (undefined behaviour) but is exact modulo 2^w in unsigned -
+// and since min <= value, the true offset is what the wrap produces.
+//
+// Monotone in 'value' for a fixed origin and width, which is the property
+// the tiling invariant in the join phase rests on.
 template <typename T>
-std::size_t DynamicRangeSort<T>::bucketOf(T value, const Partitioning& grid) const {
-    const uint64_t offset = static_cast<uint64_t>(value) - static_cast<uint64_t>(grid.origin);
-    return static_cast<std::size_t>(offset / grid.width);
+std::size_t DynamicRangeSort<T>::bucketOf(T value, T origin, uint64_t width) {
+    const uint64_t offset = static_cast<uint64_t>(value) - static_cast<uint64_t>(origin);
+    return static_cast<std::size_t>(offset / width);
 }
 
 // ============================================================
@@ -312,9 +320,7 @@ void DynamicRangeSort<T>::countAndPlace(SourceSlice src, TargetSlice dst, const 
     std::size_t* const bucketOfIt = bucketOfScratch_.data();
     std::size_t* const sizes = outBucketSize.data();
     for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t idx =
-            static_cast<std::size_t>((static_cast<uint64_t>(in[i]) -
-                                      static_cast<uint64_t>(origin)) / width);
+        const std::size_t idx = bucketOf(in[i], origin, width);
         assert(idx < numBuckets); // Property 2
         bucketOfIt[i] = idx;
         ++sizes[idx];
@@ -605,6 +611,8 @@ void DynamicRangeSort<T>::quickSort(std::vector<T>& arr, Index left, Index right
     insertionSort(arr, left, right);
 }
 
+namespace detail {
+
 // floor(log2(v)) for v >= 1, by integer arithmetic. Deliberately not
 // std::log2: this class is otherwise entirely integer, and using floating
 // point for a value that controls control flow invites platform-dependent
@@ -618,11 +626,13 @@ inline std::size_t floorLog2(std::size_t v) {
     return r;
 }
 
+} // namespace detail
+
 template <typename T>
 void DynamicRangeSort<T>::introSort(std::vector<T>& arr, Index left, Index right) {
     if (right <= left) return;
     const std::size_t n = static_cast<std::size_t>(right - left + 1);
-    introSortImpl(arr, left, right, INTROSORT_DEPTH_FACTOR * floorLog2(n));
+    introSortImpl(arr, left, right, INTROSORT_DEPTH_FACTOR * detail::floorLog2(n));
 }
 
 // QuickSort with a partitioning budget; when the budget runs out the rest
@@ -725,6 +735,8 @@ void DynamicRangeSort<T>::appendLeaves(const RefinedRange& node, std::vector<T>&
 }
 
 #ifndef NDEBUG
+namespace detail {
+
 // Debug-only check of the tiling invariant: walks the leaves in order and
 // verifies they cover [0, n) exactly once, no gap and no overlap. The
 // join depends on this property, so it is worth stating executably rather
@@ -741,6 +753,8 @@ bool verifyTiling(const Node& node, std::size_t& expectedStart) {
     }
     return true;
 }
+
+} // namespace detail
 #endif
 
 // ============================================================
@@ -778,7 +792,8 @@ void DynamicRangeSort<T>::sort(std::vector<T>& data) {
     {
         std::size_t expectedStart = 0;
         for (const RefinedRange& root : roots) {
-            assert(verifyTiling(root, expectedStart) && "leaves do not tile [0, n) in order");
+            assert(detail::verifyTiling(root, expectedStart) &&
+                   "leaves do not tile [0, n) in order");
         }
         assert(expectedStart == data.size() && "leaves do not cover [0, n)");
     }

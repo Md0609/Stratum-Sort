@@ -64,10 +64,21 @@ namespace drs {
 //   throw with the output already written. That build is a measurement
 //   tool, not a product; tests/api_contract.cpp pins the difference.
 //
-// MEMORY: sort() allocates roughly 3n * sizeof(T) bytes of scratch on
-//   first use and reuses it across later calls on the same instance. It
-//   is released when the instance is destroyed, not between calls: an
-//   instance used once on a huge array keeps that memory alive.
+// MEMORY: sort() allocates
+//
+//       2n * sizeof(T)        the two cascading buffers
+//     +  n * sizeof(size_t)   one bucket index per element
+//     +  O(n / lambda)        write cursors and the refinement tree
+//
+//   NOTE the middle term does not scale with T: it is one size_t per
+//   element whatever the key type. For an 8-byte key the total is about
+//   3.1x the input, but for a 1-byte key it is about 10x. Sorting narrow
+//   keys is where this sorter is least economical with memory.
+//
+//   The scratch is allocated on first use and reused across later calls
+//   on the same instance. It is released when the instance is destroyed,
+//   not between calls: an instance used once on a huge array keeps that
+//   memory alive.
 //
 // ---- Element type -------------------------------------------------
 // Integral types only: every formula (span, interval width, bin index) is
@@ -178,7 +189,11 @@ private:
 
     // ---- Interval formulas ------------------------------------------
     Partitioning planPartition(const ValueRange& range, std::size_t length) const;
-    std::size_t bucketOf(T value, const Partitioning& grid) const;
+
+    // The value-to-bucket map. Takes the grid fields as scalars rather
+    // than the Partitioning, because the distribution loop calls it per
+    // element and must keep them in registers - see countAndPlace().
+    static std::size_t bucketOf(T value, T origin, uint64_t width);
 
     // ---- Phases 2 and 3: distribution -------------------------------
     void distribute(const std::vector<T>& data, const Partitioning& grid,

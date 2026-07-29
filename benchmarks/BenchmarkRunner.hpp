@@ -42,7 +42,7 @@ struct BenchmarkReport {
 // 'baseline', verifying correctness on every trial and collecting timing
 // statistics across all of them. This function requires DRS_ENABLE_METRICS
 // (it reads sorter.metrics()), matching every binary that includes this
-// header (benchmarks/, experimentos/, analisis/ all build with it).
+// header (benchmarks/, experiments/, analysis/ all build with it).
 // targetElementsPerBin == 0 means "use the shipped defaults", which is
 // what a report about the library should measure. Passing an explicit
 // value is for parameter studies only.

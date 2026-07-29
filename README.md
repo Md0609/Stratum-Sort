@@ -73,7 +73,7 @@ The full derivation, with every invariant proved, is in
 | **Time, best case** | `Θ(n)` — all keys equal: one pass, zero comparisons |
 | **Time, average** | `Θ(n)` — about `(λ+1)/4` comparisons per element |
 | **Time, worst case** | `Θ(n)` with a bounded constant, for fixed `w` and `λ` |
-| **Auxiliary space** | `Θ(n)` — about `3n · sizeof(T)` bytes, roughly 3.1× the input |
+| **Auxiliary space** | `Θ(n)` — `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes: ~3.1× the input for an 8-byte key, ~10× for a 1-byte key |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 
 ## Guarantees
@@ -100,7 +100,9 @@ choosing this over `std::sort`:
   straightforward extension to key/value pairs.
 - **Not thread-safe per instance.** One instance owns mutable scratch
   buffers. Separate instances are fine.
-- **Uses `Θ(n)` extra memory.** `std::sort` uses `O(log n)`.
+- **Uses `Θ(n)` extra memory**, where `std::sort` uses `O(log n)` — and
+  the bucket-index array costs one `size_t` per element regardless of the
+  key type, so the overhead is proportionally worst for narrow keys.
 - **Loses to `std::sort` on already-sorted input** by roughly 6× on the
   reference machine: libc++ resolves that case in essentially one pass,
   while this algorithm always does at least three. Detecting sortedness
@@ -117,30 +119,45 @@ choosing this over `std::sort`:
 
 ## Performance
 
-Release build, Apple M4, `n = 10⁶`, median of alternating runs. `ratio` is
-DRS ÷ `std::sort`, so below 1.0 means DRS is faster.
+Release build, Apple M4, `n = 10⁶`. DRS and `std::sort` alternate on
+identical copies of the same input; median of nine repetitions, and of
+three separate sessions. `ratio` is DRS ÷ `std::sort`, so below 1.0 means
+DRS is faster.
 
 | Dataset | DRS (ms) | `std::sort` (ms) | ratio |
 |---|---|---|---|
-| Small range, many elements | 1.96 | 5.19 | **0.38** |
-| Huge range, sparse | 10.68 | 15.29 | **0.70** |
-| Whole-universe span | 10.74 | 15.31 | **0.70** |
-| Random uniform | 10.82 | 15.31 | **0.71** |
-| Normal (Gaussian) | 12.12 | 14.44 | **0.84** |
-| Concentrated cluster | 4.80 | 5.50 | **0.87** |
-| Many repeated values | 2.27 | 2.33 | **0.98** |
-| Reverse sorted | 5.23 | 1.19 | 4.40 |
-| Already sorted | 4.67 | 0.68 | 6.85 |
-| Adversarial (depth-exhausting) | 26.40 | 15.16 | 1.74 |
+| Small range, many elements | 1.93 | 5.29 | **0.36** |
+| Huge range, sparse | 10.48 | 15.70 | **0.67** |
+| Whole-universe span | 10.49 | 15.68 | **0.67** |
+| Random uniform | 10.68 | 15.81 | **0.68** |
+| Normal (Gaussian) | 11.77 | 15.05 | **0.78** |
+| Concentrated cluster | 4.86 | 5.61 | **0.87** |
+| Many repeated values | 2.60 | 2.42 | 1.07 † |
+| Adversarial (depth-exhausting) | 25.82 | 15.84 | 1.63 |
+| Reverse sorted | 4.80 | 1.24 | 3.86 |
+| Already sorted | 4.27 | 0.72 | 5.93 |
 
-The last row is a synthetic input built specifically to force the
-refinement to its depth limit. It is not representative of anything; it
-is there because a worst case that is never measured is not a worst case,
-it is a hope.
+† *Many repeated values* has a ~18% run-to-run dispersion and its internal
+counters are identical across configurations, so treat it as a tie rather
+than as a loss — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-Reproduce with `make baseline`. See
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the methodology, which
-matters more than the numbers.
+The adversarial row is a synthetic input built specifically to force the
+refinement to its depth limit, and built against the shipped λ — an
+adversary constructed for a different λ is just another random input. It
+is not representative of anything; it is there because a worst case that
+is never measured is not a worst case, it is a hope.
+
+Reproduce with:
+
+```bash
+make timings
+```
+
+**Not** with `make baseline`. That tool prints the deterministic counters,
+which requires the instrumented build, and its clock is therefore not the
+library's — it ran 5–20% slower here, unevenly across datasets. The two
+tools are separate on purpose. The methodology, which matters more than
+the numbers, is in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Project layout
 
@@ -155,6 +172,7 @@ tests/                Correctness
   main.cpp              Edge cases and dataset sweep
   api_contract.cpp      Contract tests across the whole parameter space
   edge_sanitizers.cpp   Range-arithmetic limits, run under sanitizers
+  differential_fuzz.cpp Randomised differential test against std::sort
 
 benchmarks/           Measurement tools
 analysis/             Complexity-model fitting
@@ -180,7 +198,9 @@ Requires a C++17 compiler. No dependencies.
 make            # build everything, including every research program
 make test       # correctness: three suites, assertions active
 make sanitizers # range-arithmetic limits under ASan and UBSan
-make baseline   # timings against std::sort over the dataset battery
+make fuzz       # randomised differential test against std::sort
+make timings    # release timings against std::sort (the quotable ones)
+make baseline   # deterministic counters; instrumented, do not quote its clock
 make profile    # per-phase time breakdown and allocation counts
 ```
 
@@ -209,12 +229,22 @@ sizes, and the strong exception guarantee — verified by forcing
 `bad_alloc` at each of the first 40 allocation points and confirming the
 input survives intact.
 
-Under ASan and UBSan — the suite that pushes spans to the whole key
-universe, which is where an overflow would hide:
+Two more suites run under ASan and UBSan, because the range arithmetic is
+precisely the kind of claim a sanitizer can hold to account:
 
 ```bash
 make sanitizers
 ```
+
+```bash
+make fuzz N=200000
+```
+
+`make fuzz` is a differential test against `std::sort` with the element
+type, the size, both tuning parameters and the value distribution drawn at
+random. Three oracles run at once — agreement with `std::sort`, the
+internal assertions, and the sanitizers. It is seeded, so a failure
+reproduces.
 
 ## Documentation
 

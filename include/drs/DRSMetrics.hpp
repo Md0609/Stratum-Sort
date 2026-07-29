@@ -48,7 +48,7 @@ public:
     // halving the worst-case remaining work; "Useless" means the largest
     // child kept at least 90% of the original problem. These cutoffs come
     // from the measured distribution of reductionPct, not from taste;
-    // see documentacion/ for the data.
+    // see docs/history/ for the data.
     static constexpr double kUsefulReductionThreshold = 0.5;
     static constexpr double kUselessReductionThreshold = 0.1;
 
@@ -73,7 +73,6 @@ public:
         workByDepth_.assign(1, 0);
     }
 
-    void recordComparison() { ++comparisons_; }
     void recordComparisons(std::size_t n) { comparisons_ += n; }
 
     // Called every time a bin is split during recursive refinement.
@@ -85,8 +84,11 @@ public:
         maxSubdivisionDepth_ = std::max(maxSubdivisionDepth_, depthReached);
     }
 
-    // Full quality record for a subdivision  - also
-    //
+    // Full quality record for one subdivision, kept per event rather than
+    // aggregated: the interesting question was never the mean reduction
+    // but the shape of its distribution, and a mean cannot be
+    // un-aggregated afterwards. Also accumulates the elements processed
+    // per depth level, which is what shows whether a level earns its cost.
     void recordSubdivisionQuality(std::size_t originalSize, std::size_t childCount,
                                    std::size_t maxChildSize, std::size_t depth) {
         SubdivisionRecord rec;
@@ -152,7 +154,7 @@ public:
 
     // Raw per-leaf-bin sizes (including empty bins, size 0), in the order
     // they were recorded. Exists for external distribution analysis (see
-    // experimentos/BinSizeHistogram.hpp) - averageBinSize()/maxBinSize()
+    // experiments/BinSizeHistogram.hpp) - averageBinSize()/maxBinSize()
     // above remain the cheap summary for routine reporting.
     const std::vector<std::size_t>& binSizes() const { return binSizes_; }
 

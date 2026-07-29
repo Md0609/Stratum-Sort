@@ -422,6 +422,28 @@ constant — exactly the sense in which radix sort is linear. It is not a
 bound in the comparison model and does not contradict `Ω(n log n)`,
 because the algorithm does arithmetic on keys.
 
+### Auxiliary space
+
+```
+  2n · sizeof(T)        the two cascading buffers
++  n · sizeof(size_t)   one bucket index per element
++  O(n / λ)             write cursors, and one node per bin in the
+                        refinement tree
+```
+
+`Θ(n)`, but note the middle term: it is one `size_t` per element **no
+matter how wide the key is**. For an 8-byte key the total is about 3.1×
+the input; for a 1-byte key it is about 10×. A reimplementation targeting
+narrow keys should size that array to the smallest type that can index
+`binCount`, which is the one place where this design pays a visible price
+for being generic.
+
+Both buffers must be allocated at full length `n` before refinement
+starts, not per bin: a split writes its children into the *other* buffer
+at the **same absolute offsets**, so both are indexed over `[0, n)` from
+the first level onwards. That is also what makes the join a copy rather
+than a merge.
+
 ## 9. Local sorting
 
 A leaf is finished by:

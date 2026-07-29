@@ -17,9 +17,26 @@ The research build exists because the deterministic counters — comparisons,
 bins, subdivisions, depth, per-phase time — are exact and reproducible
 where the clock is not. It is a laboratory instrument. Quoting a research
 timing as a performance result is the single easiest way to publish a
-wrong number, and it happened in this project: one change appeared to give
-−19.8% in the research build and ~0% in release, because the change also
-removed a million counter increments that do not exist in release.
+wrong number, and it has happened twice in this project: once when a
+change appeared to give −19.8% in the research build and ~0% in release
+(it had removed a million counter increments that release does not have),
+and once when the README's own headline table was measured with
+`make baseline`, which cannot be anything but a research build because it
+reads `sorter.metrics()`.
+
+**Which tool to use, therefore:**
+
+| | build | quote its times? |
+|---|---|---|
+| `make timings` | release | **yes — only this one** |
+| `make baseline` | research | no; quote its *counters* |
+| `make profile` | research | no; relative phase shares only |
+
+The gap between the two is not a constant you can divide out. Measured
+here, release was 5–20% faster than research, and the spread was uneven
+across datasets — it lands wherever the counters happen to be incremented
+most. That is why they are separate binaries rather than one binary with a
+flag.
 
 ## Protocol
 
@@ -55,7 +72,8 @@ removed a million counter increments that do not exist in release.
 ## Reproducing
 
 ```bash
-make baseline   # timings vs std::sort over the dataset battery, with counters
+make timings    # release timings vs std::sort - the quotable numbers
+make baseline   # the same battery with deterministic counters (research build)
 make profile    # per-phase breakdown and heap-allocation counts
 make overhead   # cost of the instrumentation: one source, two configurations
 make analysis   # complexity-model fitting across input sizes

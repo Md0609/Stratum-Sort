@@ -12,7 +12,7 @@
 // implied.
 //
 // The rationale behind each value, and the experiments behind it, live in
-// documentacion/. This file states the contract, not the history.
+// docs/history/. This file states the contract, not the history.
 // ============================================================
 namespace drs {
 
@@ -78,7 +78,8 @@ constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 32;
 // with lambda = 32, P(Poisson(32) > 64) ~ 2e-7, and t = 64, 96 and 128
 // were measured to produce byte-identical counters on every dataset.
 //
-// Setting t = lambda is legal and reproduces pre-v10 behaviour, at the
+// Setting t = lambda is legal - it fuses the two parameters back into
+// one, which is how the algorithm was originally written - at the
 // cost of sending roughly half of all elements into refinement purely
 // because P(X > lambda) ~ 0.5 for Poisson(lambda) - by arithmetic, not
 // because the data needs it.

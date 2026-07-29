@@ -67,11 +67,11 @@ STUDY_SOURCES := analysis/ComplexityReview.cpp \
                  experiments/TargetSweep.cpp
 STUDY_BINARIES := $(patsubst %.cpp,build/study_%,$(notdir $(STUDY_SOURCES)))
 
-.PHONY: all test contract benchmarks experiments analysis overhead baseline profile studies sanitizers clean
+.PHONY: all test contract benchmarks experiments analysis overhead baseline timings profile studies sanitizers fuzz clean
 
 all: build/drs_tests build/drs_contract build/drs_contract_research build/drs_benchmarks build/drs_experiments build/drs_analysis \
      build/drs_overhead_production build/drs_overhead_research build/drs_baseline \
-     build/drs_profile build/drs_sanitizers $(STUDY_BINARIES)
+     build/drs_profile build/drs_timings build/drs_sanitizers build/drs_fuzz $(STUDY_BINARIES)
 
 # ---- Correctness binaries: TEST configuration, assertions ACTIVE ----------
 build/drs_tests: tests/main.cpp $(COMMON_HEADERS)
@@ -112,6 +112,15 @@ build/drs_baseline: benchmarks/ReferenceBaseline.cpp $(COMMON_HEADERS)
 	mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/ReferenceBaseline.cpp -o build/drs_baseline
 
+# ---- Release timings: the ONLY binary whose clock may be quoted -----------
+# Built with PROD_CXXFLAGS. `make baseline` cannot be, because it reads
+# sorter.metrics(); its counters are exact but its times are not the
+# library's. Keeping the two tools separate is what stops a research
+# timing being published as a release one, which has happened here before.
+build/drs_timings: benchmarks/ReleaseTimings.cpp $(ALGO_HEADERS) benchmarks/SystemInfo.hpp datasets/DatasetGenerator.hpp
+	mkdir -p build
+	$(CXX) $(PROD_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_PROD) benchmarks/ReleaseTimings.cpp -o build/drs_timings
+
 # ---- Per-phase time breakdown and heap-allocation count -------------------
 build/drs_profile: benchmarks/PhaseProfile.cpp $(COMMON_HEADERS)
 	mkdir -p build
@@ -137,6 +146,14 @@ build/drs_sanitizers: tests/edge_sanitizers.cpp $(ALGO_HEADERS) datasets/Dataset
 	$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(INCLUDES) \
 	    $(BUILD_FLAGS_DEFINE_TEST) tests/edge_sanitizers.cpp -o build/drs_sanitizers
 
+# ---- Differential fuzz against std::sort -----------------------------------
+# Same treatment as the sanitizer suite, and for the same reason: the
+# arithmetic it stresses is exactly the arithmetic UBSan is able to judge.
+build/drs_fuzz: tests/differential_fuzz.cpp $(ALGO_HEADERS)
+	mkdir -p build
+	$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(INCLUDES) \
+	    $(BUILD_FLAGS_DEFINE_TEST) tests/differential_fuzz.cpp -o build/drs_fuzz
+
 # ---- One-off research programs --------------------------------------------
 # Built in the research configuration: every one of them reads the metrics.
 build/study_%: experiments/%.cpp $(COMMON_HEADERS)
@@ -156,6 +173,10 @@ studies: $(STUDY_BINARIES)
 sanitizers: build/drs_sanitizers
 	./build/drs_sanitizers
 
+# 20000 random cases by default; pass N for a longer soak.
+fuzz: build/drs_fuzz
+	./build/drs_fuzz $(N)
+
 test: build/drs_tests build/drs_contract build/drs_contract_research
 	./build/drs_tests
 	@echo
@@ -169,6 +190,9 @@ contract: build/drs_contract build/drs_contract_research
 
 baseline: build/drs_baseline
 	./build/drs_baseline
+
+timings: build/drs_timings
+	./build/drs_timings
 
 profile: build/drs_profile
 	./build/drs_profile
