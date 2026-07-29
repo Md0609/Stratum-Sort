@@ -1,5 +1,5 @@
 // ============================================================
-// docs/
+// Barrido de targetElementsPerBin - docs/history/STEP4b_target_sweep.md
 // ============================================================
 // El paso 4 midio que localSort() es el 60-64% del tiempo en los cuatro
 // datasets sin redundancia. El coste de Insertion Sort sobre hojas de
@@ -74,7 +74,7 @@ double median(std::vector<double> v) {
 
 int main() {
     std::cout << "================================================================\n";
-    std::cout << " BARRIDO DE target (docs/
+    std::cout << " BARRIDO DE target (docs/history/STEP4b_target_sweep.md)\n";
     std::cout << "================================================================\n";
     drs::SystemInfo::collect().print(std::cout);
     std::cout << "n=" << kN << "  repeticiones=" << kReps

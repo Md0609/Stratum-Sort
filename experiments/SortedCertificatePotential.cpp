@@ -1,7 +1,7 @@
 // ============================================================
-// docs/
+// Techo del certificado de ordenado - docs/history/STEP5_sorted_certificate.md
 // ============================================================
-// A numeric threshold over a quantity whose origin has not been
+// Un umbral numerico sobre una magnitud
 // cuya procedencia no se ha medido es una adivinanza. Antes de tocar
 // nada, este programa descompone de donde salen las comparaciones y
 // cuantas son EXACTAMENTE eliminables por el certificado de ordenado.

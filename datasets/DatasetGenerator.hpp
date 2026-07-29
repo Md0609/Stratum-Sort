@@ -41,7 +41,7 @@ public:
     // grandes, que son los que dominan la regresion.
     //
     // Este generador aisla la variable. Es el unico de la bateria con el que
-    // tiene sentido estimar un exponente. Ver COMPLEXITY_REVIEW_v9.md.
+    // tiene sentido estimar un exponente. Ver docs/history/COMPLEXITY_REVIEW_v9.md.
     DataVector randomUniformScaled(std::size_t n, uint64_t elementsPerValue = 16) {
         const uint64_t span = n == 0 ? 1 : static_cast<uint64_t>(n) * elementsPerValue;
         std::uniform_int_distribution<int64_t> dist(0, static_cast<int64_t>(span));
@@ -103,7 +103,7 @@ public:
     }
 
     // ========================================================================
-    // Datasets anadidos en el paso 0 de docs/
+    // Datasets anadidos al abrir v9 (docs/history/SPEC_v9.md).
     // Ninguno de los ocho anteriores ejerce los dos casos que la
     // especificacion de v9 necesita poder observar, asi que ninguna
     // afirmacion sobre ellos estaba verificada.
@@ -130,7 +130,7 @@ public:
     }
 
     // SPEC_v9 s9.5 - dataset adversario, ausente del proyecto hasta ahora.
-    // Construccion del Teorema 9' de REVIEW_refinamiento_terminal.md: grupos
+    // Construccion del Teorema 9' de docs/history/REVIEW_refinamiento_terminal.md: grupos
     // que pierden exactamente UN elemento por nivel de refinamiento.
     //
     // Dentro de un grupo, se parte de un nucleo de 'target' valores contiguos

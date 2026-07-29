@@ -43,9 +43,12 @@ struct BenchmarkReport {
 // statistics across all of them. This function requires DRS_ENABLE_METRICS
 // (it reads sorter.metrics()), matching every binary that includes this
 // header (benchmarks/, experimentos/, analisis/ all build with it).
+// targetElementsPerBin == 0 means "use the shipped defaults", which is
+// what a report about the library should measure. Passing an explicit
+// value is for parameter studies only.
 template <typename T>
 BenchmarkReport runBenchmark(const std::string& label, const std::vector<T>& baseline,
-                              std::size_t repetitions, std::size_t targetElementsPerBin) {
+                              std::size_t repetitions, std::size_t targetElementsPerBin = 0) {
     BenchmarkReport report;
     report.label = label;
     report.n = baseline.size();
@@ -58,7 +61,9 @@ BenchmarkReport runBenchmark(const std::string& label, const std::vector<T>& bas
 
     for (std::size_t r = 0; r < repetitions; ++r) {
         std::vector<T> data = baseline;
-        DynamicRangeSort<T> sorter(targetElementsPerBin);
+        DynamicRangeSort<T> sorter =
+            targetElementsPerBin == 0 ? DynamicRangeSort<T>()
+                                      : DynamicRangeSort<T>(targetElementsPerBin);
 
         const auto t0 = std::chrono::steady_clock::now();
         sorter.sort(data);

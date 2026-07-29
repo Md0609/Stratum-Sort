@@ -102,10 +102,9 @@ struct SystemInfo {
     }
 
 private:
-    // Best effort per platform. macOS was added in the step 0 of docs/
-    // the whole point of re-establishing a baseline is that it records which
-    // machine produced it, and on macOS every field but this one was already
-    // being filled in.
+    // Best effort per platform. A recorded measurement is only reproducible
+    // if it also records which machine produced it, and on macOS every field
+    // but this one was already being filled in.
     static std::string readCpuModel() {
 #if defined(__APPLE__)
         char buffer[256];

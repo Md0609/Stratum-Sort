@@ -1,5 +1,5 @@
 // ============================================================
-// Resolucion de la observacion O8 (STEP3_terminal_refinement.md)
+// Resolucion de la observacion O8 (docs/history/STEP3_terminal_refinement.md)
 // ============================================================
 // El paso 3 midio +111% en AdversarialPeeling al quitar el tope de
 // profundidad. Pero ese dataset usa grupos de ~107 elementos, que con

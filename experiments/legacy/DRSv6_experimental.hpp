@@ -5,11 +5,11 @@
 // ============================================================
 // Preserves v6's full behavior, including the three experimental
 // heuristics that were measured and found net-negative
-// (documentacion/ANALYSIS_v6.md): micro-histogram splits, density-aware
+// (docs/history/ANALYSIS_v6.md): micro-histogram splits, density-aware
 // initial bins, and Difficulty-Score-based subdivision skipping. None of
 // this participates in the production algorithm (algoritmo/
 // DynamicRangeSort.hpp) as of v7 - it exists only so the v3-v7
-// comparison in ANALYSIS_v7.md has a genuine v6 data point, and so the
+// comparison in docs/history/ANALYSIS_v7.md has a genuine v6 data point, and so the
 // disproven heuristics remain inspectable without cluttering the
 // production code path with dead branches.
 //

@@ -2,7 +2,7 @@
 // Research experiments driver
 // ============================================================
 // v7 removed three mechanisms from the production algorithm (see
-// ANALYSIS_v6.md and ANALYSIS_v7.md): micro-histogram splits,
+// docs/history/ANALYSIS_v6.md and docs/history/ANALYSIS_v7.md): micro-histogram splits,
 // density-aware initial bins, and Difficulty-Score-based subdivision
 // skipping. The sections of this file that existed only to study those
 // mechanisms (microhistogram cost, predictor comparison) are removed

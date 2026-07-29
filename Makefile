@@ -49,11 +49,29 @@ VERSION_HEADERS := experiments/legacy/DRSv1.hpp experiments/legacy/DRSv2.hpp \
 COMMON_HEADERS := $(ALGO_HEADERS) benchmarks/SystemInfo.hpp benchmarks/BenchmarkRunner.hpp \
                    analysis/Statistics.hpp datasets/DatasetGenerator.hpp
 
-.PHONY: all test contract benchmarks experiments analysis overhead baseline profile clean
+# One-off research programs. Each answered a single question during the
+# design and is kept so that its number can be re-derived rather than
+# taken on trust. They are not part of the library and are not run by
+# `make all`, but they ARE built by it: a study whose source no longer
+# compiles cannot be re-run, which makes its published result unverifiable.
+STUDY_SOURCES := analysis/ComplexityReview.cpp \
+                 benchmarks/ImprovementCeiling.cpp \
+                 experiments/AdversarialCoreSweep.cpp \
+                 experiments/AdversaryOverfitCheck.cpp \
+                 experiments/CardinalityAnomaly.cpp \
+                 experiments/CardinalityAnomalyProbe.cpp \
+                 experiments/EmptyBinDecomposition.cpp \
+                 experiments/LambdaTauPlaneSweep.cpp \
+                 experiments/LambdaTauPotential.cpp \
+                 experiments/SortedCertificatePotential.cpp \
+                 experiments/TargetSweep.cpp
+STUDY_BINARIES := $(patsubst %.cpp,build/study_%,$(notdir $(STUDY_SOURCES)))
+
+.PHONY: all test contract benchmarks experiments analysis overhead baseline profile studies sanitizers clean
 
 all: build/drs_tests build/drs_contract build/drs_contract_research build/drs_benchmarks build/drs_experiments build/drs_analysis \
      build/drs_overhead_production build/drs_overhead_research build/drs_baseline \
-     build/drs_profile
+     build/drs_profile build/drs_sanitizers $(STUDY_BINARIES)
 
 # ---- Correctness binaries: TEST configuration, assertions ACTIVE ----------
 build/drs_tests: tests/main.cpp $(COMMON_HEADERS)
@@ -109,6 +127,34 @@ build/drs_contract: tests/api_contract.cpp $(ALGO_HEADERS)
 build/drs_contract_research: tests/api_contract.cpp $(ALGO_HEADERS)
 	mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) tests/api_contract.cpp -o build/drs_contract_research
+
+# ---- Range-arithmetic limits under ASan/UBSan ------------------------------
+# Separate from `make test` because the sanitizers make it far slower; it is
+# the suite that exercises spans reaching the whole key universe, which is
+# exactly where an overflow would hide.
+build/drs_sanitizers: tests/edge_sanitizers.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
+	mkdir -p build
+	$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(INCLUDES) \
+	    $(BUILD_FLAGS_DEFINE_TEST) tests/edge_sanitizers.cpp -o build/drs_sanitizers
+
+# ---- One-off research programs --------------------------------------------
+# Built in the research configuration: every one of them reads the metrics.
+build/study_%: experiments/%.cpp $(COMMON_HEADERS)
+	mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) $< -o $@
+
+build/study_%: benchmarks/%.cpp $(COMMON_HEADERS)
+	mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) $< -o $@
+
+build/study_%: analysis/%.cpp $(COMMON_HEADERS)
+	mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) $< -o $@
+
+studies: $(STUDY_BINARIES)
+
+sanitizers: build/drs_sanitizers
+	./build/drs_sanitizers
 
 test: build/drs_tests build/drs_contract build/drs_contract_research
 	./build/drs_tests

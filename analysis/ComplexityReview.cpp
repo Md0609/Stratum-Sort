@@ -2,7 +2,7 @@
 // Complexity review: raw data for an external log-log fit
 // ============================================================
 // Emite datos crudos para un ajuste log-log externo. Corrige los cuatro
-// defectos que ANALYSIS_v9_propuesta.md 3 identifico en el ajuste de
+// defectos que docs/history/ANALYSIS_v9_propuesta.md 3 identifico en el ajuste de
 // complejidad historico (analisis/main.cpp):
 //
 //   3.1  aquel usaba SOLO tiempo de pared, teniendo al lado contadores

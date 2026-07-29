@@ -30,7 +30,9 @@ using drs::testing::DatasetGenerator;
 namespace {
 
 constexpr std::size_t kRepetitions = 7;
-constexpr std::size_t kTarget = 64; // por defecto de v8
+// 0 means "the shipped defaults": a baseline report must measure what
+// the library actually ships, not a configuration chosen by the tool.
+constexpr std::size_t kTarget = 0;
 
 struct Case {
     std::string name;
@@ -47,7 +49,7 @@ DataVector mkSmallRange(DatasetGenerator& g, std::size_t n) { return g.smallRang
 DataVector mkHugeRange(DatasetGenerator& g, std::size_t n) { return g.hugeRangeFewElements(n); }
 DataVector mkFullRange(DatasetGenerator& g, std::size_t n) { return g.fullRangeExtremes(n); }
 DataVector mkAdversarial(DatasetGenerator& g, std::size_t n) {
-    return g.adversarialPeeling(n, kTarget);
+    return g.adversarialPeeling(n, drs::DEFAULT_TARGET_ELEMENTS_PER_BIN);
 }
 
 const std::vector<Case>& allCases() {
@@ -89,7 +91,7 @@ int main() {
     std::cout << " Dynamic Range Sort - reference baseline\n";
     std::cout << "================================================================\n";
     drs::SystemInfo::collect().print(std::cout);
-    std::cout << "Repetitions per point: " << kRepetitions << "   target=" << kTarget << "\n\n";
+    std::cout << "Repetitions per point: " << kRepetitions << "   target=default(" << drs::DEFAULT_TARGET_ELEMENTS_PER_BIN << "/" << drs::DEFAULT_LEAF_THRESHOLD << ")" << "\n\n";
 
     const std::vector<std::size_t> sizes = {100000, 1000000};
 
@@ -212,7 +214,7 @@ int main() {
     {
         DatasetGenerator gen;
         const DataVector data = gen.adversarialPeeling(n, kTarget);
-        DynamicRangeSort<int64_t> sorter(kTarget);
+        DynamicRangeSort<int64_t> sorter;
         DataVector copy = data;
         sorter.sort(copy);
         const drs::DRSMetrics& m = sorter.metrics();

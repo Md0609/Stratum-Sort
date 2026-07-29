@@ -17,8 +17,8 @@ namespace drs::experimental {
 // B% apenas aportaron. C% fueron innecesarias." - using the Useful /
 // Marginal / Useless classification DRSMetrics computes from each
 // subdivision's measured reductionPct. Still part of the research build
-// in v7 - unlike Difficulty Score (removed, see ANALYSIS_v6.md
-// "Investigacion 3" and ANALYSIS_v7.md), this instrumentation never
+// in v7 - unlike Difficulty Score (removed, see docs/history/ANALYSIS_v6.md
+// "Investigacion 3" and docs/history/ANALYSIS_v7.md), this instrumentation never
 // participated in any decision the algorithm makes, so there was nothing
 // to remove from the hot path.
 inline void printSubdivisionQualityReport(const drs::DRSMetrics& m, std::ostream& os) {
@@ -73,7 +73,7 @@ inline void printWorkByDepthReport(const drs::DRSMetrics& m, std::ostream& os) {
 // Investigacion 8 (v6): correlacion entre tamano/profundidad y reduccion
 // ============================================================
 // Difficulty Score se retiro de esta tabla en v7 junto con el resto de
-// su codigo (ver ANALYSIS_v6.md/v7.md) - las columnas que quedan son las
+// su codigo (ver docs/history/ANALYSIS_v6.md/v7.md) - las columnas que quedan son las
 // que la investigacion de v6 encontro realmente predictivas.
 inline void printCorrelationAnalysis(const drs::DRSMetrics& m, std::ostream& os) {
     const auto& records = m.subdivisionRecords();
