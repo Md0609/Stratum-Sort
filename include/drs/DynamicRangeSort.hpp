@@ -39,10 +39,15 @@ namespace drs {
 //
 // The constant is bounded because the refinement depth is bounded by
 // min(w, MAX_SUBDIVISION_DEPTH), and a leaf reaching a comparison sort
-// with a non-zero span has size at most lambda * 2^(w/(D+1)) ~= 18000 -
-// a constant independent of n, and in fact one that SHRINKS as n grows,
-// because the top-level split spends part of the w-bit budget first.
-// Full proof, with the lemmas it rests on, in docs/ALGORITHM.md 8.
+// with a non-zero span has size at most
+//
+//     B(n) = min( n, (lambda^(D+1) * 2^w / n)^(1/D) )
+//
+// which for large n DECREASES like n^(-1/D), and whose supremum over all
+// n is the CONSTANT lambda * 2^(w/(D+1)) ~= 18000. The bound depends on
+// n; its supremum does not, and that supremum is what makes the total
+// linear. Full proof, with its four hypotheses and five lemmas, in
+// docs/ALGORITHM.md 8.
 //
 // ---- Guarantees ---------------------------------------------------
 // STABILITY: none. This sorter is NOT stable. For the integral key types

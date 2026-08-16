@@ -58,20 +58,22 @@ between this and a divide-and-conquer comparison sort, whose depth is
 Concretely, a leaf that still needs a comparison sort has size at most
 
 ```
-m  ≤  min( n,  (λ^(D+1)·2^w / n)^(1/D) )   ≤   λ · 2^(w/(D+1))  ≈  18 000
+B(n)  =  min( n,  (λ^(D+1)·2^w / n)^(1/D) )        B(10⁶) ≈ 9 300
 ```
 
-— **a constant independent of `n`, and one that shrinks as `n` grows**,
-because the top-level split already spends `log₂(n/λ)` of the `w`-bit
-budget before refinement begins. An individual leaf costs `O(m log m)`;
-summed over leaves that is `O(n · log m_max)`, and `log₂ 18 000 < 15`. So
-the total is `Θ(n)`, in exactly the same sense in which radix sort is
+which **decreases as `n` grows** — the top-level split already spends
+`log₂(n/λ)` of the `w`-bit budget before refinement begins. Its supremum
+over all `n` is a **constant**, `λ · 2^(w/(D+1)) ≈ 18 000`, and that
+constant is what makes the total linear: an individual leaf costs
+`O(m log m)`, but summing over leaves gives `O(n · log 18 000) < 15·O(n)`.
+
+So the total is `Θ(n)`, in exactly the same sense in which radix sort is
 linear: treating the key width as a fixed property of the type. It does
 not contradict the `Ω(n log n)` comparison lower bound, because the
 algorithm does arithmetic on keys.
 
-The proof — four lemmas, the hypotheses it needs, a phase-by-phase cost
-table and an adversarial review of itself — is
+The proof — four hypotheses, five lemmas, a phase-by-phase cost table
+and an adversarial review of itself — is
 [§8 of `docs/ALGORITHM.md`](docs/ALGORITHM.md). It is a proof, not an
 extrapolation from benchmarks; the measurements validate it separately.
 

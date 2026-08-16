@@ -13,10 +13,22 @@ namespace drs {
 // ============================================================
 // Instrumentation wrappers
 // ============================================================
-// The only place in the algorithm where DRS_ENABLE_METRICS appears. Every
-// wrapper is empty in a release build, so the compiler removes it; the
-// phases below can then be read as algorithm rather than as a mixture of
+// The only place in the algorithm where DRS_ENABLE_METRICS appears, so
+// the phases below read as algorithm rather than as a mixture of
 // algorithm and measurement.
+//
+// Three separate statements, worth not conflating:
+//   - SEMANTICS: in a release build each wrapper has an empty body, so it
+//     has no observable effect. That much is guaranteed.
+//   - ARGUMENTS: the expressions passed to a wrapper are still part of the
+//     program. Most are already-computed scalars, but noteSplit() is given
+//     *std::max_element(bucketSize...), which is O(bucket count).
+//   - OPTIMISATION: a compiler MAY discard an empty call and its pure
+//     arguments under the as-if rule, and at -O3 it does. It is not
+//     obliged to, and this is an expectation rather than a guarantee.
+// Complexity does not depend on the third point: even if nothing is
+// elided, that max_element costs O(n / lambda) per level, so the algorithm
+// stays Theta(n). See docs/ALGORITHM.md 8.5.
 
 #ifdef DRS_ENABLE_METRICS
 template <typename T>

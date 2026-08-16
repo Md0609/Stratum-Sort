@@ -113,16 +113,27 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // ---- The residual bound ----
 // A leaf with span > 0 produced by depth exhaustion has size at most
 //
-//     m <= min( n, (lambda^(D+1) * 2^w / n)^(1/D) )   and   m <= lambda * 2^(w/(D+1))
+//     B(n) = min( n, (lambda^(D+1) * 2^w / n)^(1/D) )
 //
-// giving m <= ~18093 for any n, and ~9270 at n = 1e6. Note the bound
-// SHRINKS as n grows: the top-level split already spends log2(n/lambda)
-// of the w-bit budget before refinement starts. Derivation, with the
-// three lemmas it rests on, in docs/ALGORITHM.md 8.4.
+// These are TWO DIFFERENT OBJECTS and the docs used to blur them:
 //
-// The previous bound quoted here, lambda * 2^(w/D) = ~52000, is valid but
-// loose: it counted only the D refinement splits and forgot the top-level
-// one. The exponent is w/(D+1), not w/D.
+//   B(n) is the bound AT A GIVEN n. It depends on n and, above
+//        n = lambda*2^(w/(D+1)), it DECREASES like n^(-1/D), because the
+//        top-level split spends log2(n/lambda) of the w-bit budget before
+//        refinement starts. B(1e6) ~ 9271, B(1e7) ~ 6304.
+//
+//   M = sup over n of B(n) = lambda * 2^(w/(D+1)) ~ 18090 is the GLOBAL
+//        SUPREMUM: a single constant, free of n, attained near n = M
+//        itself. It is NOT the tightest bound at any particular size -
+//        for realistic n it is 2-3x looser than B(n).
+//
+// Linearity needs only M < infinity. B(n) is what an adversary at a given
+// size actually faces. Proof, with the five lemmas it rests on and the
+// hypotheses it needs, in docs/ALGORITHM.md 8.
+//
+// The bound previously quoted here, lambda * 2^(w/D) = ~52000, is valid
+// but loose: it counted only the D refinement splits and forgot the
+// top-level one. The exponent is w/(D+1), not w/D.
 //
 // ---- What raising lambda actually does ----
 // NOT what this comment used to say. Raising lambda does NOT reintroduce
@@ -143,6 +154,11 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // a large fraction of the array. Asymptotically still linear; practically
 // a different algorithm. ANY change to lambda must re-check n*.
 // Raising the leaf threshold does not affect it.
+//
+// All of the above assumes lambda, t and D are constants chosen
+// independently of n (hypothesis H2 of the proof). A caller who scales
+// one of them with the input size - t = n, say - is outside the
+// hypothesis, and the linear bound has to be re-derived.
 //
 // The value 6 itself has never been swept; it is known to work, not known
 // to be optimal.
