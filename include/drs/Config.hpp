@@ -61,8 +61,10 @@ namespace drs {
 // condition would put the lower bound near 160. A caller sorting much
 // larger inputs should raise it.
 //
-// Upper bound: see MAX_SUBDIVISION_DEPTH, which imposes a hard
-// constraint (lambda >= 1024 reintroduces a superlinear worst case).
+// Upper bound: see MAX_SUBDIVISION_DEPTH. Raising lambda does not change
+// the complexity class, but it raises the input size above which the
+// linear regime applies - roughly lambda * 2^(w/(D+1)), which is ~1.8e4
+// at lambda = 32 and ~5.8e5 at lambda = 1024.
 constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 32;
 
 // t - leaf threshold. A bin holding at most t elements stops being
@@ -92,20 +94,54 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // run forever. D is a bound on how much work is spent trying, after which
 // the remainder is handed to the local sort whatever its size.
 //
-// D is what keeps the worst case linear, which is the opposite of what it
-// looks like. Each level consumes log2(splits) bits of the bin's span,
-// and a span has at most w bits, so a bin of size m can only survive D
-// degenerate levels if
+// D DOES NOT MAKE THE ALGORITHM LINEAR. It is a constant-factor choice.
+// An earlier version of this comment claimed otherwise; the proof in
+// docs/ALGORITHM.md 8.8 shows the claim was backwards.
 //
-//     D * log2(m / lambda) <= w    <=>    m <= lambda * 2^(w/D)
+// Refinement terminates on its own and stays linear WITHOUT any cap: each
+// level at least halves the bin's observed span, so the depth is bounded
+// by w = 64 regardless, and the residual handed to a comparison sort
+// would be just t. Uncapped costs O((w+1)*n); capped costs O((D+1)*n) but
+// enlarges the residual. D trades passes for residual size:
 //
-// With lambda = 32, w = 64 and D = 6 that is m <= ~52000. The residual
-// handed to a comparison sort is therefore bounded by a CONSTANT
-// independent of n, and its aggregate cost is n * log2(52000) ~= 16n.
+//     uncapped   65 passes over the data, largest residual t = 64
+//     D = 6       7 passes over the data, largest residual ~18000
 //
-// HARD CONSTRAINT: the bound scales with lambda. Raising lambda to 1024
-// makes m_max ~= 1.7e6, no longer small compared to a realistic n, and a
-// Theta(n log n) term reappears. ANY change to lambda must re-check this.
+// Measurement chose 6 (docs/history/O8_...): uncapped is never faster and
+// costs up to +109%. This is an empirical decision, not an asymptotic one.
+//
+// ---- The residual bound ----
+// A leaf with span > 0 produced by depth exhaustion has size at most
+//
+//     m <= min( n, (lambda^(D+1) * 2^w / n)^(1/D) )   and   m <= lambda * 2^(w/(D+1))
+//
+// giving m <= ~18093 for any n, and ~9270 at n = 1e6. Note the bound
+// SHRINKS as n grows: the top-level split already spends log2(n/lambda)
+// of the w-bit budget before refinement starts. Derivation, with the
+// three lemmas it rests on, in docs/ALGORITHM.md 8.4.
+//
+// The previous bound quoted here, lambda * 2^(w/D) = ~52000, is valid but
+// loose: it counted only the D refinement splits and forgot the top-level
+// one. The exponent is w/(D+1), not w/D.
+//
+// ---- What raising lambda actually does ----
+// NOT what this comment used to say. Raising lambda does NOT reintroduce
+// a Theta(n log n) term: for fixed w the residual is bounded by a
+// constant whatever lambda is, so the algorithm stays Theta(n).
+//
+// What lambda moves is the input size at which the linear regime starts.
+// The bound above is vacuous while lambda * 2^(w/(D+1)) exceeds n, since
+// m <= n always - and in that range the whole array can end up in one
+// comparison sort. So the threshold to watch is
+//
+//     n* = lambda * 2^(w/(D+1))       lambda = 32   -> n* ~ 1.8e4
+//                                     lambda = 1024 -> n* ~ 5.8e5
+//
+// At lambda = 32 that is far below any realistic input, so the linear
+// regime always applies. At lambda = 1024 it lands inside the range
+// people actually sort, and inputs near it can degrade to Introsort over
+// a large fraction of the array. Asymptotically still linear; practically
+// a different algorithm. ANY change to lambda must re-check n*.
 // Raising the leaf threshold does not affect it.
 //
 // The value 6 itself has never been swept; it is known to work, not known

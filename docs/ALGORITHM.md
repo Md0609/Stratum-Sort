@@ -354,95 +354,303 @@ rather than only asserting it in prose.
 
 ## 8. Why the worst case is linear
 
-This is the part that is easy to get wrong, and this project got it wrong
-twice before measuring it.
+This section is a proof, not a benchmark. The measurements in
+[`BENCHMARKS.md`](BENCHMARKS.md) validate it; they do not establish it.
+Where a step rests on an assumption, the assumption is named.
 
-### The bit budget
+### 8.0 Hypotheses
 
-Each refinement level consumes `log₂(s)` bits of the bin's observed span,
-where `s = ceil(m/λ)` for a bin of size `m`. The span has at most `w` bits.
-So along any root-to-leaf path:
+The result is `Θ(n)` **under these hypotheses, all of which are enforced
+or checkable**:
 
-```
-Σ log₂(sᵢ)  ≤  log₂(span₀)  ≤  w
-```
-
-With `s ≥ 2` this bounds the depth by `w` even with no cap. **The depth is
-bounded by the key width, not by `n`.** That is the structural difference
-from a comparison-based divide and conquer, whose depth is `log n` by
-construction.
-
-### The residual handed to a comparison sort
-
-A leaf larger than `t` can only arise by exhausting the depth cap. For a
-bin of size `m` to survive `D` degenerate levels, the bit budget requires
-
-```
-D · log₂(m / λ)  ≤  w        ⟺        m  ≤  λ · 2^(w/D)
-```
-
-With λ = 32, w = 64, D = 6 that is **m ≤ ~52 000 — a constant independent
-of `n`.**
-
-Therefore the aggregate cost of every comparison sort the algorithm ever
-performs is at most `n · log₂(52 000) ≈ 16n`. It is linear.
-
-**Measured confirmation.** On the adversarial dataset built specifically
-to exhaust the depth cap, the comparison-count exponent fitted over three
-orders of magnitude of `n` is **0.994 [0.993, 0.995]**. If the cap
-produced an `n log n` term the exponent would grow with `n`. It does not.
-
-### The hard constraint this creates
-
-The bound scales with λ. Raising λ to 1024 makes `m_max ≈ 1.7·10⁶`, no
-longer small compared to a realistic `n`, and a `Θ(n log n)` term
-reappears. **Any change to λ must re-check this bound.** Raising `t` does
-not affect it.
-
-### Total cost, with constants
-
-Per element, for the shipped configuration:
-
-| phase | cost per element |
+| | |
 |---|---|
-| analyse | 1 read |
-| distribute | ~4 accesses |
-| refine | ~4 accesses × depth (≤ 6) |
-| run detection | ≤ 1 read |
-| local sort | `(λ+1)/4 ≈ 8` average; `≤ t/2 = 32` worst |
-| join | 1 read + 1 write |
+| **H1** | `T` is an integral type of width `w ≤ 64` bits. Enforced by three `static_assert`s (integral, not `bool`, `sizeof(T) ≤ 8`). |
+| **H2** | `λ`, `t`, `D` are fixed constants, chosen independently of `n`. |
+| **H3** | Unit-cost RAM: arithmetic on `uint64_t` and `size_t`, and one array access, are `O(1)`. |
+| **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
 
-Best case `Θ(n)` with constant ≈ 6 (all keys equal: one pass, zero
-comparisons). Average `Θ(n)` with constant ≈ 20. Worst case `Θ(n)` with
-constant ≈ 44–66 depending on which local sort dominates.
+H1 is not cosmetic. Before it was enforced, `DynamicRangeSort<__int128>`
+compiled — `std::is_integral<__int128>` is true on common toolchains — and
+overflowed the heap, because the offset arithmetic is carried in
+`uint64_t`. The proof below needs `w` bounded; the code now needs it too.
 
-**What "linear" means here.** The constant contains `w` through the depth
-bound and through the residual. It is linear treating the key width as a
-constant — exactly the sense in which radix sort is linear. It is not a
-bound in the comparison model and does not contradict `Ω(n log n)`,
-because the algorithm does arithmetic on keys.
+Throughout: `n` = element count, `w` = key width in bits, `λ` = target
+occupancy, `t` = leaf threshold (`t ≥ λ`, enforced by the constructor),
+`D` = `MAX_SUBDIVISION_DEPTH`. For a bin `B`: `m = |B|` is its size and
+`σ = max(B) − min(B)` its **observed span** (§4). `s` is the number of
+buckets a split produces and `W` their common width.
 
-### Auxiliary space
+### 8.1 The three structural lemmas
+
+**LEMMA 1 (span contraction).** *If a bin of span `σ` is split into `s`
+buckets of width `W = ⌊σ/s⌋ + 1`, every child has span `σ′ ≤ W − 1 = ⌊σ/s⌋`.*
+
+Bucket `b` covers exactly the `W` consecutive values
+`[origin + bW, origin + (b+1)W − 1]`, so any two elements inside it differ
+by at most `W − 1`. ∎
+
+**LEMMA 2 (a binding cap ends the subtree for free).** *If the fan-out cap
+binds — that is, `σ < ⌈m/λ⌉`, so the code sets `s = σ + 1` — then every
+child has span exactly `0`.*
+
+`W = ⌊σ/(σ+1)⌋ + 1 = 0 + 1 = 1`, so by Lemma 1 every child has `σ′ ≤ 0`.
+A bin of span `0` is detected by `refine` (`observed.minimum ==
+observed.maximum`), flagged `sorted`, and **costs zero comparisons** no
+matter how large it is. ∎
+
+This lemma is what makes the whole argument work, and it is easy to miss:
+the cap is not a special case to be handled, it is an *escape hatch that
+costs nothing*. A bin can only remain expensive by never triggering it.
+
+**LEMMA 3 (an expensive split has a non-binding cap).** *If a leaf has
+span `> 0` and was produced by depth exhaustion, then every one of its `D`
+ancestor splits had `σᵢ ≥ ⌈mᵢ/λ⌉`, hence `sᵢ = ⌈mᵢ/λ⌉`.*
+
+Contrapositive of Lemma 2: had any ancestor's cap bound, this leaf's span
+would be `0`. ∎
+
+### 8.2 Where the bit budget comes from, and why the top level spends some
+
+Two distinct splits happen:
+
+1. **One top-level split** in `distribute`, over the whole array, with
+   `s_top = ⌈n/λ⌉` buckets — *this is the term the old bound omitted.*
+2. **At most `D` refinement splits**, since `refine` is entered at
+   `depth = 0` and stops at `depth ≥ D`.
+
+So a root-to-leaf path has at most `D + 1` splits, not `D`.
+
+**The origin of the `2^w/n` term.** Let `σ_g ≤ 2^w − 1` be the global
+span. If the top-level cap binds, Lemma 2 makes the entire sort free, so
+assume it does not. Then by Lemma 1 every top-level bin has span
 
 ```
-  2n · sizeof(T)        the two cascading buffers
-+  n · sizeof(size_t)   one bucket index per element
-+  O(n / λ)             write cursors, and one node per bin in the
-                        refinement tree
+σ₀  ≤  ⌊σ_g / s_top⌋  ≤  σ_g · λ / n  <  2^w · λ / n
 ```
 
-`Θ(n)`, but note the middle term: it is one `size_t` per element **no
-matter how wide the key is**. For an 8-byte key the total is about 3.1×
-the input; for a 1-byte key it is about 10×. A reimplementation targeting
-narrow keys should size that array to the smallest type that can index
-`binCount`, which is the one place where this design pays a visible price
-for being generic.
+That is the whole content of the `2^w/n` factor: **the top-level split has
+already spent `log₂(n/λ)` of the `w` available bits before refinement
+starts.** A larger array forces a finer top-level grid, which leaves less
+span for refinement to consume — and therefore a *smaller* residual.
 
-Both buffers must be allocated at full length `n` before refinement
-starts, not per bin: a split writes its children into the *other* buffer
-at the **same absolute offsets**, so both are indexed over `[0, n)` from
-the first level onwards. That is also what makes the join a copy rather
-than a merge.
+### 8.3 Why the surviving child cannot keep everything
+
+Claimed separately because it is a genuinely different fact, and because
+one plausible-looking strengthening of it is **false** (§8.7).
+
+**LEMMA 4 (strict peeling).** *If a split has `σ ≥ 2` and a non-binding
+cap, every child is a proper subset: `m′ ≤ m − 1`.*
+
+`min(B)` has offset `0`, so bucket `0`. `max(B)` has offset `σ`, so bucket
+`⌊σ/W⌋`. Since `s ≥ 2`, `W = ⌊σ/s⌋ + 1 ≤ σ/2 + 1 ≤ σ` for `σ ≥ 2`, hence
+`⌊σ/W⌋ ≥ 1`. The two extremes land in different buckets. ∎
+
+(For `σ = 1` the cap binds — `⌈m/λ⌉ ≥ 2 > 1 = σ` whenever `m > λ` — so
+Lemma 2 applies and the subtree is free.)
+
+Lemma 4 guarantees progress, so refinement terminates without `D`. But
+note what it does **not** give: losing one element per level over `D`
+levels leaves `m − D` elements. **Lemma 4 alone does not bound `m`.** The
+bound comes from the bit budget, not from peeling.
+
+### 8.4 The residual bound
+
+**THEOREM (residual).** *Let a leaf have span `> 0` and be produced by
+depth exhaustion, with `m` elements. Then*
+
+```
+m  ≤  min( n,  ( λ^(D+1) · 2^w / n )^(1/D) )
+```
+
+*and, free of `n`,*
+
+```
+m  ≤  λ · 2^(w/(D+1))
+```
+
+**Proof.** Let `σ₀ ⋯ σ_D` and `m₀ ≥ ⋯ ≥ m_D = m` be the spans and sizes
+along the leaf's ancestor chain (sizes are non-increasing because children
+are subsets). By Lemma 3 every split has `sᵢ = ⌈mᵢ/λ⌉ ≥ m/λ`, so by
+Lemma 1
+
+```
+σ_D  ≤  σ₀ / ∏ᵢ sᵢ  ≤  σ₀ · (λ/m)^D
+```
+
+The leaf has span `> 0`, so `σ_D ≥ 1`, giving `(m/λ)^D ≤ σ₀`. Substituting
+`σ₀ < 2^w λ / n` from §8.2:
+
+```
+(m/λ)^D  <  2^w · λ / n      ⟹      m^D  <  λ^(D+1) · 2^w / n
+```
+
+Together with the trivial `m ≤ n`, that is the first form. For the second,
+`min(n, (K/n)^(1/D))` with `K = λ^(D+1) 2^w` is maximised where the two
+branches meet, at `n^(D+1) = K`, giving
+
+```
+m  ≤  K^(1/(D+1))  =  λ · 2^(w/(D+1))          ∎
+```
+
+**With the shipped constants** (`λ = 32`, `w = 64`, `D = 6`):
+
+```
+m  ≤  32 · 2^(64/7)  ≈  18 093        for every n
+m  ≤  9 270                            at n = 10⁶
+m  ≤  6 300                            at n = 10⁷
+```
+
+The bound **shrinks as `n` grows**. That is the opposite of what an
+`n log n` term would do, and it is the single most important consequence
+of §8.2.
+
+### 8.5 Cost of each phase
+
+Two facts are used repeatedly. **(F1)** At every level the bins partition
+`[0, n)` (Property 4), so the sizes at one level sum to `n`. **(F2)** A
+bin only splits if `m > t ≥ λ`, so `s ≤ ⌈m/λ⌉ < m/λ + 1 < 2m/λ`; summing
+over a level, each level has at most `2n/λ` nodes, and there are at most
+`D + 1` levels, so the tree has
+
+```
+N  ≤  2(D+1)·n/λ  =  O(n/λ)      nodes in total.
+```
+
+| phase | per bin | summed | why |
+|---|---|---|---|
+| `analyze` | — | `Θ(n)` | one pass, once |
+| `planPartition` / `planRefinement` | `O(1)` | `O(N) = O(n/λ)` | fixed arithmetic per node |
+| `countAndPlace` | `O(m + s) = O(m)` | `O((D+1)·n) = O(n)` | two passes over `m` plus `O(s)` bookkeeping; F1 per level, F2 for `s` |
+| `scanRange` | `O(m)` | `O((D+1)·n) = O(n)` | one pass per splitting node |
+| `detectRun` | `O(m)` | `O(n)` | leaves partition `[0, n)` |
+| `appendLeaves` | `O(m)` | `O(n + N) = O(n)` | one `memcpy` per leaf (H4) |
+| scratch growth | — | `O(n)` | `bucketOfScratch_` only grows, capped at `n` |
+
+Every row is linear because of F1: the work is per *element* per *level*,
+and the number of levels is `D + 1`, a constant by H2.
+
+### 8.6 Cost of the local sorts — the only place `log` appears
+
+This is the step that could break linearity, so it is worth separating
+carefully.
+
+A leaf of size `m` is finished by one of:
+
+| branch | condition | worst-case cost |
+|---|---|---|
+| certified sorted | `σ = 0` | `O(1)` |
+| ascending / descending run | detected by `detectRun` | `O(m)` |
+| `insertionSort` | `m ≤ 64` | `≤ m²/2 ≤ 32m` |
+| `quickSort` | `64 < m ≤ 384` | `O(m²) ≤ 192m` |
+| `introSort` | `m > 384` | `≤ c · m log₂ m` |
+
+The first four rows are `O(m)` **with a constant that does not depend on
+`m`**, because `m` is itself bounded by a constant in each. Summed over
+the leaves, F1 gives `O(n)` immediately.
+
+The `introSort` row is the interesting one. A single leaf genuinely costs
+`Θ(m log m)`; there is no way around that, and the algorithm does not
+pretend otherwise. What saves linearity is the *aggregate*:
+
+```
+Σ_leaves  c · mᵢ log₂ mᵢ   ≤   c · (max log₂ mᵢ) · Σ mᵢ   =   c · n · log₂ m_max
+```
+
+by F1. So the total is linear **if and only if `m_max` is bounded
+independently of `n`** — which is exactly the Theorem of §8.4. With
+`m_max ≤ 18 093`, `log₂ m_max ≤ 14.15`, and the whole comparison-sorting
+effort of the algorithm is at most `≈ 14c·n`.
+
+**The distinction the reader should carry away:** an individual leaf is
+`O(m log m)`, the algorithm is `O(n)`, and the bridge between the two is a
+bound on `m` that does not involve `n`.
+
+### 8.7 A tempting strengthening that is FALSE
+
+It is natural to argue: *the surviving child must contain `m` elements
+inside a window of `W` values, so it needs `≈ m` distinct values, so
+`σ ≥ s·m` rather than `σ ≥ s`.* That yields the sharper-looking
+
+```
+m  ≤  λ · (2^w / n)^(1/(D+2))          ← NOT TRUE
+```
+
+**It is refuted by this project's own data.** It predicts `m ≤ 1 457` at
+`n = 10⁶`; the adversary sweep produces a leaf of **2 048 elements with
+span > 0** reaching `introSort` at that size. The error: the argument
+assumes the bin's elements occupy distinct values. Nothing forbids
+duplicates, and a bin with many duplicates can be far narrower than its
+size. The only lower bound the invariants actually give is `σ ≥ ⌈m/λ⌉`,
+which is what §8.4 uses.
+
+Recorded because the correct bound and the false one differ only in a
+subscript, and because the false one *looks* better.
+
+### 8.8 What each parameter is actually doing
+
+| | role in the proof | role in the constant |
+|---|---|---|
+| **`w`** | Makes the residual **finite**. It sets the total bit budget; the bound is exponential in `w/(D+1)`. It does **not** appear in the `n`-dependence. | `w = 64` → `m_max ≈ 18 093`. A 128-bit key would give `≈ 10⁷` — still `O(1)` in `n`, but useless in practice. Hence H1. |
+| **`λ`** | Sets the fan-out `s = ⌈m/λ⌉`, hence the bits spent per level. Appears as `λ^((D+1)/D)`. | Also sets typical leaf size, so `≈ (λ+1)/4` comparisons per element on average. |
+| **`D`** | **Not needed for termination** (Lemma 4 gives that) and **not needed for linearity**. It bounds the number of passes at `D + 1` instead of `w + 1`. | Trades passes for residual: smaller `D` → fewer passes, larger `m_max`. |
+| **`t`** | Bounds leaves that exit *by size* at `m ≤ t`, so their insertion sort costs `≤ t/2` per element. Does **not** enter the residual bound. | `t = 64` → `≤ 32` comparisons per element worst case in that branch. |
+
+**On `D`, explicitly**, because the earlier version of this document had it
+backwards. Without any depth cap, Lemma 1 with `s ≥ 2` gives `σᵢ₊₁ ≤ σᵢ/2`,
+so the depth is at most `w` and refinement stops only at `m ≤ t` or
+`σ = 0`: the residual becomes `t = 64` and the cost is `O((w+1)·n) = O(65n)`.
+**Still linear.** Capping at `D = 6` cuts the passes from 65 to 7 and pays
+for it with a residual of up to `18 093` instead of `64`. Both settings are
+`Θ(n)`; `D` is a constant-factor decision, and the measurements in
+[O8](history/O8_resolucion_y_reversion_paso3.md) are what chose it — not
+an asymptotic argument.
+
+### 8.9 Total
+
+Summing §8.5 and §8.6, with `D`, `λ`, `t`, `w` constants by H1–H2:
+
+```
+T(n)  =  O(n)  +  O((D+1)·n)  +  O(n·log₂ m_max)  =  Θ(n)
+```
+
+`Θ` and not just `O`, since `analyze` alone reads every element.
+
+**What "linear" means here.** The constant contains `w`, through the
+depth bound and through `m_max`. This is linear in exactly the sense radix
+sort is linear: the key width is a fixed parameter of the type, not a
+function of `n`. It is not a bound in the comparison model and does not
+contradict `Ω(n log n)`, because the algorithm does arithmetic on keys.
+
+### 8.10 Adversarial review of this proof
+
+*What would an adversary have to build to make a leaf grow with `n`?*
+
+By §8.4 they need `(m/λ)^D ≤ σ₀` with `m` growing, so they need `σ₀` to
+grow with `n`. There are exactly three ways to attack, and each is closed
+by a named invariant:
+
+1. **Enlarge `σ₀`.** Blocked by §8.2: `σ₀ ≤ ⌊σ_g/⌈n/λ⌉⌋` and `σ_g ≤ 2^w−1`
+   under H1. Growing `n` *shrinks* `σ₀`. The adversary would need `w` to
+   grow with `n` — which is what H1 forbids, and what the `sizeof(T) ≤ 8`
+   `static_assert` now enforces.
+2. **Avoid paying bits at some level.** Blocked by Lemma 3: the only way to
+   split without contracting the span by `⌈m/λ⌉` is to trigger the cap, and
+   Lemma 2 makes every descendant span-`0`, hence free.
+3. **Skip the top-level split.** It always runs. If its cap binds, Lemma 2
+   makes the entire sort free.
+
+An adversary can still saturate the bound — the sweep reaches `2 048`
+against a proven ceiling of `9 270` at `n = 10⁶` — but the ceiling itself
+falls as `n^(−1/D)`. **No construction can make a span-positive leaf grow
+with `n` while H1 holds.**
+
+The honest residual risk is not in the argument but in its hypotheses: H3
+(unit-cost RAM) hides the memory hierarchy, and the wall-clock exponent on
+`FullRangeExtremes` is `1.08` while its *comparison* exponent is `0.9998`.
+That gap is cache behaviour, and it is the reason `λ` carries a
+cache-derived lower bound in [`Config.hpp`](../include/drs/Config.hpp) —
+a real effect on real machines that no `O(·)` statement describes.
 
 ## 9. Local sorting
 

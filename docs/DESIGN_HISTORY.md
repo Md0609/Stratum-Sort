@@ -60,7 +60,7 @@ The genuinely useful part of this record.
 the real constants.** The plan for v9 was built around eliminating a
 `Θ(n log n)` worst case. Six steps in, measurement showed the term does
 not exist at the shipped constants: the bit budget bounds the residual to
-~52 000 elements regardless of `n`. The specification had to be rewritten
+a constant independent of `n`. The specification had to be rewritten
 and its headline objective withdrawn.
 
 **Four times, an acceptance criterion measured the wrong thing.**

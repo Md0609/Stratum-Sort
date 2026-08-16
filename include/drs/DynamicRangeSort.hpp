@@ -38,9 +38,11 @@ namespace drs {
 // the keys, not only comparisons.
 //
 // The constant is bounded because the refinement depth is bounded by
-// min(w, MAX_SUBDIVISION_DEPTH), and the largest range that can reach a
-// comparison sort is bounded by lambda * 2^(w/D) - a constant independent
-// of n. See Config.hpp and the proofs next to refine().
+// min(w, MAX_SUBDIVISION_DEPTH), and a leaf reaching a comparison sort
+// with a non-zero span has size at most lambda * 2^(w/(D+1)) ~= 18000 -
+// a constant independent of n, and in fact one that SHRINKS as n grows,
+// because the top-level split spends part of the w-bit budget first.
+// Full proof, with the lemmas it rests on, in docs/ALGORITHM.md 8.
 //
 // ---- Guarantees ---------------------------------------------------
 // STABILITY: none. This sorter is NOT stable. For the integral key types
@@ -96,6 +98,16 @@ class DynamicRangeSort {
     static_assert(!std::is_same<typename std::remove_cv<T>::type, bool>::value,
                   "DynamicRangeSort does not support bool: std::vector<bool> is a packed "
                   "specialisation with no contiguous storage");
+    // The span arithmetic is carried in uint64_t throughout, so a key wider
+    // than 64 bits would have its offset truncated in bucketOf() and could
+    // produce an out-of-range bucket index. That is not a wrong answer, it
+    // is a heap overflow: verified with __int128, which some toolchains
+    // report as integral. The proof of linearity also assumes w is bounded.
+    // Rejecting the type is the honest option; widening the arithmetic
+    // would be a different algorithm with a different cost model.
+    static_assert(sizeof(T) <= sizeof(uint64_t),
+                  "DynamicRangeSort supports keys of at most 64 bits: the range arithmetic "
+                  "is carried in uint64_t");
 
 public:
     // targetElementsPerBin (lambda) is the target occupancy per bin;

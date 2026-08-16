@@ -55,16 +55,25 @@ bounded by the key width, not by `n` — which is the whole difference
 between this and a divide-and-conquer comparison sort, whose depth is
 `log n` by construction.
 
-Concretely, with the shipped constants a bin can survive at most six
-degenerate refinements, and the largest range that can then reach a
-comparison sort is bounded by `λ · 2^(w/D) ≈ 52 000` elements — **a
-constant independent of `n`**. Total work is therefore `Θ(n)`, in exactly
-the same sense in which radix sort is linear: treating the key width as a
-constant. This does not contradict the `Ω(n log n)` comparison lower
-bound, because the algorithm does arithmetic on keys.
+Concretely, a leaf that still needs a comparison sort has size at most
 
-The full derivation, with every invariant proved, is in
-[`docs/ALGORITHM.md`](docs/ALGORITHM.md).
+```
+m  ≤  min( n,  (λ^(D+1)·2^w / n)^(1/D) )   ≤   λ · 2^(w/(D+1))  ≈  18 000
+```
+
+— **a constant independent of `n`, and one that shrinks as `n` grows**,
+because the top-level split already spends `log₂(n/λ)` of the `w`-bit
+budget before refinement begins. An individual leaf costs `O(m log m)`;
+summed over leaves that is `O(n · log m_max)`, and `log₂ 18 000 < 15`. So
+the total is `Θ(n)`, in exactly the same sense in which radix sort is
+linear: treating the key width as a fixed property of the type. It does
+not contradict the `Ω(n log n)` comparison lower bound, because the
+algorithm does arithmetic on keys.
+
+The proof — four lemmas, the hypotheses it needs, a phase-by-phase cost
+table and an adversarial review of itself — is
+[§8 of `docs/ALGORITHM.md`](docs/ALGORITHM.md). It is a proof, not an
+extrapolation from benchmarks; the measurements validate it separately.
 
 ## Complexity
 
