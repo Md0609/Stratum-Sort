@@ -204,6 +204,30 @@ PACKAGE_FILES := \
 
 PKGDIR := dist/$(PKGNAME)
 
+# ---- Reproducibility -------------------------------------------------------
+# Two runs over the same tree must produce the same bytes, so that a
+# published SHA-256 identifies the contents rather than the moment of
+# packaging. A ZIP is not reproducible by default: each entry carries the
+# file's modification time, recorded in LOCAL time, plus optional
+# platform-specific extra fields. Four things have to be pinned.
+#
+#   1. Timestamps.  `cp` stamps each staged copy with "now". Every entry is
+#      re-stamped to PKG_TIMESTAMP afterwards.
+#   2. Timezone.    The stored time is local, so the same instant packaged
+#      in CEST and in UTC yields different bytes. TZ is forced to UTC at
+#      both the touch and the zip step.
+#   3. Extra fields. macOS `cp` carries extended attributes across
+#      (com.apple.provenance and friends), and zip would store them. They
+#      are stripped from the staging directory, and -X drops uid/gid and
+#      any remaining attribute blocks.
+#   4. Entry order. `zip -r` walks the directory in readdir order, which is
+#      not guaranteed stable. The entry list is sorted explicitly under the
+#      C locale and fed to zip with -@.
+#
+# Override PKG_TIMESTAMP to re-stamp a release. The default is a fixed date,
+# not the build date, so the hash depends only on the contents.
+PKG_TIMESTAMP ?= 202601010000.00
+
 package: $(PACKAGE_FILES) packaging/README.md
 	@rm -rf $(PKGDIR) dist/$(PKGNAME).zip
 	@mkdir -p $(PKGDIR)
@@ -212,7 +236,9 @@ package: $(PACKAGE_FILES) packaging/README.md
 	    cp $$f $(PKGDIR)/$$f; \
 	done
 	@cp packaging/README.md $(PKGDIR)/README.md
-	@cd dist && zip -qr $(PKGNAME).zip $(PKGNAME)
+	@xattr -cr $(PKGDIR) 2>/dev/null || true
+	@TZ=UTC find $(PKGDIR) -exec touch -t $(PKG_TIMESTAMP) {} +
+	@cd dist && find $(PKGNAME) | LC_ALL=C sort | TZ=UTC zip -qX@ $(PKGNAME).zip
 	@echo "dist/$(PKGNAME).zip"
 	@unzip -l dist/$(PKGNAME).zip
 
