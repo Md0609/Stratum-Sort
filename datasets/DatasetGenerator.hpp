@@ -7,7 +7,7 @@
 #include <random>
 #include <vector>
 
-namespace drs::testing {
+namespace stratum::testing {
 
 using DataVector = std::vector<int64_t>;
 
@@ -136,7 +136,7 @@ public:
     // Dentro de un grupo, se parte de un nucleo de 'target' valores contiguos
     // (span S) y se le anade repetidamente un unico valor lejano colocado en
     // el desplazamiento s*S, donde s = ceil(tamano/target) es el abanico que
-    // usara DRS. Con esa separacion, el ancho de intervalo resultante es
+    // usara Stratum Sort. Con esa separacion, el ancho de intervalo resultante es
     // S+1 > S, de modo que TODO el nucleo cae en el intervalo 0 y el valor
     // nuevo cae en un intervalo superior: la subdivision reduce el mayor
     // subproblema en un solo elemento, que es el peor caso posible.
@@ -210,4 +210,4 @@ private:
     std::mt19937_64 rng_;
 };
 
-} // namespace drs::testing
+} // namespace stratum::testing

@@ -1,16 +1,16 @@
 // ============================================================
-// DRS v7 - tests/main.cpp
+// Stratum Sort v7 - tests/main.cpp
 // ============================================================
 // Pure correctness, kept fast on purpose: edge cases plus one
 // correctness pass per dataset shape at a moderate size. This binary is
-// built with the PRODUCTION configuration (no DRS_ENABLE_METRICS, see
+// built with the PRODUCTION configuration (no STRATUM_ENABLE_METRICS, see
 // the Makefile) precisely so it validates the same code path a real
 // deployment would use - not a research build with instrumentation
 // compiled in. Timing, statistics and research experiments live in
 // benchmarks/, analysis/ and experiments/ (all research-configured);
 // this binary is meant to run in seconds, not minutes, so it is safe to
 // run after every change.
-#include "drs/DynamicRangeSort.hpp"
+#include "stratum/StratumSort.hpp"
 #include "DatasetGenerator.hpp"
 
 #include <algorithm>
@@ -20,15 +20,15 @@
 #include <limits>
 #include <vector>
 
-using drs::DynamicRangeSort;
-using drs::testing::DatasetGenerator;
+using stratum::StratumSort;
+using stratum::testing::DatasetGenerator;
 
 namespace {
 
 bool checkSorted(std::vector<int64_t> data) {
     std::vector<int64_t> expected = data;
     std::sort(expected.begin(), expected.end());
-    DynamicRangeSort<int64_t> sorter;
+    StratumSort<int64_t> sorter;
     sorter.sort(data);
     return data == expected;
 }
@@ -36,8 +36,8 @@ bool checkSorted(std::vector<int64_t> data) {
 void runEdgeCases() {
     bool ok = true;
 
-    { std::vector<int64_t> v; DynamicRangeSort<int64_t> s; s.sort(v); ok &= v.empty(); }
-    { std::vector<int64_t> v{42}; DynamicRangeSort<int64_t> s; s.sort(v); ok &= (v.size() == 1 && v[0] == 42); }
+    { std::vector<int64_t> v; StratumSort<int64_t> s; s.sort(v); ok &= v.empty(); }
+    { std::vector<int64_t> v{42}; StratumSort<int64_t> s; s.sort(v); ok &= (v.size() == 1 && v[0] == 42); }
     ok &= checkSorted({5, 1});
     ok &= checkSorted(std::vector<int64_t>(50, 7));
     ok &= checkSorted({-5, -1, -100, 3, 0, -42});

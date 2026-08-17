@@ -9,15 +9,15 @@
 #include <sys/sysctl.h>
 #endif
 
-// DRS_CXXFLAGS is injected by the Makefile (-DDRS_CXXFLAGS="\"...\"") so the
+// STRATUM_CXXFLAGS is injected by the Makefile (-DDRS_CXXFLAGS="\"...\"") so the
 // binary can report exactly the flags it was built with, instead of
 // guessing. If the project is compiled without going through the Makefile,
 // fall back to a placeholder rather than fail to build.
-#ifndef DRS_CXXFLAGS
-#define DRS_CXXFLAGS "unknown (built without the project Makefile)"
+#ifndef STRATUM_CXXFLAGS
+#define STRATUM_CXXFLAGS "unknown (built without the project Makefile)"
 #endif
 
-namespace drs {
+namespace stratum {
 
 // ============================================================
 // SystemInfo
@@ -59,7 +59,7 @@ struct SystemInfo {
 #endif
 
         // ---- Compile flags (injected by the Makefile) ----------------------
-        info.compileFlags = DRS_CXXFLAGS;
+        info.compileFlags = STRATUM_CXXFLAGS;
 
         // ---- Architecture ---------------------------------------------------
 #if defined(__x86_64__) || defined(_M_X64)
@@ -134,4 +134,4 @@ private:
     }
 };
 
-} // namespace drs
+} // namespace stratum

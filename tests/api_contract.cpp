@@ -1,5 +1,5 @@
 // ============================================================
-// Contract tests for the public API of DynamicRangeSort
+// Contract tests for the public API of StratumSort
 // ============================================================
 // The v10 audit found that the only tested configuration was the default
 // constructor. The defect it uncovered - the local-sort dispatcher
@@ -16,7 +16,7 @@
 // Built in the PRODUCTION configuration on purpose: it validates the code
 // a caller actually gets. Assertions inside the algorithm are active
 // because the build does not define NDEBUG.
-#include "drs/DynamicRangeSort.hpp"
+#include "stratum/StratumSort.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -28,7 +28,7 @@
 #include <string>
 #include <vector>
 
-using drs::DynamicRangeSort;
+using stratum::StratumSort;
 
 namespace {
 
@@ -49,7 +49,7 @@ template <typename T>
 bool sortsCorrectly(std::vector<T> data, std::size_t lambda, std::size_t leaf) {
     std::vector<T> expected = data;
     std::sort(expected.begin(), expected.end());
-    DynamicRangeSort<T> sorter(lambda, leaf);
+    StratumSort<T> sorter(lambda, leaf);
     sorter.sort(data);
     return data == expected;
 }
@@ -113,27 +113,27 @@ void testParameterSpace() {
 void testConstructorClamping() {
     std::cout << "2. Constructor clamping\n";
 
-    DynamicRangeSort<int64_t> a;
-    check(a.targetElementsPerBin() == drs::DEFAULT_TARGET_ELEMENTS_PER_BIN,
+    StratumSort<int64_t> a;
+    check(a.targetElementsPerBin() == stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN,
           "default lambda");
-    check(a.leafThreshold() == drs::DEFAULT_LEAF_THRESHOLD, "default leaf threshold");
+    check(a.leafThreshold() == stratum::DEFAULT_LEAF_THRESHOLD, "default leaf threshold");
 
-    DynamicRangeSort<int64_t> b(0, 0);
-    check(b.targetElementsPerBin() == drs::DEFAULT_TARGET_ELEMENTS_PER_BIN,
+    StratumSort<int64_t> b(0, 0);
+    check(b.targetElementsPerBin() == stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN,
           "lambda = 0 falls back to the default");
     check(b.leafThreshold() == b.targetElementsPerBin(),
           "leaf threshold below lambda is raised to lambda");
 
-    DynamicRangeSort<int64_t> c(64, 16);
+    StratumSort<int64_t> c(64, 16);
     check(c.targetElementsPerBin() == 64, "lambda kept");
     check(c.leafThreshold() == 64, "leaf threshold 16 < lambda 64 is raised to 64");
 
-    DynamicRangeSort<int64_t> d(16, 128);
+    StratumSort<int64_t> d(16, 128);
     check(d.targetElementsPerBin() == 16 && d.leafThreshold() == 128,
           "a leaf threshold above lambda is kept as given");
 
     // The documented swap hazard: (64, 32) reads as (64, 64), not (32, 64).
-    DynamicRangeSort<int64_t> e(64, 32);
+    StratumSort<int64_t> e(64, 32);
     check(e.targetElementsPerBin() == 64 && e.leafThreshold() == 64,
           "swapped arguments are clamped, not reinterpreted");
 }
@@ -204,7 +204,7 @@ void testRangeArithmetic() {
 void testInstanceReuse() {
     std::cout << "4. Instance reuse\n";
     std::mt19937_64 rng(999);
-    DynamicRangeSort<int64_t> sorter;
+    StratumSort<int64_t> sorter;
 
     bool allOk = true;
     const std::vector<std::size_t> sizes = {50000, 3, 20000, 1, 0, 100, 40000, 2};
@@ -238,7 +238,7 @@ void testStrongExceptionGuarantee() {
 
     for (std::size_t budget = 0; budget < 40; ++budget) {
         std::vector<int64_t> v = original;
-        DynamicRangeSort<int64_t> sorter; // fresh, so it must allocate
+        StratumSort<int64_t> sorter; // fresh, so it must allocate
         g_allocBudget = budget;
         g_allocLimiterOn = true;
         bool threw = false;
@@ -254,7 +254,7 @@ void testStrongExceptionGuarantee() {
     }
 
     check(everThrew, "the allocation limiter actually fired");
-#ifdef DRS_ENABLE_METRICS
+#ifdef STRATUM_ENABLE_METRICS
     // The research build does NOT offer the strong guarantee, and this
     // asymmetry is deliberate and documented in the header: the
     // instrumentation times the join phase, and recording that timing
@@ -281,18 +281,18 @@ void testDeterminism() {
     for (auto& x : base) x = dist(rng);
 
     std::vector<int64_t> first = base;
-    DynamicRangeSort<int64_t>().sort(first);
+    StratumSort<int64_t>().sort(first);
     bool same = true;
     for (int r = 0; r < 5; ++r) {
         std::vector<int64_t> v = base;
-        DynamicRangeSort<int64_t> s;
+        StratumSort<int64_t> s;
         s.sort(v);
         if (v != first) same = false;
     }
     check(same, "repeated sorts of the same input give byte-identical output");
 }
 
-#ifdef DRS_ENABLE_METRICS
+#ifdef STRATUM_ENABLE_METRICS
 // ------------------------------------------------------------------
 // 7. The local-sort dispatch is decoupled from the leaf threshold
 // ------------------------------------------------------------------
@@ -305,7 +305,7 @@ void testDeterminism() {
 // size of the leaf, never on the constructor parameters. The test builds
 // one leaf of a fixed size under several different parameter settings and
 // checks the dispatch is identical every time.
-std::size_t usageOf(const drs::DRSMetrics& m, const char* algo) {
+std::size_t usageOf(const stratum::SortMetrics& m, const char* algo) {
     const auto& u = m.algorithmUsage();
     const auto it = u.find(algo);
     return it == u.end() ? 0u : it->second;
@@ -335,7 +335,7 @@ void testDispatchDecoupling() {
             std::sort(v.begin(), v.end());
             std::swap(v[0], v[leafSize / 2]); // guarantee it is not a run
 
-            DynamicRangeSort<int64_t> sorter(leafSize, t);
+            StratumSort<int64_t> sorter(leafSize, t);
             sorter.sort(v);
             const auto& m = sorter.metrics();
 
@@ -378,14 +378,14 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 int main() {
-    std::cout << "=== DynamicRangeSort - API contract tests ===\n";
+    std::cout << "=== StratumSort - API contract tests ===\n";
     testParameterSpace();
     testConstructorClamping();
     testRangeArithmetic();
     testInstanceReuse();
     testStrongExceptionGuarantee();
     testDeterminism();
-#ifdef DRS_ENABLE_METRICS
+#ifdef STRATUM_ENABLE_METRICS
     testDispatchDecoupling();
 #endif
 

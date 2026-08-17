@@ -1,10 +1,22 @@
 # ============================================================
-# Dynamic Range Sort - build system
+# Stratum Sort - build system
 # ============================================================
-# THREE configurations, differing in two orthogonal switches:
+# Two halves, deliberately separate:
 #
-#   DRS_ENABLE_METRICS - compiles in the instrumentation. Undefined means
-#                        DRSMetrics, the metrics() accessor and the
+#   PRODUCT   include/, tests/, examples/, benchmarks/timings.cpp
+#             This is what `make package` ships. Header-only library plus
+#             the tests and one benchmark a user can run themselves.
+#
+#   RESEARCH  research/
+#             Derivations, audits, adversaries, one-off studies. Built by
+#             `make research`, never shipped. A study whose source no
+#             longer compiles cannot be re-run, so `make research` exists
+#             to keep them honest - but it is not part of `make all`.
+#
+# THREE build configurations, differing in two orthogonal switches:
+#
+#   STRATUM_ENABLE_METRICS - compiles in the instrumentation. Undefined
+#                        means SortMetrics, the metrics() accessor and the
 #                        introspection API do not exist in the object code
 #                        at all, not merely that they are disabled.
 #   NDEBUG             - compiles OUT the internal assertions.
@@ -21,195 +33,172 @@
 #                        is for correctness, never for measurement.
 #   RESEARCH_CXXFLAGS - metrics on, assertions on. A laboratory build,
 #                        several times slower than release. Never use it
-#                        to measure performance; see the production/
-#                        research overhead comparison in `make overhead`.
+#                        to measure performance.
 #
 # -O3 was measured 5-8% faster than -O2 on this project's hot path, in a
 # controlled alternating comparison. -march=native and -flto showed no
 # further consistent gain and cost portability, so neither is default.
-# See docs/BENCHMARKS.md if you want to re-check on your own hardware.
+# See research/BENCHMARKS.md to re-check on your own hardware.
+
+VERSION := 1.0.0
+PKGNAME := stratumsort-v$(VERSION)
+
 CXX := g++
 WARN_FLAGS := -Wall -Wextra
-OPT_FLAGS := -O3
-PROD_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS) -DNDEBUG
-TEST_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS)
-RESEARCH_CXXFLAGS := -std=c++17 $(OPT_FLAGS) $(WARN_FLAGS) -DDRS_ENABLE_METRICS
-INCLUDES := -Iinclude -Ibenchmarks -Ianalysis -Iexperiments -Idatasets
+OPT_FLAGS  := -O3
+STD        := -std=c++17
 
-# Embedded into every binary so SystemInfo (and the docs) can report the
-# exact flags used to build it, instead of guessing.
-BUILD_FLAGS_DEFINE_PROD := -DDRS_CXXFLAGS='"$(PROD_CXXFLAGS) $(INCLUDES)"'
-BUILD_FLAGS_DEFINE_TEST := -DDRS_CXXFLAGS='"$(TEST_CXXFLAGS) $(INCLUDES)"'
-BUILD_FLAGS_DEFINE_RESEARCH := -DDRS_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(INCLUDES)"'
+PROD_CXXFLAGS     := $(STD) $(OPT_FLAGS) $(WARN_FLAGS) -DNDEBUG
+TEST_CXXFLAGS     := $(STD) $(OPT_FLAGS) $(WARN_FLAGS)
+RESEARCH_CXXFLAGS := $(STD) $(OPT_FLAGS) $(WARN_FLAGS) -DSTRATUM_ENABLE_METRICS
 
-ALGO_HEADERS := include/drs/Config.hpp include/drs/DRSMetrics.hpp \
-                include/drs/DynamicRangeSort.hpp include/drs/DynamicRangeSort.tpp
-VERSION_HEADERS := experiments/legacy/DRSv1.hpp experiments/legacy/DRSv2.hpp \
-                   experiments/legacy/DRSv3.hpp experiments/legacy/DRSv6_experimental.hpp
-COMMON_HEADERS := $(ALGO_HEADERS) benchmarks/SystemInfo.hpp benchmarks/BenchmarkRunner.hpp \
-                   analysis/Statistics.hpp datasets/DatasetGenerator.hpp
+PROD_INC     := -Iinclude -Idatasets -Ibenchmarks
+RESEARCH_INC := $(PROD_INC) -Iresearch/tools -Iresearch/analysis -Iresearch/experiments
 
-# One-off research programs. Each answered a single question during the
-# design and is kept so that its number can be re-derived rather than
-# taken on trust. They are not part of the library and are not run by
-# `make all`, but they ARE built by it: a study whose source no longer
-# compiles cannot be re-run, which makes its published result unverifiable.
-STUDY_SOURCES := analysis/ComplexityReview.cpp \
-                 benchmarks/ImprovementCeiling.cpp \
-                 experiments/AdversarialCoreSweep.cpp \
-                 experiments/AdversaryOverfitCheck.cpp \
-                 experiments/CardinalityAnomaly.cpp \
-                 experiments/CardinalityAnomalyProbe.cpp \
-                 experiments/EmptyBinDecomposition.cpp \
-                 experiments/LambdaTauPlaneSweep.cpp \
-                 experiments/LambdaTauPotential.cpp \
-                 experiments/SortedCertificatePotential.cpp \
-                 experiments/TargetSweep.cpp
-STUDY_BINARIES := $(patsubst %.cpp,build/study_%,$(notdir $(STUDY_SOURCES)))
+# Embedded into every binary so SystemInfo can report the exact flags used
+# to build it, instead of guessing.
+DEF_PROD     := -DSTRATUM_CXXFLAGS='"$(PROD_CXXFLAGS) $(PROD_INC)"'
+DEF_TEST     := -DSTRATUM_CXXFLAGS='"$(TEST_CXXFLAGS) $(PROD_INC)"'
+DEF_RESEARCH := -DSTRATUM_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(RESEARCH_INC)"'
 
-.PHONY: all test contract benchmarks experiments analysis overhead baseline timings profile studies sanitizers fuzz clean
+ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
+                include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp
 
-all: build/drs_tests build/drs_contract build/drs_contract_research build/drs_benchmarks build/drs_experiments build/drs_analysis \
-     build/drs_overhead_production build/drs_overhead_research build/drs_baseline \
-     build/drs_profile build/drs_timings build/drs_sanitizers build/drs_fuzz $(STUDY_BINARIES)
+.PHONY: all test contract sanitizers fuzz timings examples \
+        research studies package clean help
 
-# ---- Correctness binaries: TEST configuration, assertions ACTIVE ----------
-build/drs_tests: tests/main.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(TEST_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_TEST) tests/main.cpp -o build/drs_tests
+# ============================================================
+# PRODUCT
+# ============================================================
+all: build/tests build/contract build/contract_research build/sanitizers \
+     build/fuzz build/timings build/example_basic
 
-# ---- Research-configuration binaries (need DRS_ENABLE_METRICS) ------------
-build/drs_benchmarks: benchmarks/main.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/main.cpp -o build/drs_benchmarks
+# ---- Correctness: TEST configuration, assertions ACTIVE --------------------
+build/tests: tests/main.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
+	@mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
-build/drs_experiments: experiments/main.cpp $(COMMON_HEADERS) $(VERSION_HEADERS) \
-                       experiments/TargetStrategies.hpp experiments/BinSizeHistogram.hpp \
-                       experiments/DisorderMetrics.hpp experiments/LocalityExperiment.hpp \
-                       experiments/VersionComparison.hpp experiments/SubdivisionQualityAnalysis.hpp
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) experiments/main.cpp -o build/drs_experiments
-
-build/drs_analysis: analysis/main.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) analysis/main.cpp -o build/drs_analysis
-
-# ---- Cost of the instrumentation: one source file, compiled twice, --------
-# ---- once per configuration. ----------------------------------------------
-build/drs_overhead_production: benchmarks/InstrumentationOverhead.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(PROD_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_PROD) benchmarks/InstrumentationOverhead.cpp -o build/drs_overhead_production
-
-build/drs_overhead_research: benchmarks/InstrumentationOverhead.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/InstrumentationOverhead.cpp -o build/drs_overhead_research
-
-# ---- Reference baseline over the full dataset battery ---------------------
-# Times every dataset against std::sort and prints the deterministic
-# counters alongside, so a change can be judged by work done and not only
-# by the clock.
-build/drs_baseline: benchmarks/ReferenceBaseline.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/ReferenceBaseline.cpp -o build/drs_baseline
-
-# ---- Release timings: the ONLY binary whose clock may be quoted -----------
-# Built with PROD_CXXFLAGS. `make baseline` cannot be, because it reads
-# sorter.metrics(); its counters are exact but its times are not the
-# library's. Keeping the two tools separate is what stops a research
-# timing being published as a release one, which has happened here before.
-build/drs_timings: benchmarks/ReleaseTimings.cpp $(ALGO_HEADERS) benchmarks/SystemInfo.hpp datasets/DatasetGenerator.hpp
-	mkdir -p build
-	$(CXX) $(PROD_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_PROD) benchmarks/ReleaseTimings.cpp -o build/drs_timings
-
-# ---- Per-phase time breakdown and heap-allocation count -------------------
-build/drs_profile: benchmarks/PhaseProfile.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) benchmarks/PhaseProfile.cpp -o build/drs_profile
-
-# ---- Contract tests for the public API -------------------------------------
-# Built in BOTH configurations: production validates what a caller gets,
+# Built in BOTH configurations: release validates what a caller gets,
 # research pins the documented differences between the two.
-build/drs_contract: tests/api_contract.cpp $(ALGO_HEADERS)
-	mkdir -p build
-	$(CXX) $(TEST_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_TEST) tests/api_contract.cpp -o build/drs_contract
+build/contract: tests/api_contract.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
-build/drs_contract_research: tests/api_contract.cpp $(ALGO_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) tests/api_contract.cpp -o build/drs_contract_research
+build/contract_research: tests/api_contract.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(PROD_INC) $(DEF_RESEARCH) $< -o $@
 
 # ---- Range-arithmetic limits under ASan/UBSan ------------------------------
 # Separate from `make test` because the sanitizers make it far slower; it is
 # the suite that exercises spans reaching the whole key universe, which is
 # exactly where an overflow would hide.
-build/drs_sanitizers: tests/edge_sanitizers.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
-	mkdir -p build
-	$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(INCLUDES) \
-	    $(BUILD_FLAGS_DEFINE_TEST) tests/edge_sanitizers.cpp -o build/drs_sanitizers
+build/sanitizers: tests/edge_sanitizers.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
 # ---- Differential fuzz against std::sort -----------------------------------
-# Same treatment as the sanitizer suite, and for the same reason: the
-# arithmetic it stresses is exactly the arithmetic UBSan is able to judge.
-build/drs_fuzz: tests/differential_fuzz.cpp $(ALGO_HEADERS)
-	mkdir -p build
-	$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(INCLUDES) \
-	    $(BUILD_FLAGS_DEFINE_TEST) tests/differential_fuzz.cpp -o build/drs_fuzz
+build/fuzz: tests/differential_fuzz.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
-# ---- One-off research programs --------------------------------------------
-# Built in the research configuration: every one of them reads the metrics.
-build/study_%: experiments/%.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) $< -o $@
+# ---- The ONLY binary whose clock may be quoted -----------------------------
+build/timings: benchmarks/timings.cpp $(ALGO_HEADERS) benchmarks/SystemInfo.hpp datasets/DatasetGenerator.hpp
+	@mkdir -p build
+	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) $(DEF_PROD) $< -o $@
 
-build/study_%: benchmarks/%.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) $< -o $@
+build/example_basic: examples/basic.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(PROD_CXXFLAGS) -Iinclude $(DEF_PROD) $< -o $@
 
-build/study_%: analysis/%.cpp $(COMMON_HEADERS)
-	mkdir -p build
-	$(CXX) $(RESEARCH_CXXFLAGS) $(INCLUDES) $(BUILD_FLAGS_DEFINE_RESEARCH) $< -o $@
-
-studies: $(STUDY_BINARIES)
-
-sanitizers: build/drs_sanitizers
-	./build/drs_sanitizers
-
-# 20000 random cases by default; pass N for a longer soak.
-fuzz: build/drs_fuzz
-	./build/drs_fuzz $(N)
-
-test: build/drs_tests build/drs_contract build/drs_contract_research
-	./build/drs_tests
+test: build/tests build/contract build/contract_research
+	./build/tests
 	@echo
-	./build/drs_contract
+	./build/contract
 	@echo
-	./build/drs_contract_research
+	./build/contract_research
 
-contract: build/drs_contract build/drs_contract_research
-	./build/drs_contract
-	./build/drs_contract_research
+contract: build/contract build/contract_research
+	./build/contract
+	./build/contract_research
 
-baseline: build/drs_baseline
-	./build/drs_baseline
+sanitizers: build/sanitizers
+	./build/sanitizers
 
-timings: build/drs_timings
-	./build/drs_timings
+# 20000 random cases by default; pass N=... for a longer soak.
+fuzz: build/fuzz
+	./build/fuzz $(N)
 
-profile: build/drs_profile
-	./build/drs_profile
+timings: build/timings
+	./build/timings
 
-benchmarks: build/drs_benchmarks
-	./build/drs_benchmarks
+examples: build/example_basic
+	./build/example_basic
 
-experiments: build/drs_experiments
-	./build/drs_experiments
+# ============================================================
+# RESEARCH - never shipped, but kept compiling
+# ============================================================
+RESEARCH_SOURCES := $(wildcard research/tools/*.cpp) \
+                    $(wildcard research/analysis/*.cpp) \
+                    $(wildcard research/experiments/*.cpp)
+RESEARCH_BINARIES := $(patsubst %.cpp,build/research_%,$(notdir $(RESEARCH_SOURCES)))
 
-analysis: build/drs_analysis
-	./build/drs_analysis
+build/research_%: research/tools/%.cpp
+	@mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(RESEARCH_INC) $(DEF_RESEARCH) $< -o $@
 
-overhead: build/drs_overhead_production build/drs_overhead_research
-	./build/drs_overhead_production
-	@echo
-	./build/drs_overhead_research
+build/research_%: research/analysis/%.cpp
+	@mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(RESEARCH_INC) $(DEF_RESEARCH) $< -o $@
+
+build/research_%: research/experiments/%.cpp
+	@mkdir -p build
+	$(CXX) $(RESEARCH_CXXFLAGS) $(RESEARCH_INC) $(DEF_RESEARCH) $< -o $@
+
+research studies: $(RESEARCH_BINARIES)
+	@echo "$(words $(RESEARCH_BINARIES)) research programs built (not shipped)."
+
+# ============================================================
+# PACKAGE - the downloadable artefact
+# ============================================================
+# Ships the library and what a user needs to build, test and try it.
+# Deliberately EXCLUDES research/: proofs, audits, adversaries, design
+# history and one-off studies are readable in the repository, not part of
+# the download. The file list is explicit rather than an exclude list, so
+# a new research document cannot leak into the package by default.
+PACKAGE_FILES := \
+	include/stratum/StratumSort.hpp \
+	include/stratum/StratumSort.tpp \
+	include/stratum/Config.hpp \
+	include/stratum/Metrics.hpp \
+	tests/main.cpp \
+	tests/api_contract.cpp \
+	tests/edge_sanitizers.cpp \
+	tests/differential_fuzz.cpp \
+	datasets/DatasetGenerator.hpp \
+	benchmarks/timings.cpp \
+	benchmarks/SystemInfo.hpp \
+	examples/basic.cpp \
+	docs/usage.md \
+	CMakeLists.txt \
+	Makefile \
+	LICENSE \
+	README.md
+
+package: $(PACKAGE_FILES)
+	@rm -rf dist/$(PKGNAME) dist/$(PKGNAME).zip
+	@mkdir -p dist/$(PKGNAME)
+	@for f in $(PACKAGE_FILES); do \
+	    mkdir -p dist/$(PKGNAME)/$$(dirname $$f); \
+	    cp $$f dist/$(PKGNAME)/$$f; \
+	done
+	@cd dist && zip -qr $(PKGNAME).zip $(PKGNAME)
+	@echo "dist/$(PKGNAME).zip"
+	@unzip -l dist/$(PKGNAME).zip
 
 clean:
-	rm -rf build
+	rm -rf build dist
+
+help:
+	@echo "Product:  make all | test | sanitizers | fuzz | timings | examples"
+	@echo "Package:  make package        -> dist/$(PKGNAME).zip"
+	@echo "Research: make research       (built, never shipped)"

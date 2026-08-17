@@ -2,17 +2,17 @@
 // si computeBinIndex() devolviera un indice fuera de rango, la escritura en
 // outBucketSize[idx] / dst[writeCursor[b]] seria fuera de limites y ASan lo
 // detectaria. Se ejercitan los casos que los tests actuales NO cubren.
-#include "drs/DynamicRangeSort.hpp"
+#include "stratum/StratumSort.hpp"
 #include "DatasetGenerator.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <vector>
-using drs::DynamicRangeSort; using drs::testing::DatasetGenerator;
+using stratum::StratumSort; using stratum::testing::DatasetGenerator;
 static bool ok(std::vector<int64_t> v, const char* what) {
     std::vector<int64_t> ref = v; std::sort(ref.begin(), ref.end());
-    DynamicRangeSort<int64_t> s; s.sort(v);
+    StratumSort<int64_t> s; s.sort(v);
     const bool good = (v == ref);
     std::cout << "  " << (good ? "PASS " : "FAIL ") << what << "\n";
     return good;

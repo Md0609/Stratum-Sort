@@ -18,7 +18,7 @@
 // the two extremes, and inputs with almost no distinct values.
 //
 // Deterministic by construction: a fixed seed, so a failure reproduces.
-#include "drs/DynamicRangeSort.hpp"
+#include "stratum/StratumSort.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -58,7 +58,7 @@ void oneCase() {
     std::vector<T> expected = v;
     std::sort(expected.begin(), expected.end());
 
-    drs::DynamicRangeSort<T> sorter(lambda, t);
+    stratum::StratumSort<T> sorter(lambda, t);
     sorter.sort(v);
     ++cases;
     if (v != expected) {
