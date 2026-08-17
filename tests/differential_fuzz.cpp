@@ -94,5 +94,5 @@ int main(int argc, char** argv) {
             case 7: oneCase<uint64_t>(); break;
         }
     }
-    std::printf("OK: %lld casos, ningun desacuerdo con std::sort\n", cases);
+    std::printf("OK: %lld cases, no disagreement with std::sort\n", cases);
 }

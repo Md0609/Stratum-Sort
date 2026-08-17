@@ -18,10 +18,9 @@
 // built with the PRODUCTION configuration (no STRATUM_ENABLE_METRICS, see
 // the Makefile) precisely so it validates the same code path a real
 // deployment would use - not a research build with instrumentation
-// compiled in. Timing, statistics and research experiments live in
-// benchmarks/, analysis/ and experiments/ (all research-configured);
-// this binary is meant to run in seconds, not minutes, so it is safe to
-// run after every change.
+// compiled in. Timing and statistics live in their own instrumented
+// binaries; this one is meant to run in seconds, not minutes, so it is
+// safe to run after every change.
 #include "stratum/StratumSort.hpp"
 #include "DatasetGenerator.hpp"
 

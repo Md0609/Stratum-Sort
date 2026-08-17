@@ -46,8 +46,17 @@ namespace stratum {
 // which for large n DECREASES like n^(-1/D), and whose supremum over all
 // n is the CONSTANT lambda * 2^(w/(D+1)) ~= 18000. The bound depends on
 // n; its supremum does not, and that supremum is what makes the total
-// linear. Full proof, with its four hypotheses and five lemmas, in
-// docs/ALGORITHM.md 8.
+// linear: an individual leaf costs O(m log m), but summing over leaves
+// gives O(n * log 18000).
+//
+// The guarantee holds under four hypotheses, all of them checkable:
+//   H1  T is integral with w = 8*sizeof(T) <= 64 bits (static_assert'd).
+//   H2  lambda >= 1, t >= lambda and D >= 1 are constants chosen
+//       independently of n. At D = 0 there is no refinement at all and
+//       the worst case becomes Theta(n log n).
+//   H3  Unit-cost RAM; allocating or releasing k words costs O(k);
+//       n + lambda fits in size_t.
+//   H4  memcpy of k elements costs Theta(k).
 //
 // ---- Guarantees ---------------------------------------------------
 // STABILITY: none. This sorter is NOT stable. For the integral key types
@@ -60,6 +69,14 @@ namespace stratum {
 //   thread; it owns mutable scratch buffers reused across the whole
 //   recursion. Distinct instances are independent and may be used
 //   concurrently. There is no shared global state.
+//
+// INSTRUMENTATION: STRATUM_ENABLE_METRICS is a whole-program switch, not a
+//   per-file one. Defining it adds a member to this class, so the class has
+//   a different size and layout in the two configurations. Mixing
+//   translation units that disagree about the macro is an ODR violation: it
+//   links without a diagnostic and misbehaves at run time. Set it in the
+//   build system for every target that includes this header, or leave it
+//   unset everywhere.
 //
 // EXCEPTIONS: strong guarantee in a release build. The only operations
 //   that can throw are the internal allocations, and all of them happen

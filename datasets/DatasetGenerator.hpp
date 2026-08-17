@@ -29,19 +29,19 @@ public:
         return v;
     }
 
-    // Uniforme con el rango PROPORCIONAL a n, de modo que la densidad
-    // n/rango se mantiene constante a lo largo de un barrido de tamanos.
+    // Uniform, with the value range PROPORTIONAL to n, so that the density
+    // n/range stays constant across a sweep of sizes.
     //
-    // randomUniform() tiene el rango FIJO en 10^6 mientras n recorre desde
-    // 100 hasta 5*10^6: su densidad varia cuatro ordenes de magnitud, asi que
-    // la redundancia -y con ella el atajo observedMin==observedMax de
-    // refine()- crece con n por construccion del dataset. Cualquier ajuste de
-    // complejidad sobre randomUniform mezcla el escalado con n y el aumento
-    // de redundancia, y el segundo empuja hacia abajo justo en los puntos
-    // grandes, que son los que dominan la regresion.
+    // randomUniform() holds its range fixed at 10^6 while n sweeps several
+    // orders of magnitude, so its density - and with it the redundancy that
+    // lets refine() take the observedMin == observedMax shortcut - grows
+    // with n by construction of the dataset. Fitting a complexity exponent
+    // on that mixes the scaling in n with the rising redundancy, and the
+    // second effect pushes hardest at the large points, which are exactly
+    // the ones that dominate the fit.
     //
-    // Este generador aisla la variable. Es el unico de la bateria con el que
-    // tiene sentido estimar un exponente. Ver docs/history/COMPLEXITY_REVIEW_v9.md.
+    // This generator isolates the variable, and is the only one in the
+    // battery on which estimating an exponent is meaningful.
     DataVector randomUniformScaled(std::size_t n, uint64_t elementsPerValue = 16) {
         const uint64_t span = n == 0 ? 1 : static_cast<uint64_t>(n) * elementsPerValue;
         std::uniform_int_distribution<int64_t> dist(0, static_cast<int64_t>(span));
@@ -103,19 +103,17 @@ public:
     }
 
     // ========================================================================
-    // Datasets added to cover two cases none of the previous eight
-    // exercised: a span covering the whole key universe, and an input
-    // built to exhaust the refinement depth. Without them, no claim
-    // about either case was verified.
+    // Two cases none of the eight generators above exercises: a span
+    // covering the whole key universe, and an input built to exhaust the
+    // refinement depth.
     // ========================================================================
 
-    // SPEC_v9 s9.6 - "caso limite de rango completo".
-    // Contiene explicitamente INT64_MIN e INT64_MAX, de modo que
-    // max - min + 1 = 2^64, que es exactamente el valor que desborda a 0 en
-    // aritmetica de 64 bits sin signo. Es la entrada que motiva el
-    // prerrequisito de correccion de SPEC_v9 s2.1 (aritmetica de span).
-    // Los dos extremos se plantan a proposito: una muestra uniforme sobre
-    // todo el universo practicamente nunca los alcanza.
+    // Whole-universe span. Contains INT64_MIN and INT64_MAX explicitly, so
+    // that max - min + 1 is exactly 2^64 - the value that wraps to 0 in
+    // 64-bit unsigned arithmetic, and the reason the algorithm works in
+    // terms of the span rather than the count of distinct values. Both
+    // extremes are planted on purpose: a uniform sample over the whole
+    // universe essentially never reaches them.
     DataVector fullRangeExtremes(std::size_t n) {
         const int64_t lo = std::numeric_limits<int64_t>::min();
         const int64_t hi = std::numeric_limits<int64_t>::max();
@@ -129,33 +127,28 @@ public:
         return v;
     }
 
-    // SPEC_v9 s9.5 - dataset adversario, ausente del proyecto hasta ahora.
-    // Construccion del Teorema 9' de docs/history/REVIEW_refinamiento_terminal.md: grupos
-    // que pierden exactamente UN elemento por nivel de refinamiento.
+    // Adversarial input: groups that shed exactly ONE element per
+    // refinement level, which is the slowest possible progress.
     //
-    // Dentro de un grupo, se parte de un nucleo de 'target' valores contiguos
-    // (span S) y se le anade repetidamente un unico valor lejano colocado en
-    // el desplazamiento s*S, donde s = ceil(tamano/target) es el abanico que
-    // usara Stratum Sort. Con esa separacion, el ancho de intervalo resultante es
-    // S+1 > S, de modo que TODO el nucleo cae en el intervalo 0 y el valor
-    // nuevo cae en un intervalo superior: la subdivision reduce el mayor
-    // subproblema en un solo elemento, que es el peor caso posible.
+    // Within a group, start from a core of 'target' contiguous values
+    // (span S) and repeatedly append a single distant value at offset
+    // s*S, where s = ceil(size/target) is the fan-out the algorithm will
+    // choose. At that separation the resulting interval width is S+1 > S,
+    // so the entire core lands in interval 0 and the new value lands in a
+    // higher one: the split shrinks the largest subproblem by one element.
     //
-    // El span de un grupo crece geometricamente, asi que el numero de niveles
-    // que se pueden forzar esta limitado por los bits disponibles por grupo,
-    // que a su vez dependen de cuantos grupos hay que alojar en el universo
-    // de forma disjunta (esa restriccion es el error C-B que la revision
-    // adversaria encontro en la version publicada del teorema).
-    // 'coreParam' (anadido al resolver la observacion O8 del paso 3) fija el
-    // tamano del NUCLEO contiguo del grupo; 0 significa "usa target", que es
-    // el comportamiento original y deja intactas todas las medidas previas.
+    // A group's span grows geometrically, so the number of levels that can
+    // be forced is limited by the bits available per group, which in turn
+    // depend on how many groups must be laid out disjointly in the key
+    // universe.
     //
-    // El nucleo determina el regimen del adversario, y con el, el signo del
-    // compromiso entre capar y no capar la profundidad:
-    //   nucleo pequeno  -> splits = 2       -> 1 bit de span por nivel  -> muchos niveles degenerados, residuo diminuto
-    //   nucleo grande   -> splits = C/target -> log2(C/target) bits/nivel -> pocos niveles, residuo enorme
-    // Solo el segundo regimen produce el termino Theta(n log n) que el tope
-    // de profundidad provocaba al entregar un bin grande a Introsort.
+    // 'coreParam' sets the size of the group's contiguous core; 0 means
+    // "use target". The core size selects the adversary's regime:
+    //   small core -> splits = 2            -> 1 bit of span per level
+    //                                       -> many degenerate levels, tiny residual
+    //   large core -> splits = C/target     -> log2(C/target) bits per level
+    //                                       -> few levels, large residual
+    // Only the second regime produces a large bin for the comparison sort.
     DataVector adversarialPeeling(std::size_t n, std::size_t target = 64,
                                    std::size_t coreParam = 0) {
         DataVector v;
@@ -163,18 +156,18 @@ public:
         if (n == 0) return v;
         if (target < 1) target = 1;
 
-        // Presupuesto de span por grupo: el universo se reparte a partes
-        // iguales entre los grupos, que deben ser disjuntos en valor.
-        // Se usa la mitad positiva del universo para dejar sitio a la
-        // separacion entre grupos sin desbordar.
+        // Span budget per group: the universe is split evenly between the
+        // groups, which must be disjoint in value. Only the positive half
+        // is used, leaving room for the separation between groups without
+        // overflowing.
         const std::size_t coreSize = std::min(coreParam == 0 ? target : coreParam, n);
         std::size_t groupsEstimate = n / std::max<std::size_t>(coreSize * 2, 1);
         if (groupsEstimate == 0) groupsEstimate = 1;
         const uint64_t budget =
             (static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / groupsEstimate) / 2;
 
-        // Desplazamientos de un grupo, construidos una sola vez y reutilizados:
-        // todos los grupos tienen la misma forma, solo cambia su base.
+        // One group's offsets, built once and reused: every group has the
+        // same shape and differs only in its base value.
         std::vector<uint64_t> offsets;
         offsets.reserve(coreSize + 64);
         uint64_t span = 0;
@@ -186,14 +179,14 @@ public:
             const std::size_t sizeAfter = offsets.size() + 1;
             const uint64_t splits = (sizeAfter + target - 1) / target;
             if (splits < 2) break;
-            if (span > budget / splits) break; // se agotaron los bits del grupo
+            if (span > budget / splits) break; // the group ran out of bits
             const uint64_t next = span * splits;
             if (next <= span) break;
             offsets.push_back(next);
             span = next;
         }
 
-        const uint64_t stride = span + 2; // separacion entre grupos
+        const uint64_t stride = span + 2; // separation between groups
         uint64_t base = 0;
         while (v.size() < n) {
             for (uint64_t off : offsets) {

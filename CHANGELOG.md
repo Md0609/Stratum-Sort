@@ -14,11 +14,11 @@ is deliberate:
 | API | functional and documented, but with **no field history** — nobody has used it yet, so nothing has been stress-tested by contact with real callers |
 | Tests | four suites, including a randomised differential fuzz under ASan/UBSan |
 | Theory | `Θ(n)` documented together with the hypotheses it needs |
-| Platform validation | **narrow: arm64 macOS only** |
+| Platform validation | Linux x86_64 and macOS arm64 verified; **Windows and MSVC never built** |
 
-`1.0.0` is a promise of API stability. That promise is not worth making
-until the library has been built somewhere other than one laptop. It is
-not an immediate goal.
+`1.0.0` is a promise of API stability. Two of the three target platforms
+are now verified; Windows with MSVC is the one that remains, and until it
+is built and tested there the promise is not worth making.
 
 ### Added
 - `stratum::StratumSort<T>` — header-only linear-time sort for integral
@@ -36,8 +36,11 @@ not an immediate goal.
   methodology and the adversary battery. Not part of the package.
 
 ### Known limitations
-- Verified on Apple clang 21 and GCC 15, arm64 macOS only. Never built on
-  Linux, Windows or x86.
+- Verified on Linux x86_64 (GCC 14, Clang 19) and macOS arm64 (Apple
+  clang 21, GCC 15). **Never built on Windows or with MSVC.**
+- The distributed archive is byte-reproducible on a given platform, but
+  the hash differs between macOS and Linux because the two `zip`
+  implementations compress differently.
 - `make sanitizers` and `make fuzz` need Clang on macOS: Homebrew GCC does
   not ship a linkable ASan there.
 - Not stable, not thread-safe per instance, `Θ(n)` auxiliary memory.

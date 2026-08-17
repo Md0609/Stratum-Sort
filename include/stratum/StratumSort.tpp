@@ -28,7 +28,7 @@ namespace stratum {
 //     obliged to, and this is an expectation rather than a guarantee.
 // Complexity does not depend on the third point: even if nothing is
 // elided, that max_element costs O(n / lambda) per level, so the algorithm
-// stays Theta(n). See docs/ALGORITHM.md 8.5.
+// stays Theta(n) either way.
 
 #ifdef STRATUM_ENABLE_METRICS
 template <typename T>
@@ -195,11 +195,10 @@ typename StratumSort<T>::Partitioning StratumSort<T>::planPartition(
     // maps to bucket 0 - and its exact value, span + 1, may not be
     // representable: it is exactly 2^64 when the input spans the whole
     // universe, which wraps to 0. Normalising to 1 makes the
-    // postcondition "width >= 1" hold unconditionally, so no wrapped
-    // value can escape this function. Earlier versions let the 0 escape
-    // and were correct only because countAndPlace happens to
-    // short-circuit the single-bucket case before dividing. That was
-    // luck, not a contract.
+    // postcondition "width >= 1" hold unconditionally, so no wrapped value
+    // can escape this function. Relying instead on countAndPlace's
+    // short-circuit of the single-bucket case would make correctness an
+    // accident of call order rather than a property of this function.
     grid.width =
         (grid.binCount == 1) ? 1ULL : (span / static_cast<uint64_t>(grid.binCount) + 1ULL);
 
@@ -821,11 +820,11 @@ void StratumSort<T>::sort(std::vector<T>& data) {
     // reads 'data' but never writes it, which is what gives sort() the
     // strong exception guarantee documented in the header: any allocation
     // failure happens before the first write.
-    beginPhase("merge");
+    beginPhase("join");
     for (const RefinedRange& root : roots) {
         appendLeaves(root, data);
     }
-    endPhase("merge");
+    endPhase("join");
 
     noteMemory(bucketOfScratch_.capacity() * sizeof(std::size_t) +
                writeCursorScratch_.capacity() * sizeof(std::size_t));

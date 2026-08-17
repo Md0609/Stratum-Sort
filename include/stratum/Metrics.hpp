@@ -47,8 +47,8 @@ public:
     // Thresholds behind SubdivisionQuality: "Useful" requires at least
     // halving the worst-case remaining work; "Useless" means the largest
     // child kept at least 90% of the original problem. These cutoffs come
-    // from the measured distribution of reductionPct, not from taste;
-    // see docs/history/ for the data.
+    // from the measured distribution of reductionPct on this codebase, not
+    // from taste.
     static constexpr double kUsefulReductionThreshold = 0.5;
     static constexpr double kUselessReductionThreshold = 0.1;
 
@@ -153,9 +153,9 @@ public:
     }
 
     // Raw per-leaf-bin sizes (including empty bins, size 0), in the order
-    // they were recorded. Exists for external distribution analysis (see
-    // experiments/BinSizeHistogram.hpp) - averageBinSize()/maxBinSize()
-    // above remain the cheap summary for routine reporting.
+    // they were recorded. Exists so that external code can study the whole
+    // occupancy distribution; averageBinSize() and maxBinSize() above
+    // remain the cheap summary for routine reporting.
     const std::vector<std::size_t>& binSizes() const { return binSizes_; }
 
     double phaseDurationMs(const std::string& phaseName) const {

@@ -11,8 +11,8 @@
 // is given; where it does not, that is said explicitly rather than
 // implied.
 //
-// The rationale behind each value, and the experiments behind it, live in
-// docs/history/. This file states the contract, not the history.
+// Each value states its own justification. Where a value has never been
+// measured on this codebase, that is said explicitly rather than implied.
 // ============================================================
 namespace stratum {
 
@@ -94,9 +94,8 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // run forever. D is a bound on how much work is spent trying, after which
 // the remainder is handed to the local sort whatever its size.
 //
-// D DOES NOT MAKE THE ALGORITHM LINEAR. It is a constant-factor choice.
-// An earlier version of this comment claimed otherwise; the proof in
-// docs/ALGORITHM.md 8.8 shows the claim was backwards.
+// D DOES NOT MAKE THE ALGORITHM LINEAR, which is the opposite of what a
+// depth cap usually does. It is a constant-factor choice.
 //
 // Refinement terminates on its own and stays linear WITHOUT any cap: each
 // level at least halves the bin's observed span, so the depth is bounded
@@ -107,8 +106,9 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 //     uncapped   65 passes over the data, largest residual t = 64
 //     D = 6       7 passes over the data, largest residual ~18000
 //
-// Measurement chose 6 (docs/history/O8_...): uncapped is never faster and
-// costs up to +109%. This is an empirical decision, not an asymptotic one.
+// D = 6 was chosen by measurement, not by analysis: over a range of
+// adversarial inputs the uncapped variant was never faster and cost up to
+// +109%. Both settings are Theta(n); this is a constant-factor decision.
 //
 // ---- The residual bound ----
 // A leaf with span > 0 produced by depth exhaustion has size at most
@@ -128,17 +128,17 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 //        for realistic n it is 2-3x looser than B(n).
 //
 // Linearity needs only M < infinity. B(n) is what an adversary at a given
-// size actually faces. Proof, with the five lemmas it rests on and the
-// hypotheses it needs, in docs/ALGORITHM.md 8.
+// size actually faces.
 //
-// The bound previously quoted here, lambda * 2^(w/D) = ~52000, is valid
-// but loose: it counted only the D refinement splits and forgot the
-// top-level one. The exponent is w/(D+1), not w/D.
+// Note the exponent is w/(D+1) and not w/D: the top-level split in
+// distribute() already spends log2(n/lambda) of the w-bit budget before
+// refinement runs, so it counts as one of the D+1 splits along any
+// root-to-leaf path.
 //
 // ---- What raising lambda actually does ----
-// NOT what this comment used to say. Raising lambda does NOT reintroduce
-// a Theta(n log n) term: for fixed w the residual is bounded by a
-// constant whatever lambda is, so the algorithm stays Theta(n).
+// Raising lambda does NOT reintroduce a Theta(n log n) term: for fixed w
+// the residual is bounded by a constant whatever lambda is, so the
+// algorithm stays Theta(n).
 //
 // What lambda moves is the input size at which the linear regime starts.
 // The bound above is vacuous while lambda * 2^(w/(D+1)) exceeds n, since

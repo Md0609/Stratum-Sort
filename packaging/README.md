@@ -218,8 +218,8 @@ has no field history and platform validation is narrow.
 
 | | |
 |---|---|
-| **Verified** | arm64 macOS 26.6, Apple clang 21 (libc++) and GCC 15 (libstdc++), Make and CMake, Release and Debug, C++17 / C++20 / C++23 |
-| **Not verified** | Linux, Windows, x86, MSVC, older compilers |
+| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan. |
+| **Not verified** | **Windows and MSVC** — never built. Also untested: 32-bit targets, big-endian machines, compilers older than the two above. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.

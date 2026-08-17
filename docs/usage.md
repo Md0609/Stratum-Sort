@@ -1,8 +1,12 @@
 # Using Stratum Sort
 
 Header-only, C++17, no dependencies. This document is the API reference
-and the tuning guide. For *why* the algorithm works, see
-`research/ALGORITHM.md` in the repository.
+and the tuning guide: everything needed to use the library is here.
+
+The derivation of the complexity guarantee, the measurement methodology
+and the design record are kept in the project repository, under
+`research/`. They are deliberately not part of this package — you never
+need them to use the library.
 
 ## Installing
 
@@ -38,7 +42,10 @@ public:
 }
 ```
 
-That is the entire public surface.
+That is the entire public surface of a normal build. Defining
+`STRATUM_ENABLE_METRICS` adds an instrumentation API on top of it; see
+"Build configurations" below, and note the warning there about defining it
+consistently.
 
 ## Element type
 
@@ -96,9 +103,13 @@ actually ended up with.
 The target occupancy per bin, and the only parameter with a first-order
 effect on running time. It trades two opposing costs:
 
-- **Local sorting grows with λ.** Leaves hold about λ elements and are
-  finished with insertion sort, so the expected comparisons per element
-  are about `(λ+1)/4`.
+- **Local sorting grows with λ.** Leaves hold about λ elements. **While
+  leaves stay within the insertion-sort branch — that is, while
+  `λ ≤ LOCAL_INSERTION_MAX_ELEMENTS`, which is 64 — the expected
+  comparisons per element are about `(λ+1)/4`.** Above that the leaves are
+  finished by quicksort or introsort instead, the quadratic model stops
+  applying, and the cost per element grows like `log λ` rather than
+  linearly in λ. The formula is a guide for the default range, not a law.
 - **Scattering grows as λ shrinks.** The distribution pass writes into
   `n/λ` output streams at once, each holding a cache line live, so the
   write working set is about `(n/λ)·64` bytes. When that approaches L2,
@@ -107,7 +118,8 @@ effect on running time. It trades two opposing costs:
 **The useful lower bound therefore depends on your `n` and your cache**,
 roughly `n·64/λ ≲ L2`. The default suits `n ≈ 10⁶` on a 4 MiB L2. At
 `n ≈ 10⁷` the same condition puts the lower bound near 160, so raise λ
-for much larger inputs.
+for much larger inputs — bearing in mind that past 64 the `(λ+1)/4` model
+above no longer describes the leaf cost.
 
 Raising λ does not change the complexity class, but it does raise the
 input size above which the linear regime applies — roughly
@@ -158,6 +170,15 @@ Define `STRATUM_ENABLE_METRICS` to compile in the counters — comparisons,
 bins, subdivisions, depth, per-phase timing — reachable through
 `sorter.metrics()`. Without it, none of that exists in the object code.
 Never quote a timing from that build.
+
+> **Define it for the whole program or not at all.** The macro adds a
+> member to `StratumSort<T>`, so the class has a different size and layout
+> in the two configurations — 112 versus 352 bytes for `int64_t` on a
+> 64-bit target. If one translation unit sees the instrumented class and
+> another sees the plain one, that is an ODR violation: it links without a
+> diagnostic and then misbehaves at run time. Set the macro in your
+> build system, for every target that includes the header, or leave it
+> unset everywhere.
 
 ## Running the tests
 

@@ -1,0 +1,117 @@
+# Continuous integration for Stratum Sort.
+#
+# The point of this matrix is to replace "should be portable" with evidence.
+# Until it has run green, README.md and CHANGELOG.md must keep saying that
+# only macOS arm64 is verified.
+#
+# C++17 is the required standard and runs on every platform. C++20 and C++23
+# are extra columns on Linux only, to keep the matrix small.
+name: CI
+
+on:
+  push:
+    branches: [main, v10-dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }} / C++${{ matrix.std }} / ${{ matrix.config }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 17, config: Release }
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 17, config: Debug   }
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 20, config: Release }
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 23, config: Release }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 17, config: Release }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 17, config: Debug   }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 20, config: Release }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 23, config: Release }
+          - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Release }
+          - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Debug   }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Release }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Debug   }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 20, config: Release }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          ${{ matrix.cxx != 'msvc' && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config ${{ matrix.config }} --output-on-failure
+
+      # A user gets the headers and nothing else. This proves that is enough.
+      - name: External consumer (headers only)
+        shell: bash
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          cat > app.cpp <<'CPP'
+          #include <stratum/StratumSort.hpp>
+          #include <algorithm>
+          #include <cstdint>
+          #include <cstdio>
+          #include <random>
+          #include <vector>
+          int main() {
+            std::mt19937_64 rng(1);
+            std::vector<int64_t> v(200000);
+            for (auto& x : v) x = static_cast<int64_t>(rng());
+            auto ref = v; std::sort(ref.begin(), ref.end());
+            stratum::StratumSort<int64_t> s; s.sort(v);
+            std::vector<uint8_t> w{200, 7, 7, 255, 0};
+            stratum::StratumSort<uint8_t> s2; s2.sort(w);
+            bool ok = v == ref && w == std::vector<uint8_t>{0, 7, 7, 200, 255};
+            std::printf("%s\n", ok ? "external consumer OK" : "external consumer FAILED");
+            return ok ? 0 : 1;
+          }
+          CPP
+          cmake -E make_directory b
+          cmake -E chdir b cmake -E echo "building consumer"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cl //std:c++${{ matrix.std }} //EHsc //I"${GITHUB_WORKSPACE}/include" app.cpp //Fe:app.exe && ./app.exe
+          else
+            ${{ matrix.cxx }} -std=c++${{ matrix.std }} -O2 -Wall -Wextra -I"${GITHUB_WORKSPACE}/include" app.cpp -o app && ./app
+          fi
+
+  sanitizers:
+    name: sanitizers / ${{ matrix.cxx }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ASan + UBSan suites
+        run: |
+          make CXX=${{ matrix.cxx }} sanitizers
+          make CXX=${{ matrix.cxx }} fuzz N=50000
+
+  package:
+    name: package is reproducible and leak-free
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: package-verify
+        run: make package-verify
+      - name: byte-for-byte reproducible
+        run: |
+          make package && sha256sum dist/*.zip | tee /tmp/a
+          rm -rf dist && make package && sha256sum dist/*.zip | tee /tmp/b
+          diff <(cut -d' ' -f1 /tmp/a) <(cut -d' ' -f1 /tmp/b)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stratumsort-package
+          path: dist/*.zip

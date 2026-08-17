@@ -59,7 +59,7 @@ namespace {
 std::size_t kTarget = 64;  // overridable from argv[1]
 constexpr std::size_t kReps = 7;
 
-const char* kPhases[] = {"analyze", "distribute", "refine", "localSort", "merge"};
+const char* kPhases[] = {"analyze", "distribute", "refine", "localSort", "join"};
 constexpr std::size_t kNumPhases = 5;
 
 struct Case {

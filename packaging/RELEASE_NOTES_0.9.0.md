@@ -107,7 +107,7 @@ make examples      # minimal working example
 ```
 
 Two further suites need a linkable AddressSanitizer, so they are separate
-targets and require Clang on macOS:
+targets; on macOS they require Clang, since Homebrew GCC has no linkable ASan there:
 
 ```bash
 make sanitizers
@@ -166,9 +166,9 @@ Ratios travel better across machines than absolute milliseconds.
 
 ## Limitations
 
-- **Only arm64 macOS has been verified.** Nothing in the implementation is
-  platform-specific, but "should work" is not "was tested". Linux,
-  Windows, x86 and MSVC are untested.
+- **Windows and MSVC have never been built.** Linux x86_64 and macOS
+  arm64 are both verified; nothing in the implementation is
+  platform-specific, but "should work" is not "was tested".
 - **Integral keys up to 64 bits only**, rejected at compile time otherwise.
 - **Not stable**, and not extensible to key/value pairs as written.
 - **`Θ(n)` auxiliary memory** where `std::sort` uses `O(log n)` — about
@@ -176,30 +176,32 @@ Ratios travel better across machines than absolute milliseconds.
   the index array is one `size_t` per element regardless of `T`.
 - **Loses to `std::sort` on already-sorted input**, by about 6×.
 - **Not thread-safe per instance**; distinct instances are independent.
-- **All measurements come from one machine.** This project has repeatedly
-  found conclusions that invert across platforms.
+- **All timings come from one machine.** Correctness is verified on two
+  platforms, but the milliseconds above are macOS only.
 
 ## Why 0.9.0 and not 1.0.0
 
 The algorithm is complete, the tests are thorough and the guarantee is
-documented with its hypotheses. But `1.0.0` is a promise of API stability,
-and that promise is not worth making while the library has no field
-history and has been built on exactly one platform. `1.0.0` follows
-multi-platform validation, not a calendar.
+documented with its hypotheses. Linux x86_64 and macOS arm64 are both
+verified. But `1.0.0` is a promise of API stability, and that promise is
+not worth making while the library has no field history and has never been
+compiled with MSVC. `1.0.0` follows that, not a calendar.
 
 ## Verified in this release
 
 | | |
 |---|---|
-| Compilers | Apple clang 21.0.0 (libc++), GCC 15.2.0 (libstdc++) |
-| Standards | C++17, C++20, C++23 — both compilers |
+| Compilers | Apple clang 21.0.0, GCC 15.2.0, GCC 14.4.0, Clang 19.1.7 |
+| Standards | C++17, C++20, C++23 — every compiler above |
 | Build systems | Make, and CMake 4.4 in Release and Debug |
 | Test suites | edge cases, dataset sweep, 124 + 133 API contract checks, ASan/UBSan range limits, 100 000-case differential fuzz against `std::sort` |
-| Platform | arm64, macOS 26.6.1 |
+| Platforms | Linux x86_64 (GCC 14 + libstdc++, Clang 19 + libc++) and macOS 26.6.1 arm64 (Apple clang 21 + libc++, GCC 15 + libstdc++) |
 | Package | builds and passes its tests when extracted outside the repository, with both compilers and both build systems |
 
-The archive is **byte-reproducible**: two runs of `make package` over the
-same tree produce the same SHA-256.
+The archive is **byte-reproducible on a given platform**: two runs of
+`make package` over the same tree produce the same SHA-256. The hash
+differs between macOS and Linux, because the two `zip` implementations
+compress identical bytes differently.
 
 ## License
 

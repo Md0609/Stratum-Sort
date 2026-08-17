@@ -10,10 +10,13 @@
 #endif
 #include <cassert>
 
-// Comprobacion bajo sanitizers de que quitar el recorte de indice es seguro:
-// si computeBinIndex() devolviera un indice fuera de rango, la escritura en
-// outBucketSize[idx] / dst[writeCursor[b]] seria fuera de limites y ASan lo
-// detectaria. Se ejercitan los casos que los tests actuales NO cubren.
+// The bucket index is computed without a clamp, on the strength of an
+// arithmetic argument rather than a runtime check. This suite exists to
+// hold that argument to account: if the index could ever fall out of
+// range, the writes to outBucketSize[idx] and dst[writeCursor[b]] would
+// be out of bounds and ASan would say so. It exercises the range limits
+// the other suites do not reach - spans covering the whole key universe,
+// all-equal inputs, and inputs built to exhaust the refinement depth.
 #include "stratum/StratumSort.hpp"
 #include "DatasetGenerator.hpp"
 #include <algorithm>
@@ -37,15 +40,15 @@ int main() {
         all &= ok(g.fullRangeExtremes(n), "fullRangeExtremes");
         all &= ok(g.adversarialPeeling(n, 64), "adversarialPeeling");
     }
-    // span = 2^64-1 con pocos elementos: el caso donde la anchura (span+1) no
-    // es representable y numBuckets == 1.
+    // span = 2^64-1 with very few elements: the case where the width
+    // (span+1) is not representable and numBuckets == 1.
     all &= ok({lo, hi}, "span=2^64-1, n=2");
-    all &= ok(std::vector<int64_t>(64, 0), "todo iguales, n=64");
-    { std::vector<int64_t> v(100, lo); v[50] = hi; all &= ok(v, "span=2^64-1, n=100, casi todo min"); }
+    all &= ok(std::vector<int64_t>(64, 0), "all equal, n=64");
+    { std::vector<int64_t> v(100, lo); v[50] = hi; all &= ok(v, "span=2^64-1, n=100, almost all min"); }
     { std::vector<int64_t> v; for (int i=0;i<200;++i) v.push_back(i%2 ? hi-i : lo+i);
       all &= ok(v, "span=2^64-1, n=200, alternando extremos"); }
     { std::vector<int64_t> v; for (uint64_t i=0;i<1000;++i) v.push_back((int64_t)((uint64_t)lo + i*(UINT64_MAX/1000)));
-      all &= ok(v, "escalon uniforme sobre todo el universo"); }
-    std::cout << (all ? "TODO OK\n" : "HAY FALLOS\n");
+      all &= ok(v, "uniform step across the whole universe"); }
+    std::cout << (all ? "ALL OK\n" : "FAILURES\n");
     return all ? 0 : 1;
 }

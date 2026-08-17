@@ -98,9 +98,10 @@ The things worth knowing before choosing this over `std::sort`:
 - **The default λ is tuned to a cache size** — roughly `n·64/λ ≲ L2`. The
   default suits `n ≈ 10⁶` with a 4 MiB L2; much larger inputs want a
   larger λ.
-- **All measurements come from one machine.** This project has repeatedly
-  found conclusions that invert across platforms. Treat the numbers as
-  reproducible, not universal.
+- **All timings come from one machine.** Correctness is verified on Linux
+  x86_64 and macOS arm64, but the performance numbers below are from the
+  macOS machine only, and this project has repeatedly found timing
+  conclusions that invert across platforms.
 
 ## Performance
 
@@ -166,8 +167,8 @@ Also compiles cleanly as C++20 and C++23.
 
 | | |
 |---|---|
-| **Verified** | Apple clang 21 (libc++) and GCC 15 (libstdc++), both on arm64 macOS. Make and CMake, Release and Debug. |
-| **Not verified** | Linux, Windows, x86, MSVC, older compilers. |
+| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan. |
+| **Not verified** | **Windows and MSVC** — never built. Also untested: 32-bit targets, big-endian machines, compilers older than the two above. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.
