@@ -877,7 +877,7 @@ hits `depth ≥ D`, and leaves `refine` unscanned. `detectRun` sees
 
 So `m = 2048` while the strengthened bound claims `m ≤ 1 457`. The bound
 is false. The real theorem is untroubled: `(m/λ)^D = 64⁶ ≈ 6.87·10¹⁰` sits
-below `σ₀ = 65⁶ ≈ 7.54·10¹⁰`, and `2048 < B(10⁶) ≈ 9 271`.
+below `σ₀ = 65⁶ ≈ 7.54·10¹⁰`, and `2048 < B(10⁶) ≈ 9 268`.
 
 Every row above is integer arithmetic, so the construction is checkable by
 hand; nothing in this subsection rests on running anything.
