@@ -1,3 +1,15 @@
+// A test binary compiled with NDEBUG would silently skip every internal
+// invariant check: the bucket-index bound in countAndPlace and the leaf
+// tiling verification in sort() are assert()s. That is exactly what a
+// CMake Release build does, because CMake appends -DNDEBUG after any
+// target flag. Forcing them on here makes the suites correct under every
+// build system and configuration, at the cost of some speed - which a
+// test should always trade away.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <cassert>
+
 // ============================================================
 // Contract tests for the public API of StratumSort
 // ============================================================
@@ -372,10 +384,23 @@ void* operator new(std::size_t sz) {
     return p;
 }
 void* operator new[](std::size_t sz) { return operator new(sz); }
+
+// GCC's -Wmismatched-new-delete fires here, and it is a false positive:
+// replacing the GLOBAL operator new/delete pair with malloc/free is exactly
+// what the standard permits, and the pair is consistent. The warning's
+// heuristic does not recognise a replacement pair, only a mismatch between
+// an allocation and the matching deallocation call.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 int main() {
     std::cout << "=== StratumSort - API contract tests ===\n";

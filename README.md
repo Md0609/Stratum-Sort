@@ -14,8 +14,9 @@ sorter.sort(data);          // in place, ascending
 ```
 
 **On the reference machine it sorts a million random 64-bit integers in
-10.7 ms against `std::sort`'s 15.8 ms.** It also loses to `std::sort` by
-6× on already-sorted input. Both numbers are below.
+about 0.69× the time `std::sort` takes.** It also loses to `std::sort` by
+6× on already-sorted input. Both numbers, and the conditions they were
+taken under, are below.
 
 ---
 
@@ -103,36 +104,73 @@ The things worth knowing before choosing this over `std::sort`:
 
 ## Performance
 
-Release build, Apple M4, `n = 10⁶`, alternating runs on identical copies;
-median of nine repetitions and of three sessions. `ratio` is Stratum Sort
-÷ `std::sort`, so below 1.0 is faster.
+Two different kinds of number follow, and they are not interchangeable.
+
+### Complexity — deterministic counters
+
+Comparison counts, which are exact and immune to cache behaviour and to
+machine load. If the algorithm carried an `n log n` term, comparisons per
+element would grow by a factor of 1.75 across the three decades below.
+
+| dataset | `n = 10⁴` | `10⁶` | `10⁷` | fitted exponent |
+|---|---|---|---|---|
+| Uniform, constant density | 9.05 | 9.01 | 9.01 | **0.9997** |
+| Whole-universe span (`2⁶⁴−1`) | 9.01 | 9.02 | 9.03 | **0.9998** |
+| Adversarial (depth-exhausting) | 14.06 | 14.91 | 15.52 | **1.0137** |
+
+This is *evidence consistent with* the `Θ(n)` proof, not a substitute for
+it. `make research && ./build/research_ComplexityScaling`.
+
+### Comparative performance — wall clock
+
+Median of nine repetitions and of three sessions, alternating Stratum Sort
+and `std::sort` on identical copies of the same input.
 
 | Dataset | Stratum (ms) | `std::sort` (ms) | ratio |
 |---|---|---|---|
-| Small range, many elements | 1.93 | 5.29 | **0.36** |
-| Huge range, sparse | 10.48 | 15.70 | **0.67** |
-| Whole-universe span | 10.49 | 15.68 | **0.67** |
-| Random uniform | 10.68 | 15.81 | **0.68** |
-| Normal (Gaussian) | 11.77 | 15.05 | **0.78** |
-| Concentrated cluster | 4.86 | 5.61 | **0.87** |
-| Many repeated values | 2.60 | 2.42 | 1.07 † |
-| Adversarial (depth-exhausting) | 25.82 | 15.84 | 1.63 |
-| Reverse sorted | 4.80 | 1.24 | 3.86 |
-| Already sorted | 4.27 | 0.72 | 5.93 |
+| Small range, many elements | 2.07 | 6.00 | **0.35** |
+| Whole-universe span | 11.41 | 16.62 | **0.67** |
+| Huge range, sparse | 11.79 | 17.34 | **0.68** |
+| Random uniform | 11.90 | 17.26 | **0.69** |
+| Normal (Gaussian) | 13.04 | 16.21 | **0.80** |
+| Concentrated cluster | 5.67 | 6.36 | **0.88** |
+| Many repeated values | 2.61 | 2.59 | 1.01 † |
+| Adversarial (depth-exhausting) | 28.03 | 16.57 | 1.67 |
+| Reverse sorted | 5.37 | 1.28 | 4.01 |
+| Already sorted | 4.87 | 0.77 | 6.06 |
 
-† ~18% run-to-run dispersion and identical internal counters, so a tie
-rather than a loss.
+† ~18% run-to-run dispersion with identical internal counters: a tie, not
+a loss.
+
+**Environment.** Apple M4, 16 GB, macOS 26.6.1, Apple clang 21.0.0
+(libc++), `-std=c++17 -O3 -DNDEBUG`, `n = 10⁶`, `int64_t`.
+**The machine carried a load average of ~3.3 during these runs**, so the
+absolute milliseconds are pessimistic and drifted about 12% between
+sessions. The **ratios** held to within 0.02 and are the figure to trust —
+that is the point of alternating the two sorts on the same input.
 
 ```bash
 make timings
 ```
 
-Methodology in [`research/BENCHMARKS.md`](research/BENCHMARKS.md) — it
-matters more than the numbers.
+Methodology, including why only the release build's clock may be quoted,
+is in [`research/BENCHMARKS.md`](research/BENCHMARKS.md).
 
 ## Requirements
 
-A C++17 compiler. Nothing else. The library is header-only.
+A C++17 compiler. Nothing else — the library is header-only and pulls in
+only `<algorithm>`, `<cassert>`, `<cstring>`, `<vector>` and friends.
+Also compiles cleanly as C++20 and C++23.
+
+### Portability — what has actually been verified
+
+| | |
+|---|---|
+| **Verified** | Apple clang 21 (libc++) and GCC 15 (libstdc++), both on arm64 macOS. Make and CMake, Release and Debug. |
+| **Not verified** | Linux, Windows, x86, MSVC, older compilers. |
+
+Nothing in the implementation is platform-specific, but "should work" is
+not "was tested", and this table says which is which.
 
 ## Install
 
@@ -156,7 +194,8 @@ the release configuration and 133 in the research one, covering the whole
 `(λ, t)` parameter space, spans reaching the entire key universe, every
 integral key type, instance reuse and the strong exception guarantee.
 
-Two more run under ASan and UBSan:
+Two more run under ASan and UBSan (Clang required on macOS — Homebrew GCC
+does not ship a linkable ASan there):
 
 ```bash
 make sanitizers
@@ -179,8 +218,23 @@ documentation — everything needed to build and use it, and nothing else.
 
 ## Research
 
-The design record is in [`research/`](research/) and is **not** part of
-the download. It is meant to be read in the repository:
+The design record lives in [`research/`](research/) and is **deliberately
+not part of the download.** Two layers, on purpose:
+
+| | |
+|---|---|
+| **Want to use the algorithm?** | Download the release asset, or copy `include/stratum/`. |
+| **Want to see how it was designed and proved?** | Read `research/` in the repository. |
+
+To be exact about what that means: GitHub always lets anyone clone the
+whole repository, and nothing here pretends otherwise. What is true is
+that `research/` is not part of the released package — the algorithm is
+the product, the research is documentation of how it came to be.
+
+> **If you are reading this from the downloaded package**, the links below
+> are not included in it; they resolve in the repository.
+
+Contents:
 
 - [`ALGORITHM.md`](research/ALGORITHM.md) — the complete technical
   description and the `Θ(n)` proof.

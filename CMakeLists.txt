@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(StratumSort VERSION 1.0.0 LANGUAGES CXX)
+project(StratumSort VERSION 0.9.0 LANGUAGES CXX)
 
 # ---- The library -----------------------------------------------------------
 # Header-only. Consumers need nothing but the include path.
@@ -28,16 +28,16 @@ endif()
 if(STRATUMSORT_BUILD_TESTS)
     enable_testing()
 
-    # The tests need the internal assertions - the bucket-index check and the
-    # leaf-tiling invariant only exist when NDEBUG is off. A Release
-    # configuration would define NDEBUG and silently disable both, so strip
-    # it from the test targets rather than trusting the build type.
+    # The tests need the internal assertions on. That is NOT arranged here:
+    # CMake appends -DNDEBUG from CMAKE_CXX_FLAGS_<CONFIG> after any target
+    # flag, so no target option can win. Each test source instead does
+    # `#undef NDEBUG` before its first include, which works under every
+    # build system. Verified: a Release build here still runs the checks.
     function(stratum_add_test name source)
         add_executable(${name} ${source})
         target_link_libraries(${name} PRIVATE stratumsort)
         target_include_directories(${name} PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/datasets)
-        target_compile_options(${name} PRIVATE -UNDEBUG)
         add_test(NAME ${name} COMMAND ${name})
     endfunction()
 

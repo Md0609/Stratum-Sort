@@ -40,7 +40,7 @@
 # further consistent gain and cost portability, so neither is default.
 # See research/BENCHMARKS.md to re-check on your own hardware.
 
-VERSION := 1.0.0
+VERSION := 0.9.0
 PKGNAME := stratumsort-v$(VERSION)
 
 CXX := g++
@@ -70,8 +70,12 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
 # ============================================================
 # PRODUCT
 # ============================================================
-all: build/tests build/contract build/contract_research build/sanitizers \
-     build/fuzz build/timings build/example_basic
+# `make all` deliberately excludes the sanitizer suites: they need a
+# linkable ASan, which Homebrew GCC does not provide on macOS. A build
+# target that fails because an optional tool is missing is a broken build
+# target. Run them explicitly with `make sanitizers` / `make fuzz`.
+all: build/tests build/contract build/contract_research \
+     build/timings build/example_basic
 
 # ---- Correctness: TEST configuration, assertions ACTIVE --------------------
 build/tests: tests/main.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
@@ -155,7 +159,12 @@ build/research_%: research/experiments/%.cpp
 	$(CXX) $(RESEARCH_CXXFLAGS) $(RESEARCH_INC) $(DEF_RESEARCH) $< -o $@
 
 research studies: $(RESEARCH_BINARIES)
+ifeq ($(strip $(RESEARCH_SOURCES)),)
+	@echo "No research/ directory here - this is the distributed package."
+	@echo "The design record and the proof live in the project repository."
+else
 	@echo "$(words $(RESEARCH_BINARIES)) research programs built (not shipped)."
+endif
 
 # ============================================================
 # PACKAGE - the downloadable artefact
@@ -179,6 +188,7 @@ PACKAGE_FILES := \
 	benchmarks/SystemInfo.hpp \
 	examples/basic.cpp \
 	docs/usage.md \
+	CHANGELOG.md \
 	CMakeLists.txt \
 	Makefile \
 	LICENSE \

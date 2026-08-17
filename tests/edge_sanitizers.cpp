@@ -1,3 +1,15 @@
+// A test binary compiled with NDEBUG would silently skip every internal
+// invariant check: the bucket-index bound in countAndPlace and the leaf
+// tiling verification in sort() are assert()s. That is exactly what a
+// CMake Release build does, because CMake appends -DNDEBUG after any
+// target flag. Forcing them on here makes the suites correct under every
+// build system and configuration, at the cost of some speed - which a
+// test should always trade away.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <cassert>
+
 // Comprobacion bajo sanitizers de que quitar el recorte de indice es seguro:
 // si computeBinIndex() devolviera un indice fuera de rango, la escritura en
 // outBucketSize[idx] / dst[writeCursor[b]] seria fuera de limites y ASan lo
