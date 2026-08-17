@@ -13,7 +13,7 @@
 // ============================================================
 // Contract tests for the public API of StratumSort
 // ============================================================
-// The v10 audit found that the only tested configuration was the default
+// An audit found that the only tested configuration was the default
 // constructor. The defect it uncovered - the local-sort dispatcher
 // following a compile-time constant instead of the runtime leaf threshold
 // - lived precisely in the untested part of the interface.
@@ -308,7 +308,7 @@ void testDeterminism() {
 // ------------------------------------------------------------------
 // 7. The local-sort dispatch is decoupled from the leaf threshold
 // ------------------------------------------------------------------
-// THIS IS THE REGRESSION GUARD FOR THE v10 AUDIT DEFECT. The dispatch
+// THIS IS THE REGRESSION GUARD FOR THAT DEFECT. The dispatch
 // thresholds used to be derived from the leaf threshold, so changing how
 // the partitioning stops silently changed which sorting algorithm ran on
 // the leaves - two unrelated concepts sharing one number.

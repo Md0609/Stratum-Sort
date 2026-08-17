@@ -103,10 +103,10 @@ public:
     }
 
     // ========================================================================
-    // Datasets anadidos al abrir v9 (docs/history/SPEC_v9.md).
-    // Ninguno de los ocho anteriores ejerce los dos casos que la
-    // especificacion de v9 necesita poder observar, asi que ninguna
-    // afirmacion sobre ellos estaba verificada.
+    // Datasets added to cover two cases none of the previous eight
+    // exercised: a span covering the whole key universe, and an input
+    // built to exhaust the refinement depth. Without them, no claim
+    // about either case was verified.
     // ========================================================================
 
     // SPEC_v9 s9.6 - "caso limite de rango completo".

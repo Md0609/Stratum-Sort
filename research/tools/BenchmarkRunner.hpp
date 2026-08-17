@@ -3,7 +3,7 @@
 #include "stratum/StratumSort.hpp"
 
 #ifndef STRATUM_ENABLE_METRICS
-#error "BenchmarkRunner.hpp requires the research build (-DDRS_ENABLE_METRICS); it reads sorter.metrics()."
+#error "BenchmarkRunner.hpp requires the research build (-DSTRATUM_ENABLE_METRICS); it reads sorter.metrics()."
 #endif
 
 #include "Statistics.hpp"

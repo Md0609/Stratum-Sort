@@ -9,7 +9,7 @@
 #include <sys/sysctl.h>
 #endif
 
-// STRATUM_CXXFLAGS is injected by the Makefile (-DDRS_CXXFLAGS="\"...\"") so the
+// STRATUM_CXXFLAGS is injected by the build (-DSTRATUM_CXXFLAGS="\"...\"") so the
 // binary can report exactly the flags it was built with, instead of
 // guessing. If the project is compiled without going through the Makefile,
 // fall back to a placeholder rather than fail to build.

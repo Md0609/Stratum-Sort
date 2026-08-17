@@ -11,7 +11,7 @@
 #include <cassert>
 
 // ============================================================
-// Stratum Sort v7 - tests/main.cpp
+// tests/main.cpp - edge cases and dataset sweep
 // ============================================================
 // Pure correctness, kept fast on purpose: edge cases plus one
 // correctness pass per dataset shape at a moderate size. This binary is

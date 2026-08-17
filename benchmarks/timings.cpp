@@ -96,7 +96,7 @@ int main() {
             DataVector reference = input;
             std::sort(reference.begin(), reference.end());
 
-            std::vector<double> drsMs, stdMs;
+            std::vector<double> sortMs, stdMs;
             bool correct = true;
             for (std::size_t r = 0; r < kRepetitions; ++r) {
                 {
@@ -105,7 +105,7 @@ int main() {
                     const auto t0 = std::chrono::steady_clock::now();
                     sorter.sort(data);
                     const auto t1 = std::chrono::steady_clock::now();
-                    drsMs.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+                    sortMs.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
                     if (data != reference) correct = false;
                 }
                 {
@@ -117,12 +117,12 @@ int main() {
                 }
             }
 
-            const double drsMedian = medianOf(drsMs);
+            const double sortMedian = medianOf(sortMs);
             const double stdMedian = medianOf(stdMs);
             std::cout << std::left << std::setw(22) << c.name << std::right << std::setw(10)
-                      << std::fixed << std::setprecision(2) << drsMedian << std::setw(10)
+                      << std::fixed << std::setprecision(2) << sortMedian << std::setw(10)
                       << stdMedian << std::setw(9) << std::setprecision(2)
-                      << (stdMedian > 0.0 ? drsMedian / stdMedian : 0.0) << std::setw(6)
+                      << (stdMedian > 0.0 ? sortMedian / stdMedian : 0.0) << std::setw(6)
                       << (correct ? "si" : "NO") << "\n";
         }
     }
