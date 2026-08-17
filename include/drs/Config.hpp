@@ -120,9 +120,9 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 //   B(n) is the bound AT A GIVEN n. It depends on n and, above
 //        n = lambda*2^(w/(D+1)), it DECREASES like n^(-1/D), because the
 //        top-level split spends log2(n/lambda) of the w-bit budget before
-//        refinement starts. B(1e6) ~ 9271, B(1e7) ~ 6304.
+//        refinement starts. B(1e6) = 9268.2, B(1e7) = 6314.3.
 //
-//   M = sup over n of B(n) = lambda * 2^(w/(D+1)) ~ 18090 is the GLOBAL
+//   M = sup over n of B(n) = lambda * 2^(w/(D+1)) = 18089.4 is the GLOBAL
 //        SUPREMUM: a single constant, free of n, attained near n = M
 //        itself. It is NOT the tightest bound at any particular size -
 //        for realistic n it is 2-3x looser than B(n).
@@ -156,9 +156,16 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // Raising the leaf threshold does not affect it.
 //
 // All of the above assumes lambda, t and D are constants chosen
-// independently of n (hypothesis H2 of the proof). A caller who scales
-// one of them with the input size - t = n, say - is outside the
-// hypothesis, and the linear bound has to be re-derived.
+// independently of n (hypothesis H2 of the proof), AND that D >= 1. A
+// caller who scales one of them with the input size - t = n, say - is
+// outside the hypothesis, and the linear bound has to be re-derived.
+//
+// D = 0 is not merely outside the proof, it is genuinely superlinear:
+// refine's first test is `count <= t || depth >= D`, so D = 0 fires it at
+// depth 0 for every top-level bin and refinement never runs. A single bin
+// can then hold Theta(n) elements and go straight to Introsort. Measured
+// with D forced to 0: comparisons per element rise from 14.2 at n = 1e5
+// to 17.6 at n = 1e6, which is the log n signature. Do not set D = 0.
 //
 // The value 6 itself has never been swept; it is known to work, not known
 // to be optimal.

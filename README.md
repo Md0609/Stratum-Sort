@@ -58,14 +58,14 @@ between this and a divide-and-conquer comparison sort, whose depth is
 Concretely, a leaf that still needs a comparison sort has size at most
 
 ```
-B(n)  =  min( n,  (λ^(D+1)·2^w / n)^(1/D) )        B(10⁶) ≈ 9 300
+B(n)  =  min( n,  (λ^(D+1)·2^w / n)^(1/D) )        B(10⁶) ≈ 9 268
 ```
 
 which **decreases as `n` grows** — the top-level split already spends
 `log₂(n/λ)` of the `w`-bit budget before refinement begins. Its supremum
-over all `n` is a **constant**, `λ · 2^(w/(D+1)) ≈ 18 000`, and that
+over all `n` is a **constant**, `λ · 2^(w/(D+1)) ≈ 18 090`, and that
 constant is what makes the total linear: an individual leaf costs
-`O(m log m)`, but summing over leaves gives `O(n · log 18 000) < 15·O(n)`.
+`O(m log m)`, but summing over leaves gives `O(n · log 18 090) < 15·O(n)`.
 
 So the total is `Θ(n)`, in exactly the same sense in which radix sort is
 linear: treating the key width as a fixed property of the type. It does

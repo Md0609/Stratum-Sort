@@ -369,13 +369,14 @@ uses.
 
 ### 8.0 Hypotheses
 
-The result is `Θ(n)` **under these four hypotheses, and only under them.**
+The result is `Θ(n)` **under the following four hypotheses**, which are
+sufficient (no claim is made that they are necessary).
 
 | | |
 |---|---|
 | **H1** | `T` is an integral type of width `w = 8·sizeof(T) ≤ 64` bits. Enforced by three `static_assert`s (integral, not `bool`, `sizeof(T) ≤ 8`). |
-| **H2** | `λ`, `t` and `D` are constants chosen independently of `n`. |
-| **H3** | Unit-cost RAM: arithmetic on `uint64_t` and `size_t`, and one array access, cost `O(1)`; **allocating or releasing a block of `k` words costs `O(k)`.** |
+| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants chosen independently of `n`. |
+| **H3** | Unit-cost RAM: arithmetic on `uint64_t` and `size_t`, and one array access, cost `O(1)`; **allocating or releasing a block of `k` words costs `O(k)`**; and `n + λ` fits in `size_t`. |
 | **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
 
 **On H1.** Not cosmetic. Before it was enforced,
@@ -385,8 +386,19 @@ arithmetic is carried in `uint64_t`. The proof needs `w` bounded; the code
 needs it too. Note `w` is the width of the *type*, so a narrower key makes
 every bound below tighter, never looser.
 
-**On H2.** `λ` and `t` are constructor arguments, so a caller can violate
-this. The asymptotic claim is about a **fixed** configuration: for each
+**On H2, and why `D ≥ 1` is not decoration.** At `D = 0` the theorem is
+false, and the algorithm with it. `refine`'s first test is
+`count ≤ t || depth ≥ D`, so with `D = 0` it fires at `depth = 0` for
+every top-level bin and no refinement ever happens. Then a single
+top-level bin can hold `Θ(n)` elements — take `n−2` values alternating
+`0, 1, 0, 1, …` plus two at `2⁶²`, so that bucket `0` is far wider than
+`1` and collects them all — and that bin goes straight to `introSort`:
+`Θ(n log n)`. The proof never covered this (§8.4 divides by `D`), but the
+hypothesis list has to say so. Any `D ≥ 1` is fine; `D` may also grow with
+`n`, which only shrinks the residual.
+
+`λ` and `t` are constructor arguments, so a caller can violate H2. The
+asymptotic claim is about a **fixed** configuration: for each
 choice of `(λ, t, D)` there is a constant `c(λ, t, D, w)` with
 `T(n) ≤ c·n` for all `n`. A caller who scales a parameter with the input —
 `t = n`, say, which turns the whole array into one leaf — is outside the
@@ -394,7 +406,12 @@ hypothesis, and the conclusion has to be re-derived. §8.8 quantifies what
 each parameter costs inside the constant.
 
 **On H3.** The allocation clause is needed because `refine` allocates: see
-§8.5, which accounts for every word.
+§8.5, which accounts for every word. The `n + λ` clause is needed because
+`binCount` is computed as `(length + λ − 1) / λ`, which would wrap for
+`n > SIZE_MAX − λ + 1` and destroy the `s_top = ⌈n/λ⌉` that Lemma 4 Case C
+rests on. It is not a live risk — reaching `distribute` already allocates
+`2n` elements plus `n` `size_t`, so any input that runs at all has
+`n ≤ SIZE_MAX/8` — but the proof should say it rather than assume it.
 
 **Scope: this is the release build** (`NDEBUG`, no `DRS_ENABLE_METRICS`).
 §8.5 revisits the other two configurations, which are also `Θ(n)` but with
@@ -429,9 +446,10 @@ worth separating them because **they do not cost the same**:
 - If `refine` reaches its range scan, `observed.minimum ==
   observed.maximum` sets the `sorted` flag and `sortRefined` returns
   immediately: `O(1)`, zero comparisons.
-- If instead the child leaves `refine` at the earlier test — because
-  `count ≤ t`, or because it sits at `depth = D` — its range is never
-  scanned, so `sorted` stays `false`. It still reaches no comparison sort:
+- If instead the child leaves `refine` at an earlier test — because
+  `count == 0`, because `count ≤ t`, or because `depth ≥ D` — its range is
+  never scanned, so `sorted` stays `false`. (An empty child is `O(1)`:
+  `sortLeaf` and `detectRun` both return at once for `count < 2`.) It still reaches no comparison sort:
   `detectRun` walks it, finds every element equal, and returns
   `Ascending`. But that walk costs `2(m′−1)` comparisons, so the cost is
   `O(m′)`, **not zero**.
@@ -455,7 +473,8 @@ would be `0`. ∎
 Two distinct splits happen:
 
 1. **One top-level split** in `distribute`, over the whole array, with
-   `s_top = ⌈n/λ⌉` buckets — *this is the term the old bound omitted.*
+   `s_top = ⌈n/λ⌉` buckets. **This split is easy to forget, and forgetting
+   it is what makes the exponent come out as `w/D` instead of `w/(D+1)`.**
 2. **At most `D` refinement splits**, since `refine` is entered at
    `depth = 0` and stops at `depth ≥ D`.
 
@@ -481,19 +500,30 @@ single top-level bin *is* the whole array and `σ₀ = σ_g`. Lemma 1 would
 wrongly give `σ₀ ≤ W_top − 1 = 0`; it does not apply, because the width
 the code uses is not `⌊σ_g/s_top⌋ + 1`.
 
-The conclusion holds anyway, by a different route. `s_top = 1` arises only
-from `⌈n/λ⌉ = 1` or from the cap with `σ_g = 0`.
- - If `σ_g = 0`, every element is equal, so no leaf can be expensive
-   (§8.6): first branch of the lemma.
- - Otherwise `⌈n/λ⌉ = 1`, i.e. `n ≤ λ`, so `σ_g·λ/n ≥ σ_g = σ₀` and the
-   inequality is satisfied trivially.
+The conclusion holds anyway, but the two ways of reaching `s_top = 1` must
+be handled separately — **they are not the same situation, and one of them
+places no bound on `n` at all.**
 
-**And this case cannot threaten the theorem of §8.4 at all**, for a
-stronger reason than the inequality: `n ≤ λ ≤ t`, so `refine` returns at
-its first test (`count ≤ leafThreshold_`) with `depth = 0`. No split
-happens, no leaf is produced by depth exhaustion, and §8.4 is vacuous. The
-whole array is one leaf of at most `λ` elements, sorted by insertion sort
-in `O(λ²) = O(1)` time.
+**Case A1 — `⌈n/λ⌉ = 1`, i.e. `n ≤ λ`.** Then `σ_g·λ/n ≥ σ_g = σ₀`, so
+the inequality holds trivially. And the theorem of §8.4 is vacuous here
+for a stronger reason: `n ≤ λ ≤ t`, so `refine` returns at its first test
+(`count ≤ leafThreshold_`) with `depth = 0`. No split happens and no leaf
+is produced by depth exhaustion. The whole array is one leaf of at most
+`λ` elements, finished by whichever local sort its size selects — for the
+shipped `λ = 32 ≤ L₁` that is insertion sort at `O(λ²)`, and for any fixed
+`λ` it is `O(λ log λ)` at worst. Either way `O(1)` under H2.
+
+**Case A2 — the cap with `σ_g = 0`.** Here `n` is **unconstrained**: every
+element is equal, so `binCount = σ_g + 1 = 1` for any `n`, however large.
+It is *not* true that `n ≤ λ`, and it is *not* true that `refine` returns
+at its first test — for `n > t` it falls through to the range scan and
+returns a `sorted` leaf at the degenerate-range test. The correct argument
+is simply that `σ₀ = σ_g = 0`, so by §8.6 no leaf anywhere in this sort
+can be expensive: first branch of the lemma. (The inequality also holds,
+both sides being `0`.)
+
+Conflating A1 and A2 — concluding `n ≤ λ` from `s_top = 1` — would be a
+genuine error, since A2 admits arbitrarily large `n`.
 
 **Case B — the cap binds** (`σ_g < ⌈n/λ⌉`, hence `s_top = σ_g + 1 ≥ 2`).
 Then `W_top = ⌊σ_g/(σ_g+1)⌋ + 1 = 1`, so by Lemma 1 every top-level bin
@@ -511,7 +541,12 @@ bind). Lemma 1 applies as stated:
 
 using `⌈n/λ⌉ ≥ n/λ`. With `σ_g ≤ 2^w − 1` from H1, `σ₀ < 2^w·λ/n`. ∎
 
-Only Case C can produce an expensive leaf, and it is the case §8.4 uses.
+Only Case C can produce a leaf **by depth exhaustion**, which is the
+hypothesis §8.4 needs. Note the weaker phrasing is deliberate: Case A1 can
+perfectly well produce an *expensive* leaf — `n = 3` with values `3, 1, 2`
+gives one leaf that `detectRun` calls `Unsorted` and insertion sort
+finishes — but that leaf has `m ≤ λ ≤ t`, so §8.6 covers it through the
+`t` branch, not through `M`.
 
 That is the whole content of the `2^w/n` factor: **the top-level split has
 already spent `log₂(n/λ)` of the `w` available bits before refinement
@@ -562,8 +597,11 @@ Lemma 1
 σ_D  ≤  σ₀ / ∏ᵢ sᵢ  ≤  σ₀ · (λ/m)^D
 ```
 
-The leaf has span `> 0`, so `σ_D ≥ 1`, giving `(m/λ)^D ≤ σ₀`. An expensive
-leaf exists, so by Lemma 4 we are in Case C and `σ₀ < 2^w λ / n`:
+The leaf has span `> 0`, so `σ_D ≥ 1`, giving `(m/λ)^D ≤ σ₀`. The leaf was
+produced by depth exhaustion, so at least one refinement split occurred:
+that rules out Case A1 (`refine` returns at its first test, `D ≥ 1` by H2)
+and rules out A2 and B (every top-level span is `0`, so no descendant has
+span `> 0`). We are therefore in Case C, and `σ₀ < 2^w λ / n`:
 
 ```
 (m/λ)^D  <  2^w · λ / n      ⟹      m^D  <  λ^(D+1) · 2^w / n
@@ -600,9 +638,9 @@ actually faces, and it is far tighter than `M` for realistic inputs.
 **With the shipped constants** (`λ = 32`, `w = 64`, `D = 6`):
 
 ```
-M      =  32 · 2^(64/7)  ≈  18 090      for every n
-B(10⁶) ≈  9 271
-B(10⁷) ≈  6 304
+M      =  32 · 2^(64/7)  =  18 089.4…     for every n
+B(10⁶) ≈  9 268
+B(10⁷) ≈  6 314
 ```
 
 That `B(n)` decreases is the opposite of what an `n log n` term would do,
@@ -612,9 +650,20 @@ and it is the direct consequence of Lemma 4.
 
 Two facts are used repeatedly.
 
-**(F1) The bins at any one level partition `[0, n)`** (Property 4, §7), so
-their sizes sum to exactly `n`. This is the fact that turns every
-"`O(m)` per bin" into "`O(n)` per level".
+**(F1a) The leaves partition `[0, n)` exactly**, so their sizes sum to
+`n`. This is Property 4 of §7, and it is what the `detectRun` and
+`appendLeaves` rows below, Lemma 2, and the aggregation in §8.6 use.
+
+**(F1b) The nodes at any one depth are pairwise disjoint subintervals of
+`[0, n)`, so their sizes sum to at most `n`.** This is *not* Property 4
+and must not be confused with it: the nodes at depth `i` do **not** cover
+`[0, n)`, because positions already absorbed by leaves at shallower depths
+are absent. `≤ n` is all the cost table needs, and it follows by induction
+on `i`: `countAndPlace` writes the children of a bin into
+`[start, start + count)` of the other buffer, contiguously and in bucket
+order, so the children of disjoint parents are disjoint.
+
+Together these turn every "`O(m)` per bin" into "`O(n)` per level".
 
 **(F2) The tree has `O(n/λ + 1)` nodes.** A bin splits only when
 `m > t ≥ λ`, hence `m/λ > 1`, and then it produces
@@ -624,8 +673,8 @@ s  ≤  ⌈m/λ⌉  <  m/λ + 1  <  2m/λ
 ```
 
 children (the middle step is the definition of the ceiling; the last uses
-`m/λ > 1`). Summing over the splitting bins of one level and applying F1,
-level `i+1` holds fewer than `2n/λ` nodes. Level `0` holds
+`m/λ > 1`). Summing over the splitting bins of one depth and applying F1b,
+depth `i+1` holds fewer than `2n/λ` nodes. Level `0` holds
 `s_top ≤ ⌈n/λ⌉ ≤ n/λ + 1` nodes. With at most `D + 1` levels,
 
 ```
@@ -640,17 +689,17 @@ ones at `O(1)` each.
 |---|---|---|---|
 | `analyze` | — | `Θ(n)` | one pass, once |
 | `planPartition` / `planRefinement` | `O(1)` | `O(N)` | fixed arithmetic per node (F2) |
-| `countAndPlace` | `O(m + s) = O(m)` | `O((D+1)·n) = O(n)` | two passes over `m` plus `O(s)` bookkeeping; F1 per level, F2 for `s` |
-| `scanRange` | `O(m)` | `O((D+1)·n) = O(n)` | one pass per splitting node |
-| `detectRun` | `O(m)` | `O(n)` | leaves partition `[0, n)` |
+| `countAndPlace` | `O(m + s) = O(m)` | `O((D+1)·n) = O(n)` | two passes over `m` plus `O(s)` bookkeeping; F1b per level, F2 for `s` |
+| `scanRange` | `O(m)` | `O((D+1)·n) = O(n)` | one pass per bin that passes the size/depth test — splitting nodes **and** degenerate-range leaves; disjoint per depth (F1b) |
+| `detectRun` | `O(m)` | `O(n)` | leaves partition `[0, n)` (F1a) |
 | `appendLeaves` | `O(m)` | `O(n + N) = O(n)` | one `memcpy` per leaf (H4) |
 | allocation | `O(s)` | `O(n)` | accounted below |
 
-Every row is linear because of F1: the work is per *element* per *level*,
-and the number of levels is `D + 1`, a constant by H2.
+Every row is linear because of F1a/F1b: the work is per *element* per
+*level*, and the number of levels is `D + 1`, a constant by H2.
 
-**Every word allocated, under H3.** There are exactly five sources of
-allocation, and they total `O(n)` words:
+**Every word allocated, under H3.** There are six sources, totalling
+`O(n)` words:
 
 | what | when | words |
 |---|---|---|
@@ -659,13 +708,18 @@ allocation, and they total `O(n)` words:
 | `writeCursorScratch_` | grows only, capped at `max s ≤ n/λ` | `≤ n/λ` |
 | `bucketStart`, `bucketSize` | **two per splitting node**, size `s` each | `Σ 2s ≤ 4n/λ` per level, `≤ 4(D+1)n/λ` total |
 | `RefinedRange` tree | one node per bin, plus its `children` vector | `O(N)` |
+| `sort`'s own locals | the top-level `bucketStart`, `bucketSize` and the `roots` vector, all sized `s_top` | `O(n/λ + 1)` |
 
 The fourth row is the one H3 exists for: those are local vectors inside
 `refine`, so there are `O(N)` separate allocate/release pairs rather
-than one big buffer. By F2 the sizes still sum to `O(n/λ)` per level, so
-under H3 their total cost is `O(n)`. The two growth-only scratch vectors
-are amortised: each only ever grows, and a geometric-growth `resize`
-performs `O(final size)` total work across all calls.
+than one big buffer. By F2 the sizes still sum to `O(n/λ)` per depth, so
+under H3 their total cost is `O(n)` (F1b). The two growth-only scratch vectors need no amortisation argument at all,
+and invoking one would silently import a library detail (the standard
+guarantees amortised `push_back`, not a growth policy for `resize`). The
+stronger fact: the first call that reaches the histogram path is always
+the top-level one, with the largest `count = n` and the largest bucket
+array `s_top ≥ ⌈m/λ⌉` of the whole run. So each scratch vector is resized
+**at most once per `sort()`**, straight to its final size.
 
 **The other two build configurations.** With `DRS_ENABLE_METRICS` the
 instrumentation adds `O(1)` work per counted event — a counter increment,
@@ -694,19 +748,19 @@ carefully.
 comparison sort only when `detectRun` returns `Unsorted`, which requires
 some adjacent pair with `buf[i] < buf[i−1]`, hence two distinct values,
 hence `σ ≥ 1`. A leaf with `σ = 0` is either flagged `sorted` by `refine`
-(`O(1)`) or, if it left `refine` through the depth test without its range
-being scanned, is recognised by `detectRun` as ascending (`O(m)`). Either
-way it reaches no comparison sort. This is what licenses `σ_D ≥ 1` in
-§8.4.
+(`O(1)`), or — if it left `refine` through **either** disjunct of the
+`count ≤ t || depth ≥ D` test, so that its range was never scanned — is
+recognised by `detectRun` as ascending (`O(m)`). Either way it reaches no
+comparison sort. This is what licenses `σ_D ≥ 1` in §8.4.
 
 A leaf of size `m` is finished by one of:
 
 | branch | condition | worst-case comparisons |
 |---|---|---|
-| certified sorted | `σ = 0` | `O(1)` |
+| certified sorted | `σ = 0` | `O(1)` to consume — the `O(m)` that produced the certificate is the `scanRange` row of §8.5 |
 | ascending / descending run | `detectRun` | `O(m)` |
 | `insertionSort` | `m ≤ L₁ = 64` | `≤ m(m−1)/2 ≤ (L₁/2)·m = 32m` |
-| `quickSort` | `L₁ < m ≤ L₂ = 384` | `≤ m²/2 ≤ (L₂/2)·m = 192m` |
+| `quickSort` | `L₁ < m ≤ L₂ = 384` | `≤ m²/2 + O(m) ≤ (L₂/2 + c₀)·m` |
 | `introSort` | `m > L₂` | `≤ c · m log₂ m` |
 
 **Where `32` and `192` come from.** Both are `⌈L/2⌉` for the branch's own
@@ -715,9 +769,14 @@ upper limit `L`, and both are pure algebra, not measurements:
 - Insertion sort performs at most `Σ_{i=1}^{m−1} i = m(m−1)/2 < m²/2`
   comparisons. The branch is entered only for `m ≤ L₁`, so
   `m²/2 = (m/2)·m ≤ (L₁/2)·m = 32m`.
-- Quicksort's worst case is `Θ(m²)`; bounding the partition scans gives at
-  most `m²/2 + O(m)` comparisons. The branch is entered only for
-  `m ≤ L₂`, so this is `≤ (L₂/2)·m = 192m`.
+- Quicksort's worst case is `Θ(m²)`. Bounding the partition scans gives at
+  most `m²/2` comparisons, plus an `O(m)` term: `partition` charges three
+  for the median-of-three and two per loop exit, and there are at most
+  `Θ(m)` partition calls and sub-cutoff insertion sorts. The branch is
+  entered only for `m ≤ L₂`, so `m²/2 ≤ (L₂/2)·m = 192m` and the total is
+  `≤ (192 + c₀)·m` for an absolute constant `c₀`. The `O(m)` term must not
+  be silently dropped — `m²/2 + O(m) ≤ 192m` does **not** follow from
+  `m²/2 ≤ 192m` — but it changes nothing, because `c₀` is `n`-free.
 
 The point is that `L₁` and `L₂` are **dispatch thresholds fixed in
 `Config.hpp`, independent of `n`, of `λ` and of `t`**. A quadratic
@@ -742,10 +801,24 @@ in `refine`, so its size is at most
 max( t,  M )  =  max( t,  λ·2^(w/(D+1)) )  =  max(64, 18 090)  =  18 090
 ```
 
-Hence `log₂ ≤ 14.15`, and the whole comparison-sorting effort of the
-algorithm is at most `≈ 14c·n`. Note it is the *global supremum* `M` that
+Hence `log₂ max(t, M) ≤ 14.15`. Note it is the *global supremum* `M` that
 appears here, not `B(n)`: linearity needs one `n`-free number, and `M` is
 it.
+
+Combining every row, the total local-sorting cost is at most
+
+```
+max( 2,  32,  192 + c₀,  c·log₂ max(t, M) ) · n
+```
+
+— the maximum over the branches, not the `introSort` row alone. Each entry
+is `n`-free, so the whole of §8.6 is `O(n)`.
+
+**Comparisons versus time.** The table counts comparisons; §8.9 sums it as
+time. Under H3 the two differ by at most a constant factor per leaf: every
+algorithm here performs `O(1)` moves and index operations per comparison,
+plus `O(m)` overhead, so `time = O(comparisons + m)` and the `O(m)` term is
+absorbed by F1a.
 
 **The distinction the reader should carry away:** an individual leaf is
 `O(m log m)`, the algorithm is `O(n)`, and the bridge between the two is a
@@ -768,10 +841,46 @@ actually guarantees is the one in Lemma 3 — `σ ≥ ⌈m/λ⌉`, from the cap 
 binding — which is weaker by a factor of `λ`. Substituting `σ ≥ s·m` where
 only `σ ≥ s` is available is where the extra `2` in `D+2` comes from.
 
-**And it is false, not merely unproven.** The claimed bound gives
-`m ≤ 1 457` at `n = 10⁶`, whereas an input exists at that size producing a
-leaf of **2 048 elements with `σ > 0`** that reaches `introSort`. The
-correct bound `B(10⁶) ≈ 9 271` accommodates it.
+**And it is false, not merely unproven — here is the counterexample.**
+Take `n = 10⁶`, `T = int64_t`, the shipped `λ = 32`, `t = 64`, `D = 6`.
+Writing offsets from the global minimum, the input is the multiset
+
+```
+ 2048 elements alternating  1, 0, 1, 0, …      (1024 of each value)
+    6 singletons at         65¹, 65², …, 65⁶
+997946 filler elements all at  σ_g = 31250 · 65⁶ = 2 356 840 332 031 250
+```
+
+Trace it. The top level takes `s_top = ⌈10⁶/32⌉ = 31250`; the cap does not
+bind, so `W_top = ⌊σ_g/31250⌋ + 1 = 65⁶ + 1`. Bucket `0` covers offsets
+`[0, 65⁶]` and therefore collects exactly the 2054 special elements; the
+filler lands in bucket `31249` as one all-equal, certified bin.
+
+Now refine that bucket. At level `i` it holds `m = 2048 + (6−i)` elements
+with `σ = 65^(6−i)`:
+
+| `i` | `m` | `σ` | `s = ⌈m/32⌉` | cap binds? | `W = ⌊σ/s⌋+1` | bucket of the top element |
+|---|---|---|---|---|---|---|
+| 0 | 2054 | 65⁶ | 65 | no (`σ ≥ s`) | 65⁵+1 | 64 |
+| 1 | 2053 | 65⁵ | 65 | no | 65⁴+1 | 64 |
+| 2 | 2052 | 65⁴ | 65 | no | 65³+1 | 64 |
+| 3 | 2051 | 65³ | 65 | no | 65²+1 | 64 |
+| 4 | 2050 | 65² | 65 | no | 65+1 | 64 |
+| 5 | 2049 | 65 | 65 | no (`65 < 65` is false) | 2 | 32 |
+
+Every level peels exactly one singleton — Lemma 5 with equality — and
+`⌈m/32⌉ = 65` throughout because `m` stays in `[2049, 2054]`. At depth
+`6` the surviving bin holds the 2048 alternating elements with `σ = 1`,
+hits `depth ≥ D`, and leaves `refine` unscanned. `detectRun` sees
+`1, 0, 1, 0, …` and returns `Unsorted`; `2048 > L₂ = 384`, so it goes to
+`introSort`.
+
+So `m = 2048` while the strengthened bound claims `m ≤ 1 457`. The bound
+is false. The real theorem is untroubled: `(m/λ)^D = 64⁶ ≈ 6.87·10¹⁰` sits
+below `σ₀ = 65⁶ ≈ 7.54·10¹⁰`, and `2048 < B(10⁶) ≈ 9 271`.
+
+Every row above is integer arithmetic, so the construction is checkable by
+hand; nothing in this subsection rests on running anything.
 
 Nothing above depends on this subsection: §8.4 never uses the false
 claim. It is recorded because the two bounds differ only in a subscript,
@@ -784,12 +893,20 @@ and because the wrong one *looks* sharper.
 | **`w`** | Makes `M` **finite**. It sets the total bit budget, and `M` is exponential in `w/(D+1)`. It does **not** appear in the `n`-dependence. | `w = 64` → `M ≈ 18 090`. A 128-bit key would give `≈ 10⁷` — still `O(1)` in `n`, but useless in practice. Hence H1. |
 | **`λ`** | Sets the fan-out `s = ⌈m/λ⌉`, hence the bits spent per level. Enters `B(n)` as `λ^((D+1)/D)` and `M` as `λ`. | Also sets typical leaf size, so `≈ (λ+1)/4` comparisons per element on average. |
 | **`D`** | **Not needed for termination** (Lemma 5 gives that) and **not needed for linearity** (see below). It bounds the number of passes at `D + 1` instead of `w + 1`. | Trades passes for residual: smaller `D` → fewer passes, larger `M`. |
-| **`t`** | Bounds leaves that exit *by size* at `m ≤ t`. Does **not** enter `B(n)` or `M`; it enters the final bound only through `max(t, M)` in §8.6. | `t = 64` → `≤ 32` comparisons per element in that branch. |
+| **`t`** | Bounds leaves that exit *by size* at `m ≤ t`. Does **not** enter `B(n)` or `M`; it enters the final bound only through `max(t, M)` in §8.6. | For `t ≤ L₁` the branch is insertion sort and the constant is `t/2` — `32` at `t = 64`. For a larger fixed `t` it is quicksort or introsort, still `O(1)` per leaf under H2, with constant `max(t/2, c·log₂ t)`. |
 
 **On `D`, explicitly**, because the claim "`D` is what makes it linear" is
-a natural one and it is wrong. Suppose the depth cap were removed
-entirely. Lemma 1 with `s ≥ 2` (guaranteed by `planRefinement`, which
-asserts `binCount ≥ 2`) gives `σᵢ₊₁ ≤ ⌊σᵢ/2⌋`, so `σ_k ≤ (2^w−1)/2^k` and
+a natural one and it is wrong — provided `D ≥ 1` (H2; at `D = 0` there is
+no refinement at all and the claim reverses, see §8.0). The argument below
+runs *upward*, towards larger `D`, not downward towards zero.
+
+First, `s ≥ 2` always. If the cap does not bind, `s = ⌈m/λ⌉ ≥ 2` because a
+bin only splits when `m > t ≥ λ`; if it binds, `s = σ + 1 ≥ 2` because
+`planRefinement` is only reached with `σ ≥ 1`. (The `assert(binCount >= 2)`
+in the code records this; it does not establish it, and it does not run in
+the release build this proof describes.)
+
+Now suppose the depth cap were removed entirely. Lemma 1 with `s ≥ 2` gives `σᵢ₊₁ ≤ ⌊σᵢ/2⌋`, so `σ_k ≤ (2^w−1)/2^k` and
 the span reaches `0` after at most `w` levels: **the depth is bounded by
 `w` with no cap at all.** Refinement would then stop only at `m ≤ t` or
 `σ = 0`, so every expensive leaf would satisfy `m ≤ t`, and the total
@@ -825,8 +942,8 @@ contradict `Ω(n log n)`, because the algorithm does arithmetic on keys.
 *What would an adversary have to build to make a leaf grow with `n`?*
 
 By §8.4 they need `(m/λ)^D ≤ σ₀` with `m` growing, so they need `σ₀` to
-grow with `n`. There are exactly three ways to attack, and each is closed
-by a named invariant:
+grow with `n`. There are four ways to attack, and each is closed by a
+named invariant:
 
 1. **Enlarge `σ₀`.** Blocked by Lemma 4, Case C: `σ₀ ≤ ⌊σ_g/⌈n/λ⌉⌋` with
    `σ_g ≤ 2^w−1` under H1. Growing `n` *shrinks* `σ₀`. The adversary would
@@ -835,25 +952,27 @@ by a named invariant:
 2. **Avoid paying bits at some level.** Blocked by Lemma 3: the only way to
    split without contracting the span by `⌈m/λ⌉` is to trigger the cap, and
    Lemma 2 makes every descendant span-`0`, hence cheap (no comparison sort).
-3. **Escape through the top-level special cases.** Blocked by Lemma 5,
-   Cases A and B: `s_top = 1` forces `n ≤ λ ≤ t` and no split at all; a
-   binding top-level cap makes every top bin span-`0`. Neither can produce
-   an expensive leaf.
+3. **Escape through the top-level special cases.** Blocked by Lemma 4.
+   `s_top = 1` has two sub-cases that must not be conflated: A1 (`n ≤ λ`,
+   so `refine` never splits) and A2 (`σ_g = 0`, where `n` is **unbounded**
+   but every span is `0`). Case B, a binding top-level cap, makes every
+   top bin span-`0`. None can produce an expensive leaf.
 4. **Exploit duplicates.** This is the attack that breaks the *false*
    bound of §8.7, and it is exactly why the real proof never counts
    distinct values. Lemma 3's `σ ≥ ⌈m/λ⌉` holds for multisets.
 
 An adversary can still saturate the bound — a construction reaching
-`2 048` at `n = 10⁶` exists, against a proven ceiling of `B(10⁶) ≈ 9 271` —
+`2 048` at `n = 10⁶` exists, against a proven ceiling of `B(10⁶) ≈ 9 268` —
 but the ceiling itself falls as `n^(−1/D)`. **No construction can make a
 span-positive leaf grow with `n` while H1 and H2 hold.**
 
-The honest residual risk is not in the argument but in its hypotheses: H3
-(unit-cost RAM) hides the memory hierarchy, and the wall-clock exponent on
-`FullRangeExtremes` is `1.08` while its *comparison* exponent is `0.9998`.
-That gap is cache behaviour, and it is the reason `λ` carries a
-cache-derived lower bound in [`Config.hpp`](../include/drs/Config.hpp) —
-a real effect on real machines that no `O(·)` statement describes.
+The honest residual risk is not in the argument but in its hypotheses.
+**H3 (unit-cost RAM) hides the memory hierarchy**, and on real hardware
+that gap is measurable: on inputs spanning the whole key universe the
+wall-clock growth exponent exceeds `1` while the *comparison* exponent
+stays at `1.000`. The extra cost is cache behaviour, not work, which is
+why §3.1 derives a lower bound on `λ` from the L2 capacity. No `O(·)`
+statement describes it, and none claims to.
 
 ## 9. Local sorting
 
