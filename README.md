@@ -128,26 +128,26 @@ and `std::sort` on identical copies of the same input.
 
 | Dataset | Stratum (ms) | `std::sort` (ms) | ratio |
 |---|---|---|---|
-| Small range, many elements | 2.07 | 6.00 | **0.35** |
-| Whole-universe span | 11.41 | 16.62 | **0.67** |
-| Huge range, sparse | 11.79 | 17.34 | **0.68** |
-| Random uniform | 11.90 | 17.26 | **0.69** |
-| Normal (Gaussian) | 13.04 | 16.21 | **0.80** |
-| Concentrated cluster | 5.67 | 6.36 | **0.88** |
-| Many repeated values | 2.61 | 2.59 | 1.01 † |
-| Adversarial (depth-exhausting) | 28.03 | 16.57 | 1.67 |
-| Reverse sorted | 5.37 | 1.28 | 4.01 |
-| Already sorted | 4.87 | 0.77 | 6.06 |
-
-† ~18% run-to-run dispersion with identical internal counters: a tie, not
-a loss.
+| Small range, many elements | 1.94 | 5.48 | **0.36** |
+| Huge range, sparse | 10.84 | 16.08 | **0.67** |
+| Whole-universe span | 10.91 | 16.18 | **0.67** |
+| Random uniform | 10.99 | 16.12 | **0.68** |
+| Normal (Gaussian) | 12.43 | 15.42 | **0.80** |
+| Concentrated cluster | 5.28 | 5.85 | **0.90** |
+| Many repeated values | 2.39 | 2.54 | 0.94 † |
+| Adversarial (depth-exhausting) | 27.08 | 16.29 | 1.66 |
+| Reverse sorted | 4.96 | 1.27 | 3.86 |
+| Already sorted | 4.48 | 0.75 | 5.95 |
 
 **Environment.** Apple M4, 16 GB, macOS 26.6.1, Apple clang 21.0.0
-(libc++), `-std=c++17 -O3 -DNDEBUG`, `n = 10⁶`, `int64_t`.
-**The machine carried a load average of ~3.3 during these runs**, so the
-absolute milliseconds are pessimistic and drifted about 12% between
-sessions. The **ratios** held to within 0.02 and are the figure to trust —
-that is the point of alternating the two sorts on the same input.
+(libc++), `-std=c++17 -O3 -DNDEBUG`, `n = 10⁶`, `int64_t`, otherwise idle
+machine. Median of nine repetitions and of three sessions; the three
+sessions agreed to within 2% on every row. **Ratios travel better than
+absolute milliseconds across machines** — the two sorts are timed on the
+same input in the same second, which is what makes the ratio robust.
+
+† *Many repeated values* is a tie: ~18% run-to-run dispersion, and its
+internal counters are identical across configurations.
 
 ```bash
 make timings
@@ -237,7 +237,8 @@ the product, the research is documentation of how it came to be.
 Contents:
 
 - [`ALGORITHM.md`](research/ALGORITHM.md) — the complete technical
-  description and the `Θ(n)` proof.
+  description and the `Θ(n)` proof, including the four hypotheses the
+  guarantee rests on and why `D ≥ 1` is one of them.
 - [`BENCHMARKS.md`](research/BENCHMARKS.md) — measurement methodology.
 - [`DESIGN_HISTORY.md`](research/DESIGN_HISTORY.md) — what was tried, what
   was measured, and what was rejected, including the ideas that failed.

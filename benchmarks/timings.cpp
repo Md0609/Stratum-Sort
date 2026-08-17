@@ -126,6 +126,7 @@ int main() {
                       << (correct ? "si" : "NO") << "\n";
         }
     }
-    std::cout << "\nCounters are deliberately absent: this binary has none. For the\n"
-                 "deterministic counters use `make baseline`, and do not quote its times.\n";
+    std::cout << "\nCounters are deliberately absent: this binary has none, which is why\n"
+                 "its clock is the only one worth quoting. The deterministic counters\n"
+                 "live in the instrumented build; never quote a timing from that one.\n";
 }

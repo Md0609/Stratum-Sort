@@ -5,10 +5,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.9.0] — unreleased
 
-First public release candidate. The algorithm, its proof, its tests and
-its packaging are complete; the version is `0.9.0` rather than `1.0.0`
-because the API has no field history yet and the project has been built on
-one platform only. See "Portability" in the README.
+First public release candidate. `0.9.0`, not `1.0.0`, and the difference
+is deliberate:
+
+| what 0.9.0 means here | |
+|---|---|
+| Algorithm | complete; no known correctness or complexity defect |
+| API | functional and documented, but with **no field history** — nobody has used it yet, so nothing has been stress-tested by contact with real callers |
+| Tests | four suites, including a randomised differential fuzz under ASan/UBSan |
+| Theory | `Θ(n)` documented together with the hypotheses it needs |
+| Platform validation | **narrow: arm64 macOS only** |
+
+`1.0.0` is a promise of API stability. That promise is not worth making
+until the library has been built somewhere other than one laptop. It is
+not an immediate goal.
 
 ### Added
 - `stratum::StratumSort<T>` — header-only linear-time sort for integral

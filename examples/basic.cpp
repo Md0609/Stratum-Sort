@@ -1,33 +1,34 @@
-// Minimal Stratum Sort example. Build: make examples
-#include "stratum/StratumSort.hpp"
+// Minimal Stratum Sort example.
+//
+//   make examples
+// or, with nothing but a compiler:
+//   c++ -std=c++17 -O2 -Iinclude examples/basic.cpp -o basic && ./basic
+#include <stratum/StratumSort.hpp>
 
 #include <cstdint>
 #include <iostream>
-#include <random>
 #include <vector>
 
 int main() {
-    std::mt19937_64 rng(42);
-    std::vector<int64_t> data(20);
-    for (auto& x : data) x = static_cast<int64_t>(rng() % 1000);
-
-    std::cout << "before:";
-    for (auto x : data) std::cout << ' ' << x;
-    std::cout << '\n';
+    std::vector<int64_t> data{5, 3, 9, 1, 7, 3};
 
     stratum::StratumSort<int64_t> sorter;
     sorter.sort(data);
 
-    std::cout << "after: ";
-    for (auto x : data) std::cout << ' ' << x;
+    for (auto x : data) std::cout << x << ' ';   // 1 3 3 5 7 9
     std::cout << '\n';
 
-    // The tuning parameters are optional. lambda is the target elements per
-    // bin; t is the size at which refinement stops. Both are clamped, so no
-    // combination can misbehave - see docs/usage.md.
+    // The tuning parameters are optional and both are clamped, so no
+    // combination can misbehave: lambda is the target elements per bin, t
+    // the size at which refinement stops. docs/usage.md explains when to
+    // change them - the short answer is "only for inputs much larger than
+    // a million elements".
     stratum::StratumSort<int64_t> tuned(/*lambda=*/64, /*t=*/128);
-    std::vector<int64_t> other = data;
+    std::vector<int64_t> other{9, 9, 2, 8, 2};
     tuned.sort(other);
+
+    for (auto x : other) std::cout << x << ' ';  // 2 2 8 9 9
+    std::cout << '\n';
     std::cout << "lambda=" << tuned.targetElementsPerBin()
               << " t=" << tuned.leafThreshold() << '\n';
     return 0;

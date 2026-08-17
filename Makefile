@@ -65,7 +65,7 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
                 include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp
 
 .PHONY: all test contract sanitizers fuzz timings examples \
-        research studies package clean help
+        research studies package package-verify clean help
 
 # ============================================================
 # PRODUCT
@@ -172,8 +172,17 @@ endif
 # Ships the library and what a user needs to build, test and try it.
 # Deliberately EXCLUDES research/: proofs, audits, adversaries, design
 # history and one-off studies are readable in the repository, not part of
-# the download. The file list is explicit rather than an exclude list, so
-# a new research document cannot leak into the package by default.
+# the download.
+#
+# The list is EXPLICIT, never an exclude pattern. A new file anywhere in
+# the tree - research/, build/, a scratch note - cannot appear in the
+# archive unless someone adds its path here on purpose. `make
+# package-verify` proves that by planting decoys and failing if any of
+# them survives.
+#
+# The archive's README is packaging/README.md, NOT the repository README:
+# the repository one links into research/, which is not shipped, and a
+# package whose front page has dead links is a broken package.
 PACKAGE_FILES := \
 	include/stratum/StratumSort.hpp \
 	include/stratum/StratumSort.tpp \
@@ -191,24 +200,54 @@ PACKAGE_FILES := \
 	CHANGELOG.md \
 	CMakeLists.txt \
 	Makefile \
-	LICENSE \
-	README.md
+	LICENSE
 
-package: $(PACKAGE_FILES)
-	@rm -rf dist/$(PKGNAME) dist/$(PKGNAME).zip
-	@mkdir -p dist/$(PKGNAME)
+PKGDIR := dist/$(PKGNAME)
+
+package: $(PACKAGE_FILES) packaging/README.md
+	@rm -rf $(PKGDIR) dist/$(PKGNAME).zip
+	@mkdir -p $(PKGDIR)
 	@for f in $(PACKAGE_FILES); do \
-	    mkdir -p dist/$(PKGNAME)/$$(dirname $$f); \
-	    cp $$f dist/$(PKGNAME)/$$f; \
+	    mkdir -p $(PKGDIR)/$$(dirname $$f); \
+	    cp $$f $(PKGDIR)/$$f; \
 	done
+	@cp packaging/README.md $(PKGDIR)/README.md
 	@cd dist && zip -qr $(PKGNAME).zip $(PKGNAME)
 	@echo "dist/$(PKGNAME).zip"
 	@unzip -l dist/$(PKGNAME).zip
+
+# Proves the package cannot leak. Plants decoys in every directory that
+# must never ship, rebuilds the archive, and fails if any survives. Also
+# checks the shipped README has no link to a path the archive lacks.
+package-verify: package
+	@echo "--- planting decoys ---"
+	@mkdir -p research/experiments build
+	@echo "leak" > research/DECOY-doc.md
+	@echo "leak" > research/experiments/DECOY-study.cpp
+	@echo "leak" > research/history/DECOY-note.md
+	@echo "leak" > build/DECOY-artifact.o
+	@echo "leak" > DECOY-scratch.tmp
+	@$(MAKE) --no-print-directory package >/dev/null
+	@rm -f research/DECOY-doc.md research/experiments/DECOY-study.cpp \
+	       research/history/DECOY-note.md build/DECOY-artifact.o DECOY-scratch.tmp
+	@if unzip -l dist/$(PKGNAME).zip | grep -qi decoy; then \
+	    echo "FAIL: a decoy reached the archive"; exit 1; \
+	else echo "  no decoy reached the archive"; fi
+	@if unzip -l dist/$(PKGNAME).zip | grep -qiE "research/|history/|/build/|\.tmp|\.o$$"; then \
+	    echo "FAIL: archive contains an excluded path"; exit 1; \
+	else echo "  no research/, build/ or scratch path in the archive"; fi
+	@echo "--- checking the shipped README is self-contained ---"
+	@cd $(PKGDIR) && miss=0; \
+	  for l in $$(grep -o "](\([^)]*\))" README.md | tr -d '])(' | grep -v "^http" | grep -v "^#"); do \
+	    [ -e "$$l" ] || { echo "  DEAD LINK: $$l"; miss=1; }; \
+	  done; \
+	  [ $$miss -eq 0 ] && echo "  every link in the shipped README resolves inside the archive" || exit 1
+	@echo "package-verify: OK"
 
 clean:
 	rm -rf build dist
 
 help:
 	@echo "Product:  make all | test | sanitizers | fuzz | timings | examples"
-	@echo "Package:  make package        -> dist/$(PKGNAME).zip"
+	@echo "Package:  make package | package-verify   -> dist/$(PKGNAME).zip"
 	@echo "Research: make research       (built, never shipped)"
