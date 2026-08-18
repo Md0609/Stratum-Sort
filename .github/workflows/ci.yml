@@ -18,7 +18,7 @@ jobs:
   build-and-test:
     name: ${{ matrix.name }} / C++${{ matrix.std }} / ${{ matrix.config }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.timeout || 20 }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +34,9 @@ jobs:
           - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Release }
           - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Debug   }
           - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Release }
-          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Debug   }
+          # MSVC Debug is being measured, not excused: see the commit that added
+          # this. It is the only row that needs more than a couple of minutes.
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Debug, timeout: 75 }
           - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 20, config: Release }
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +53,7 @@ jobs:
         run: cmake --build build --config ${{ matrix.config }} --parallel
 
       - name: Test
-        run: ctest --test-dir build --build-config ${{ matrix.config }} --output-on-failure
+        run: ctest --test-dir build --build-config ${{ matrix.config }} --output-on-failure --verbose
 
       # A user gets the headers and nothing else. This proves that is
       # enough, on every platform in the matrix. Driven through CMake rather
