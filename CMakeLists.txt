@@ -28,6 +28,22 @@ endif()
 if(STRATUMSORT_BUILD_TESTS)
     enable_testing()
 
+    # MSVC's Debug configuration defaults to _ITERATOR_DEBUG_LEVEL=2, which
+    # adds iterator-invalidation bookkeeping to every std::vector operation.
+    # This library indexes vectors in its innermost loops, so the effect is
+    # not the usual 2-5x: the suite went from 30 seconds in Release to over
+    # three hours in Debug on a CI runner, without ever failing.
+    #
+    # Level 1 is kept, not 0. It retains the bounds check on operator[] and
+    # on iterators - the check that actually matters for this code, and the
+    # one that would catch a bad bucket index - and drops only the
+    # invalidation tracking. Nothing about the library's own assertions
+    # changes: the test sources #undef NDEBUG, so every internal invariant
+    # is still verified in every configuration, on every platform.
+    if(MSVC)
+        add_compile_definitions($<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=1>)
+    endif()
+
     # The tests need the internal assertions on. That is NOT arranged here:
     # CMake appends -DNDEBUG from CMAKE_CXX_FLAGS_<CONFIG> after any target
     # flag, so no target option can win. Each test source instead does
