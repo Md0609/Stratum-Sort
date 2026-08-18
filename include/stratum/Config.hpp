@@ -14,6 +14,27 @@
 // Each value states its own justification. Where a value has never been
 // measured on this codebase, that is said explicitly rather than implied.
 // ============================================================
+// ------------------------------------------------------------------
+// ABI TAG - why StratumSort lives in an inline namespace
+// ------------------------------------------------------------------
+// STRATUM_ENABLE_METRICS adds a member to StratumSort, so the class has a
+// different size and layout in the two configurations. Without a tag, two
+// translation units that disagree about the macro would each define a
+// different class under the SAME name: an ODR violation that links
+// silently and misbehaves at run time.
+//
+// Putting the class in an inline namespace whose NAME depends on the macro
+// makes the two configurations distinct types with distinct mangled names.
+// Callers still write stratum::StratumSort<T> - an inline namespace is
+// transparent to name lookup - but a mismatch between translation units
+// now fails at link time with an undefined symbol instead of corrupting
+// memory. A build that is internally consistent is unaffected.
+#ifdef STRATUM_ENABLE_METRICS
+#define STRATUM_ABI_NAMESPACE abi_metrics_v1
+#else
+#define STRATUM_ABI_NAMESPACE abi_v1
+#endif
+
 namespace stratum {
 
 // ------------------------------------------------------------------

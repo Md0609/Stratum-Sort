@@ -174,11 +174,17 @@ Never quote a timing from that build.
 > **Define it for the whole program or not at all.** The macro adds a
 > member to `StratumSort<T>`, so the class has a different size and layout
 > in the two configurations — 112 versus 352 bytes for `int64_t` on a
-> 64-bit target. If one translation unit sees the instrumented class and
-> another sees the plain one, that is an ODR violation: it links without a
-> diagnostic and then misbehaves at run time. Set the macro in your
-> build system, for every target that includes the header, or leave it
-> unset everywhere.
+> 64-bit target.
+>
+> That mismatch is made safe rather than left to chance: the class lives in
+> an inline namespace tagged by the macro, so the two configurations are
+> **different types**. You still write `stratum::StratumSort<T>` and see no
+> difference. But if two translation units disagree and the type crosses
+> between them, the build fails at link time with an undefined symbol
+> mentioning `stratum::abi_v1` or `stratum::abi_metrics_v1` — instead of
+> linking quietly and corrupting memory later. Set the macro in your build
+> system for every target that includes the header, or leave it unset
+> everywhere.
 
 ## Running the tests
 

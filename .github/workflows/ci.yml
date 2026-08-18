@@ -52,11 +52,15 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config ${{ matrix.config }} --output-on-failure
 
-      # A user gets the headers and nothing else. This proves that is enough.
+      # A user gets the headers and nothing else. This proves that is
+      # enough, on every platform in the matrix. Driven through CMake rather
+      # than a raw compiler invocation so the same step works with MSVC,
+      # where `cl` is not on PATH without vcvars and takes /flags, not
+      # -flags.
       - name: External consumer (headers only)
         shell: bash
         run: |
-          mkdir -p /tmp/consumer && cd /tmp/consumer
+          mkdir -p "${RUNNER_TEMP}/consumer" && cd "${RUNNER_TEMP}/consumer"
           cat > app.cpp <<'CPP'
           #include <stratum/StratumSort.hpp>
           #include <algorithm>
@@ -77,13 +81,38 @@ jobs:
             return ok ? 0 : 1;
           }
           CPP
-          cmake -E make_directory b
-          cmake -E chdir b cmake -E echo "building consumer"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cl //std:c++${{ matrix.std }} //EHsc //I"${GITHUB_WORKSPACE}/include" app.cpp //Fe:app.exe && ./app.exe
-          else
-            ${{ matrix.cxx }} -std=c++${{ matrix.std }} -O2 -Wall -Wextra -I"${GITHUB_WORKSPACE}/include" app.cpp -o app && ./app
+          cat > CMakeLists.txt <<'CML'
+          cmake_minimum_required(VERSION 3.14)
+          project(consumer LANGUAGES CXX)
+          add_subdirectory("$ENV{GITHUB_WORKSPACE}" stratumsort_build)
+          add_executable(app app.cpp)
+          target_link_libraries(app PRIVATE StratumSort::stratumsort)
+          CML
+          cmake -B b -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+                -DCMAKE_CXX_STANDARD=${{ matrix.std }} \
+                -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+                -DSTRATUMSORT_BUILD_TESTS=OFF -DSTRATUMSORT_BUILD_EXAMPLES=OFF
+          cmake --build b --config ${{ matrix.config }}
+          "$(find b -name 'app' -o -name 'app.exe' | head -1)"
+
+      # The macro changes the class layout, so the class is tagged with an
+      # inline namespace. A translation unit that disagrees must fail to
+      # LINK, not link quietly and misbehave. This asserts that.
+      - name: ODR guard (mismatched STRATUM_ENABLE_METRICS must not link)
+        if: matrix.cxx != 'msvc'
+        shell: bash
+        run: |
+          cd "${RUNNER_TEMP}"
+          printf '#include <stratum/StratumSort.hpp>\n#include <cstdint>\n#include <vector>\nvoid f(stratum::StratumSort<int64_t>&, std::vector<int64_t>&);\n' > s.hpp
+          printf '#include "s.hpp"\nvoid f(stratum::StratumSort<int64_t>& s, std::vector<int64_t>& v){ s.sort(v); }\n' > a.cpp
+          printf '#include "s.hpp"\nint main(){ stratum::StratumSort<int64_t> s; std::vector<int64_t> v{2,1}; f(s,v); }\n' > b.cpp
+          I="-I${GITHUB_WORKSPACE}/include"
+          ${{ matrix.cxx }} -std=c++${{ matrix.std }} $I -DSTRATUM_ENABLE_METRICS -c a.cpp -o a.o
+          ${{ matrix.cxx }} -std=c++${{ matrix.std }} $I -c b.cpp -o b.o
+          if ${{ matrix.cxx }} a.o b.o -o bad 2>/dev/null; then
+            echo "FAIL: mismatched translation units linked; the ABI tag is not working"; exit 1
           fi
+          echo "OK: mismatched translation units are rejected at link time"
 
   sanitizers:
     name: sanitizers / ${{ matrix.cxx }}

@@ -12,6 +12,7 @@
 #include <vector>
 
 namespace stratum {
+inline namespace STRATUM_ABI_NAMESPACE {
 
 // ============================================================
 // StratumSort
@@ -72,11 +73,16 @@ namespace stratum {
 //
 // INSTRUMENTATION: STRATUM_ENABLE_METRICS is a whole-program switch, not a
 //   per-file one. Defining it adds a member to this class, so the class has
-//   a different size and layout in the two configurations. Mixing
-//   translation units that disagree about the macro is an ODR violation: it
-//   links without a diagnostic and misbehaves at run time. Set it in the
-//   build system for every target that includes this header, or leave it
-//   unset everywhere.
+//   a different size and layout in the two configurations.
+//
+//   That mismatch cannot corrupt a program silently. The class lives in an
+//   inline namespace whose name depends on the macro (see Config.hpp), so
+//   the two configurations are distinct types with distinct mangled names.
+//   Callers still write stratum::StratumSort<T> and notice nothing; but if
+//   two translation units disagree and pass the type across the boundary,
+//   the program fails to link with an undefined symbol rather than
+//   misbehaving at run time. Set the macro in the build system for every
+//   target that includes this header, or leave it unset everywhere.
 //
 // EXCEPTIONS: strong guarantee in a release build. The only operations
 //   that can throw are the internal allocations, and all of them happen
@@ -323,6 +329,7 @@ private:
 #endif
 };
 
+} // inline namespace STRATUM_ABI_NAMESPACE
 } // namespace stratum
 
 #include "StratumSort.tpp"

@@ -128,6 +128,7 @@ by itself — is in the project repository, not in this package.
 | **Stable** | no |
 | **Thread-safe** | per instance, no; distinct instances are independent |
 | **Exception safety** | strong in a release build: every allocation happens before the first write to your array |
+| **Instrumentation** | `STRATUM_ENABLE_METRICS` is a whole-program switch. It changes the class layout, so the class is tagged with an inline namespace: a translation unit that disagrees fails to link rather than misbehaving silently |
 
 ## Limitations
 

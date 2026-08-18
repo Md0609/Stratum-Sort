@@ -9,6 +9,7 @@
 #include <utility>
 
 namespace stratum {
+inline namespace STRATUM_ABI_NAMESPACE {
 
 // ============================================================
 // Instrumentation wrappers
@@ -878,4 +879,5 @@ std::vector<typename StratumSort<T>::LeafView> StratumSort<T>::debugPartitionOnl
 }
 #endif
 
+} // inline namespace STRATUM_ABI_NAMESPACE
 } // namespace stratum
