@@ -267,13 +267,29 @@ void testStrongExceptionGuarantee() {
         g_allocBudget = budget;
         g_allocLimiterOn = true;
         bool threw = false;
+        // Per-iteration trace, flushed. Section 5 is where this suite hung
+        // on MSVC, and a section-level marker was not fine-grained enough
+        // to say which budget value did it. The catch(...) is part of the
+        // diagnosis too: an escaping exception of an unexpected type would
+        // otherwise reach std::terminate, which on Windows is an abort
+        // dialog that blocks instead of failing.
+        std::cout << "   budget " << budget << " ..." << std::flush;
         try {
             sorter.sort(v);
         } catch (const std::bad_alloc&) {
             threw = true;
             everThrew = true;
+        } catch (const std::exception& e) {
+            std::cout << " UNEXPECTED std::exception: " << e.what() << std::endl;
+            g_allocLimiterOn = false;
+            throw;
+        } catch (...) {
+            std::cout << " UNEXPECTED non-standard exception" << std::endl;
+            g_allocLimiterOn = false;
+            throw;
         }
         g_allocLimiterOn = false;
+        std::cout << (threw ? " threw" : " no-throw") << std::endl;
 
         if (threw && v != original) alwaysIntact = false;
     }
