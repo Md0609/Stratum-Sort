@@ -9,6 +9,7 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <chrono>
 
 // ============================================================
 // Contract tests for the public API of StratumSort
@@ -47,6 +48,18 @@ namespace {
 int g_failures = 0;
 int g_checks = 0;
 
+// Progress reporting. Every section announces itself with the elapsed
+// time and FLUSHES: a suite that is killed by a CI timeout must still have
+// said how far it got, otherwise the log shows nothing and the failure has
+// to be guessed at.
+static std::chrono::steady_clock::time_point g_start = std::chrono::steady_clock::now();
+
+void section(const char* name) {
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - g_start).count();
+    std::cout << "[" << static_cast<long long>(ms) << " ms] " << name << std::endl;
+}
+
 void check(bool ok, const std::string& what) {
     ++g_checks;
     if (!ok) {
@@ -72,7 +85,7 @@ bool sortsCorrectly(std::vector<T> data, std::size_t lambda, std::size_t leaf) {
 // The audit's defect only appeared for leafThreshold > 64, a region no
 // test had ever entered. This sweeps well past it in both directions.
 void testParameterSpace() {
-    std::cout << "1. Parameter space\n";
+    section("1. Parameter space");
     std::mt19937_64 rng(12345);
 
     const std::vector<std::size_t> lambdas = {1, 2, 7, 16, 32, 64, 128, 1000};
@@ -123,7 +136,7 @@ void testParameterSpace() {
 // The clamping is silent, so it must be observable and it must be
 // exactly what the header documents.
 void testConstructorClamping() {
-    std::cout << "2. Constructor clamping\n";
+    section("2. Constructor clamping");
 
     StratumSort<int64_t> a;
     check(a.targetElementsPerBin() == stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN,
@@ -157,7 +170,7 @@ void testConstructorClamping() {
 // when the input spans the whole universe. These are the inputs that
 // exercise it.
 void testRangeArithmetic() {
-    std::cout << "3. Range arithmetic edge cases\n";
+    section("3. Range arithmetic edge cases");
     const int64_t lo = std::numeric_limits<int64_t>::min();
     const int64_t hi = std::numeric_limits<int64_t>::max();
 
@@ -214,7 +227,7 @@ void testRangeArithmetic() {
 // in the scratch buffers, which are the only mutable state that survives
 // a call.
 void testInstanceReuse() {
-    std::cout << "4. Instance reuse\n";
+    section("4. Instance reuse");
     std::mt19937_64 rng(999);
     StratumSort<int64_t> sorter;
 
@@ -239,7 +252,7 @@ std::size_t g_allocBudget = 0;
 bool g_allocLimiterOn = false;
 
 void testStrongExceptionGuarantee() {
-    std::cout << "5. Strong exception guarantee\n";
+    section("5. Strong exception guarantee");
     std::mt19937_64 rng(4242);
     std::vector<int64_t> original(5000);
     std::uniform_int_distribution<int64_t> dist(-100000, 100000);
@@ -286,7 +299,7 @@ void testStrongExceptionGuarantee() {
 // 6. Determinism
 // ------------------------------------------------------------------
 void testDeterminism() {
-    std::cout << "6. Determinism\n";
+    section("6. Determinism");
     std::mt19937_64 rng(31337);
     std::vector<int64_t> base(30000);
     std::uniform_int_distribution<int64_t> dist(-1000, 1000);
@@ -324,7 +337,7 @@ std::size_t usageOf(const stratum::SortMetrics& m, const char* algo) {
 }
 
 void testDispatchDecoupling() {
-    std::cout << "7. Local-sort dispatch decoupling\n";
+    section("7. Local-sort dispatch decoupling");
     std::mt19937_64 rng(555);
 
     // Sizes chosen to land in each of the three dispatch branches given
@@ -419,6 +432,6 @@ int main() {
         std::cout << "FAILED\n";
         return 1;
     }
-    std::cout << "All API contract tests passed.\n";
+    std::cout << "All API contract tests passed." << std::endl;
     return 0;
 }
