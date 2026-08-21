@@ -254,6 +254,17 @@ void testInstanceReuse() {
 std::size_t g_allocBudget = 0;
 bool g_allocLimiterOn = false;
 
+// Diagnostic bookkeeping for the limiter. Fixed storage on purpose: recording
+// an allocation must not itself allocate. Sizes discriminate whose allocation
+// was refused - StratumSort's working buffers for n=5000 int64_t are tens of
+// kilobytes, while a standard-library container's internal bookkeeping object
+// is a few bytes. Which of the two the limiter refuses is the whole question.
+std::size_t g_allocSizes[64];
+std::size_t g_allocSeen = 0;
+std::size_t g_refusedSize = 0;
+int g_refusedDepth = -1; // std::uncaught_exceptions() at the point of refusal
+
+
 void testStrongExceptionGuarantee() {
     section("5. Strong exception guarantee");
     std::mt19937_64 rng(4242);
@@ -274,6 +285,9 @@ void testStrongExceptionGuarantee() {
         // throw from the stream instead of from sort().
         std::cout << "   budget " << budget << " ..." << std::flush;
         bool threw = false;
+        g_allocSeen = 0;
+        g_refusedSize = 0;
+        g_refusedDepth = -1;
         g_allocBudget = budget;
         g_allocLimiterOn = true;
         try {
@@ -296,7 +310,10 @@ void testStrongExceptionGuarantee() {
         // allocation profile differs from libstdc++/libc++; printing it makes
         // that difference visible instead of leaving it to be assumed.
         std::cout << (threw ? " threw" : " no-throw")
-                  << " (used " << (budget - g_allocBudget) << ")" << std::endl;
+                  << " (used " << (budget - g_allocBudget) << ", refused "
+                  << g_refusedSize << " bytes, sizes:";
+        for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
+        std::cout << ")" << std::endl;
 
         if (threw && v != original) alwaysIntact = false;
     }
@@ -431,9 +448,13 @@ void* operator new(std::size_t sz) {
             // in the first place: "make the k-th allocation fail". Once
             // sort() has thrown, no further allocation of its own happens,
             // so nothing about the coverage changes.
+            g_refusedSize = sz;
+            g_refusedDepth = std::uncaught_exceptions();
             g_allocLimiterOn = false;
             throw std::bad_alloc();
         }
+        if (g_allocSeen < 64) g_allocSizes[g_allocSeen] = sz;
+        ++g_allocSeen;
         --g_allocBudget;
     }
     void* p = std::malloc(sz);
@@ -482,7 +503,11 @@ void reportTerminate() {
     } else {
         std::cout << "no exception was in flight";
     }
-    std::cout << " ***" << std::endl;
+    std::cout << " ***\n    refused a " << g_refusedSize << "-byte allocation"
+              << " at uncaught_exceptions()=" << g_refusedDepth
+              << "\n    allocations granted first:";
+    for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
+    std::cout << std::endl;
     std::_Exit(70); // no atexit handlers, no abort dialog, still a failure
 }
 
