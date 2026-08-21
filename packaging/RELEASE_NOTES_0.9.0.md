@@ -101,7 +101,7 @@ target_link_libraries(your_target PRIVATE StratumSort::stratumsort)
 ```
 
 ```bash
-make test          # three suites: edge cases, 124 + 133 contract checks
+make test          # three suites: edge cases, 125 + 134 contract checks
 make timings       # release timings against std::sort
 make examples      # minimal working example
 ```
@@ -166,9 +166,20 @@ Ratios travel better across machines than absolute milliseconds.
 
 ## Limitations
 
-- **Windows and MSVC have never been built.** Linux x86_64 and macOS
-  arm64 are both verified; nothing in the implementation is
-  platform-specific, but "should work" is not "was tested".
+- **Windows coverage is narrower than Linux and macOS.** All three are
+  verified, but Windows was exercised with MSVC 19.51 under CMake only, at
+  C++17 Release and Debug and C++20 Release. C++23, the Make build and
+  ASan/UBSan were not run there.
+- **One research-build assertion is not reachable on MSVC Debug.** The
+  research build deliberately does not offer the strong exception
+  guarantee, and demonstrating that requires making a small allocation
+  fail. On MSVC's Debug standard library an allocation that size belongs to
+  the library's own container bookkeeping, which is allocated inside
+  `noexcept` functions, where a failure is `std::terminate` rather than a
+  catchable exception. The suite prints the case as `NOT CHECKED` there
+  rather than claiming coverage it does not have. This is a property of
+  that standard library, not a defect in the algorithm, and the production
+  strong exception guarantee is verified on all three platforms.
 - **Integral keys up to 64 bits only**, rejected at compile time otherwise.
 - **Not stable**, and not extensible to key/value pairs as written.
 - **`Θ(n)` auxiliary memory** where `std::sort` uses `O(log n)` — about
@@ -176,26 +187,28 @@ Ratios travel better across machines than absolute milliseconds.
   the index array is one `size_t` per element regardless of `T`.
 - **Loses to `std::sort` on already-sorted input**, by about 6×.
 - **Not thread-safe per instance**; distinct instances are independent.
-- **All timings come from one machine.** Correctness is verified on two
+- **All timings come from one machine.** Correctness is verified on three
   platforms, but the milliseconds above are macOS only.
 
 ## Why 0.9.0 and not 1.0.0
 
 The algorithm is complete, the tests are thorough and the guarantee is
-documented with its hypotheses. Linux x86_64 and macOS arm64 are both
-verified. But `1.0.0` is a promise of API stability, and that promise is
-not worth making while the library has no field history and has never been
-compiled with MSVC. `1.0.0` follows that, not a calendar.
+documented with its hypotheses. Linux x86_64, macOS arm64 and Windows
+x86_64 are all verified. But `1.0.0` is a promise of API stability, and
+that promise is not worth making while the library has no field history:
+no caller outside this repository has used it, so nothing about the shape
+of the API has been tested by contact with real use. `1.0.0` follows that,
+not a calendar.
 
 ## Verified in this release
 
 | | |
 |---|---|
-| Compilers | Apple clang 21.0.0, GCC 15.2.0, GCC 14.4.0, Clang 19.1.7 |
-| Standards | C++17, C++20, C++23 — every compiler above |
+| Compilers | Apple clang 21.0.0, GCC 15.2.0, GCC 14.4.0, Clang 19.1.7, MSVC 19.51 |
+| Standards | C++17, C++20, C++23 on the GCC and Clang compilers; C++17 and C++20 on MSVC |
 | Build systems | Make, and CMake 4.4 in Release and Debug |
-| Test suites | edge cases, dataset sweep, 124 + 133 API contract checks, ASan/UBSan range limits, 100 000-case differential fuzz against `std::sort` |
-| Platforms | Linux x86_64 (GCC 14 + libstdc++, Clang 19 + libc++) and macOS 26.6.1 arm64 (Apple clang 21 + libc++, GCC 15 + libstdc++) |
+| Test suites | edge cases, dataset sweep, 125 + 134 API contract checks, ASan/UBSan range limits, 100 000-case differential fuzz against `std::sort`, and an ODR link guard that requires mismatched `STRATUM_ENABLE_METRICS` builds to fail at link time |
+| Platforms | Linux x86_64 (GCC 14 + libstdc++, Clang 19 + libc++), macOS 26.6.1 arm64 (Apple clang 21 + libc++, GCC 15 + libstdc++) and Windows x86_64 (MSVC 19.51, Release and Debug) |
 | Package | builds and passes its tests when extracted outside the repository, with both compilers and both build systems |
 
 The archive is **byte-reproducible on a given platform**: two runs of

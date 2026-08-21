@@ -186,7 +186,7 @@ alternating the two sorts.
 
 ```bash
 make            # library check, tests, timings and the example
-make test       # three suites: edge cases, and 124 + 133 contract checks
+make test       # three suites: edge cases, and 125 + 134 contract checks
 make timings    # release timings against std::sort
 make examples   # run the minimal example
 ```
@@ -215,12 +215,12 @@ ctest --test-dir build
 ## Verified platforms
 
 `0.9.0` is a release candidate. The version is not `1.0.0` because the API
-has no field history and platform validation is narrow.
+has no field history: nobody has used it yet.
 
 | | |
 |---|---|
-| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan. |
-| **Not verified** | **Windows and MSVC** — never built. Also untested: 32-bit targets, big-endian machines, compilers older than the two above. |
+| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**Windows x86_64** — MSVC 19.51 (`windows-latest`), C++17 Release and Debug and C++20 Release, CMake, full test suite and the ODR link guard. |
+| **Not verified** | 32-bit targets, big-endian machines, and compilers older than the three above. On Windows specifically: C++23, the Make build, and ASan/UBSan were not exercised. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.

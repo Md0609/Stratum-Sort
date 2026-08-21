@@ -99,9 +99,9 @@ The things worth knowing before choosing this over `std::sort`:
   default suits `n ≈ 10⁶` with a 4 MiB L2; much larger inputs want a
   larger λ.
 - **All timings come from one machine.** Correctness is verified on Linux
-  x86_64 and macOS arm64, but the performance numbers below are from the
-  macOS machine only, and this project has repeatedly found timing
-  conclusions that invert across platforms.
+  x86_64, macOS arm64 and Windows x86_64, but the performance numbers below
+  are from the macOS machine only, and this project has repeatedly found
+  timing conclusions that invert across platforms.
 
 ## Performance
 
@@ -167,8 +167,8 @@ Also compiles cleanly as C++20 and C++23.
 
 | | |
 |---|---|
-| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan. |
-| **Not verified** | **Windows and MSVC** — never built. Also untested: 32-bit targets, big-endian machines, compilers older than the two above. |
+| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**Windows x86_64** — MSVC 19.51 (`windows-latest`), C++17 Release and Debug and C++20 Release, CMake, full test suite and the ODR link guard. |
+| **Not verified** | 32-bit targets, big-endian machines, and compilers older than the three above. On Windows specifically: C++23, the Make build, and ASan/UBSan were not exercised. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.
@@ -190,8 +190,8 @@ Full API and tuning guidance: [`docs/usage.md`](docs/usage.md).
 make && make test
 ```
 
-Three suites: edge cases and a dataset sweep, then 124 contract checks in
-the release configuration and 133 in the research one, covering the whole
+Three suites: edge cases and a dataset sweep, then 125 contract checks in
+the release configuration and 134 in the research one, covering the whole
 `(λ, t)` parameter space, spans reaching the entire key universe, every
 integral key type, instance reuse and the strong exception guarantee.
 
