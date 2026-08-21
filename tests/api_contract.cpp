@@ -263,6 +263,46 @@ std::size_t g_allocSizes[64];
 std::size_t g_allocSeen = 0;
 std::size_t g_refusedSize = 0;
 int g_refusedDepth = -1; // std::uncaught_exceptions() at the point of refusal
+std::size_t g_allocSkipped = 0; // too small to be a working buffer, left alone
+
+// Smallest allocation the limiter is willing to refuse.
+//
+// This is the correctness core of the whole limiter, so it is worth being
+// explicit about why a global "fail the k-th allocation" counter is NOT a
+// valid way to test a strong exception guarantee.
+//
+// Some allocations happen inside functions that are declared noexcept. An
+// exception thrown there does not propagate: [except.spec] says it calls
+// std::terminate, and no enclosing handler ever runs. A limiter that refuses
+// the k-th allocation regardless of who asked for it will eventually refuse
+// one of those, and the test does not fail - it dies.
+//
+// That is not hypothetical. MSVC's Debug standard library gives every
+// container a heap-allocated bookkeeping object, and creates it inside
+// operations that are noexcept. libstdc++ and libc++ allocate nothing there,
+// which is why this only ever appeared on one platform. Measured, sorting the
+// same 5000 elements:
+//
+//   clang / libc++   40000 40000 1256 40000 1256 1256 7536
+//   MSVC Debug          16    64   16    16   64   16   16   64 ...
+//
+// The two are not the same list with different numbers; they are different
+// things entirely. On MSVC the limiter was refusing container bookkeeping and
+// never reached a single working buffer, so it was not testing the strong
+// guarantee at all - it was testing what happens when the standard library is
+// denied memory somewhere it is not allowed to fail. The answer is
+// std::terminate, and on a Windows CI runner a Debug-CRT abort() waits on a
+// dialog nobody can click, so the job hung for twenty minutes instead of
+// failing.
+//
+// Filtering by size fixes that, and it is a real distinction rather than a
+// convenient one: a working buffer scales with the input, a bookkeeping object
+// is a fixed handful of bytes. 256 sits between the largest bookkeeping
+// allocation observed (64) and the smallest working buffer (1256), with a
+// factor of four of margin on each side. The point is not the exact number,
+// it is that the test now refuses the same class of allocation on every
+// platform instead of whatever the local standard library happens to do first.
+const std::size_t kLimiterMinBytes = 256;
 
 
 void testStrongExceptionGuarantee() {
@@ -273,6 +313,7 @@ void testStrongExceptionGuarantee() {
     for (auto& x : original) x = dist(rng);
 
     bool everThrew = false;
+    bool everCompleted = false;
     bool alwaysIntact = true;
 
     for (std::size_t budget = 0; budget < 40; ++budget) {
@@ -286,6 +327,7 @@ void testStrongExceptionGuarantee() {
         std::cout << "   budget " << budget << " ..." << std::flush;
         bool threw = false;
         g_allocSeen = 0;
+        g_allocSkipped = 0;
         g_refusedSize = 0;
         g_refusedDepth = -1;
         g_allocBudget = budget;
@@ -311,14 +353,23 @@ void testStrongExceptionGuarantee() {
         // that difference visible instead of leaving it to be assumed.
         std::cout << (threw ? " threw" : " no-throw")
                   << " (used " << (budget - g_allocBudget) << ", refused "
-                  << g_refusedSize << " bytes, sizes:";
+                  << g_refusedSize << " bytes, skipped " << g_allocSkipped
+                  << " small, sizes:";
         for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
         std::cout << ")" << std::endl;
 
+        if (!threw) everCompleted = true;
         if (threw && v != original) alwaysIntact = false;
     }
 
     check(everThrew, "the allocation limiter actually fired");
+    // Without this the suite can pass while testing almost nothing. If a
+    // platform allocates more times than the sweep has budgets, every single
+    // iteration throws, the guarantee is only ever exercised on its earliest
+    // failure points, and the test still reports success. That is precisely
+    // how the MSVC defect stayed invisible until it turned into a hang: the
+    // sweep must be long enough to walk past the last allocation sort() makes.
+    check(everCompleted, "the budget sweep reaches a run that allocates freely");
 #ifdef STRATUM_ENABLE_METRICS
     // The research build does NOT offer the strong guarantee, and this
     // asymmetry is deliberate and documented in the header: the
@@ -428,7 +479,9 @@ void testDispatchDecoupling() {
 // scope because operator new must be a global replacement.
 void* operator new(std::size_t sz) {
     if (sz == 0) sz = 1;
-    if (g_allocLimiterOn) {
+    if (g_allocLimiterOn && sz < kLimiterMinBytes) {
+        ++g_allocSkipped; // bookkeeping, not a working buffer - never refused
+    } else if (g_allocLimiterOn) {
         if (g_allocBudget == 0) {
             // DISARM BEFORE THROWING. This is not tidiness, it is the
             // difference between a working test and a hung one.
