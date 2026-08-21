@@ -9,6 +9,8 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <exception>
+#include <typeinfo>
 #include <chrono>
 
 // ============================================================
@@ -34,6 +36,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <new>
@@ -264,32 +267,36 @@ void testStrongExceptionGuarantee() {
     for (std::size_t budget = 0; budget < 40; ++budget) {
         std::vector<int64_t> v = original;
         StratumSort<int64_t> sorter; // fresh, so it must allocate
+        // NOTHING that allocates may run while the limiter is armed except
+        // the call under test. std::cout allocates while formatting on some
+        // standard libraries, so every trace line is printed outside the
+        // armed window - printing inside it would consume the budget and
+        // throw from the stream instead of from sort().
+        std::cout << "   budget " << budget << " ..." << std::flush;
+        bool threw = false;
         g_allocBudget = budget;
         g_allocLimiterOn = true;
-        bool threw = false;
-        // Per-iteration trace, flushed. Section 5 is where this suite hung
-        // on MSVC, and a section-level marker was not fine-grained enough
-        // to say which budget value did it. The catch(...) is part of the
-        // diagnosis too: an escaping exception of an unexpected type would
-        // otherwise reach std::terminate, which on Windows is an abort
-        // dialog that blocks instead of failing.
-        std::cout << "   budget " << budget << " ..." << std::flush;
         try {
             sorter.sort(v);
         } catch (const std::bad_alloc&) {
             threw = true;
             everThrew = true;
         } catch (const std::exception& e) {
-            std::cout << " UNEXPECTED std::exception: " << e.what() << std::endl;
             g_allocLimiterOn = false;
+            std::cout << " UNEXPECTED std::exception: " << e.what() << std::endl;
             throw;
         } catch (...) {
-            std::cout << " UNEXPECTED non-standard exception" << std::endl;
             g_allocLimiterOn = false;
+            std::cout << " UNEXPECTED non-standard exception" << std::endl;
             throw;
         }
         g_allocLimiterOn = false;
-        std::cout << (threw ? " threw" : " no-throw") << std::endl;
+        // How much of the budget the call actually used. MSVC's Debug
+        // containers allocate a bookkeeping proxy per container, so its
+        // allocation profile differs from libstdc++/libc++; printing it makes
+        // that difference visible instead of leaving it to be assumed.
+        std::cout << (threw ? " threw" : " no-throw")
+                  << " (used " << (budget - g_allocBudget) << ")" << std::endl;
 
         if (threw && v != original) alwaysIntact = false;
     }
@@ -452,7 +459,35 @@ void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 #pragma GCC diagnostic pop
 #endif
 
+// An exception that escapes every handler calls std::terminate, whose default
+// behaviour is abort(). On Windows a Debug-CRT abort() raises an error dialog,
+// and a CI runner has nobody to dismiss it: the job stops failing and starts
+// hanging until the workflow timeout kills it. That is why this suite showed
+// up as a 20-minute timeout instead of a test failure.
+//
+// This handler is diagnosis, not suppression. The process still ends in
+// failure - it just says what escaped, and says it now. std::set_terminate and
+// std::_Exit are both plain C++11, so this behaves the same on every platform.
+void reportTerminate() {
+    g_allocLimiterOn = false; // so the reporting below can allocate
+    std::cout << "\n*** std::terminate: ";
+    if (std::current_exception()) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& e) {
+            std::cout << "escaping " << typeid(e).name() << ": " << e.what();
+        } catch (...) {
+            std::cout << "escaping exception of non-standard type";
+        }
+    } else {
+        std::cout << "no exception was in flight";
+    }
+    std::cout << " ***" << std::endl;
+    std::_Exit(70); // no atexit handlers, no abort dialog, still a failure
+}
+
 int main() {
+    std::set_terminate(reportTerminate);
     std::cout << "=== StratumSort - API contract tests ===\n";
     testParameterSpace();
     testConstructorClamping();
