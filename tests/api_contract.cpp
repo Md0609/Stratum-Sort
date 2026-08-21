@@ -259,11 +259,12 @@ bool g_allocLimiterOn = false;
 // was refused - StratumSort's working buffers for n=5000 int64_t are tens of
 // kilobytes, while a standard-library container's internal bookkeeping object
 // is a few bytes. Which of the two the limiter refuses is the whole question.
-std::size_t g_allocSizes[512];
+std::size_t g_allocSizes[64];
 std::size_t g_allocSeen = 0;
 std::size_t g_refusedSize = 0;
 int g_refusedDepth = -1; // std::uncaught_exceptions() at the point of refusal
 std::size_t g_allocSkipped = 0; // too small to be a working buffer, left alone
+std::size_t g_smallestSkipped = static_cast<std::size_t>(-1);
 
 // Smallest allocation the limiter is willing to refuse, when it has to hold
 // back at all. See probeNoexceptBookkeeping() below for when that is.
@@ -339,14 +340,17 @@ void testStrongExceptionGuarantee() {
         StratumSort<int64_t> calSorter;
         g_allocSeen = 0;
         g_allocSkipped = 0;
-        g_limiterMinBytes = 1; // record everything, including bookkeeping
+        g_smallestSkipped = static_cast<std::size_t>(-1);
         g_allocBudget = static_cast<std::size_t>(-1);
         g_allocLimiterOn = true;
         calSorter.sort(cal);
         g_allocLimiterOn = false;
-        g_limiterMinBytes = bookkeeps ? kLimiterMinBytes : 1;
-        std::cout << "   calibration: " << g_allocSeen << " allocations, sizes:";
-        for (std::size_t i = 0; i < g_allocSeen && i < 512; ++i) std::cout << " " << g_allocSizes[i];
+        std::cout << "   calibration: " << g_allocSeen << " refusable allocations, sizes:";
+        for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
+        if (g_allocSkipped != 0) {
+            std::cout << "; plus " << g_allocSkipped << " below " << g_limiterMinBytes
+                      << " bytes left alone, smallest " << g_smallestSkipped;
+        }
         std::cout << std::endl;
     }
 
@@ -366,6 +370,7 @@ void testStrongExceptionGuarantee() {
         bool threw = false;
         g_allocSeen = 0;
         g_allocSkipped = 0;
+        g_smallestSkipped = static_cast<std::size_t>(-1);
         g_refusedSize = 0;
         g_refusedDepth = -1;
         g_allocBudget = budget;
@@ -393,7 +398,7 @@ void testStrongExceptionGuarantee() {
                   << " (used " << (budget - g_allocBudget) << ", refused "
                   << g_refusedSize << " bytes, skipped " << g_allocSkipped
                   << " small, sizes:";
-        for (std::size_t i = 0; i < g_allocSeen && i < 512; ++i) std::cout << " " << g_allocSizes[i];
+        for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
         std::cout << ")" << std::endl;
 
         if (!threw) everCompleted = true;
@@ -531,6 +536,7 @@ void* operator new(std::size_t sz) {
     if (sz == 0) sz = 1;
     if (g_allocLimiterOn && sz < g_limiterMinBytes) {
         ++g_allocSkipped; // bookkeeping, not a working buffer - never refused
+        if (sz < g_smallestSkipped) g_smallestSkipped = sz;
     } else if (g_allocLimiterOn) {
         if (g_allocBudget == 0) {
             // DISARM BEFORE THROWING. This is not tidiness, it is the
@@ -556,7 +562,7 @@ void* operator new(std::size_t sz) {
             g_allocLimiterOn = false;
             throw std::bad_alloc();
         }
-        if (g_allocSeen < 512) g_allocSizes[g_allocSeen] = sz;
+        if (g_allocSeen < 64) g_allocSizes[g_allocSeen] = sz;
         ++g_allocSeen;
         --g_allocBudget;
     }
@@ -609,7 +615,7 @@ void reportTerminate() {
     std::cout << " ***\n    refused a " << g_refusedSize << "-byte allocation"
               << " at uncaught_exceptions()=" << g_refusedDepth
               << "\n    allocations granted first:";
-    for (std::size_t i = 0; i < g_allocSeen && i < 512; ++i) std::cout << " " << g_allocSizes[i];
+    for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
     std::cout << std::endl;
     std::_Exit(70); // no atexit handlers, no abort dialog, still a failure
 }
