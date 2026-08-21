@@ -259,50 +259,60 @@ bool g_allocLimiterOn = false;
 // was refused - StratumSort's working buffers for n=5000 int64_t are tens of
 // kilobytes, while a standard-library container's internal bookkeeping object
 // is a few bytes. Which of the two the limiter refuses is the whole question.
-std::size_t g_allocSizes[64];
+std::size_t g_allocSizes[512];
 std::size_t g_allocSeen = 0;
 std::size_t g_refusedSize = 0;
 int g_refusedDepth = -1; // std::uncaught_exceptions() at the point of refusal
 std::size_t g_allocSkipped = 0; // too small to be a working buffer, left alone
 
-// Smallest allocation the limiter is willing to refuse.
+// Smallest allocation the limiter is willing to refuse, when it has to hold
+// back at all. See probeNoexceptBookkeeping() below for when that is.
 //
-// This is the correctness core of the whole limiter, so it is worth being
-// explicit about why a global "fail the k-th allocation" counter is NOT a
-// valid way to test a strong exception guarantee.
-//
-// Some allocations happen inside functions that are declared noexcept. An
-// exception thrown there does not propagate: [except.spec] says it calls
-// std::terminate, and no enclosing handler ever runs. A limiter that refuses
-// the k-th allocation regardless of who asked for it will eventually refuse
-// one of those, and the test does not fail - it dies.
-//
-// That is not hypothetical. MSVC's Debug standard library gives every
-// container a heap-allocated bookkeeping object, and creates it inside
-// operations that are noexcept. libstdc++ and libc++ allocate nothing there,
-// which is why this only ever appeared on one platform. Measured, sorting the
-// same 5000 elements:
-//
-//   clang / libc++   40000 40000 1256 40000 1256 1256 7536
-//   MSVC Debug          16    64   16    16   64   16   16   64 ...
-//
-// The two are not the same list with different numbers; they are different
-// things entirely. On MSVC the limiter was refusing container bookkeeping and
-// never reached a single working buffer, so it was not testing the strong
-// guarantee at all - it was testing what happens when the standard library is
-// denied memory somewhere it is not allowed to fail. The answer is
-// std::terminate, and on a Windows CI runner a Debug-CRT abort() waits on a
-// dialog nobody can click, so the job hung for twenty minutes instead of
-// failing.
-//
-// Filtering by size fixes that, and it is a real distinction rather than a
-// convenient one: a working buffer scales with the input, a bookkeeping object
-// is a fixed handful of bytes. 256 sits between the largest bookkeeping
-// allocation observed (64) and the smallest working buffer (1256), with a
-// factor of four of margin on each side. The point is not the exact number,
-// it is that the test now refuses the same class of allocation on every
-// platform instead of whatever the local standard library happens to do first.
+// 256 is not arbitrary: it sits between the largest bookkeeping allocation
+// observed on any platform here (64 bytes) and the smallest working buffer
+// StratumSort asks for when sorting these 5000 elements (1256 bytes), with a
+// factor of four of margin on each side.
 const std::size_t kLimiterMinBytes = 256;
+std::size_t g_limiterMinBytes = kLimiterMinBytes;
+
+// Can this standard library survive having a small allocation refused?
+//
+// Not everywhere. Some implementations attach a heap-allocated bookkeeping
+// object to every container, and create it inside operations that are
+// declared noexcept. An exception thrown there does not propagate: by
+// [except.spec] it calls std::terminate, and no enclosing handler runs. A
+// limiter that refuses the k-th allocation regardless of who asked for it
+// will eventually refuse one of those, and the test does not fail - it dies.
+//
+// Default-constructing an empty vector is the exact probe for this. The
+// standard requires no allocation, and vector's default constructor is
+// noexcept for std::allocator, so ANY allocation it makes is by definition an
+// allocation inside a noexcept function: the precise class that cannot be
+// refused. Measured: libc++ and libstdc++ allocate nothing, MSVC's Debug
+// library allocates 16 bytes.
+//
+// This asks the platform instead of naming it. A library that starts or stops
+// doing this is detected on the spot rather than by someone remembering to
+// update an #ifdef.
+bool probeNoexceptBookkeeping() {
+    g_allocSeen = 0;
+    g_allocSkipped = 0;
+    g_limiterMinBytes = 1; // count everything, refuse nothing
+    g_allocBudget = static_cast<std::size_t>(-1);
+    g_allocLimiterOn = true;
+    {
+        std::vector<int64_t> probe;
+        // Keep the object alive and unelidable without allocating.
+        volatile std::size_t sink = probe.capacity();
+        (void)sink;
+    }
+    g_allocLimiterOn = false;
+    const bool bookkeeps = (g_allocSeen > 0);
+    g_limiterMinBytes = bookkeeps ? kLimiterMinBytes : 1;
+    return bookkeeps;
+}
+
+
 
 
 void testStrongExceptionGuarantee() {
@@ -311,6 +321,34 @@ void testStrongExceptionGuarantee() {
     std::vector<int64_t> original(5000);
     std::uniform_int_distribution<int64_t> dist(-100000, 100000);
     for (auto& x : original) x = dist(rng);
+
+    // Ask the platform what it can survive before deciding what to refuse.
+    const bool bookkeeps = probeNoexceptBookkeeping();
+    std::cout << "   standard library allocates inside noexcept container "
+              << "operations: " << (bookkeeps ? "yes" : "no")
+              << ", so the limiter refuses allocations of " << g_limiterMinBytes
+              << " bytes and up" << std::endl;
+
+    // Calibration: one sort with nothing ever refused, recording every size.
+    // What a standard library allocates on the way to sorting the same data
+    // differs so much between implementations that guessing makes the sweep
+    // below meaningless. This run cannot terminate the process: with an
+    // unlimited budget no allocation is ever refused, so nothing throws.
+    {
+        std::vector<int64_t> cal = original;
+        StratumSort<int64_t> calSorter;
+        g_allocSeen = 0;
+        g_allocSkipped = 0;
+        g_limiterMinBytes = 1; // record everything, including bookkeeping
+        g_allocBudget = static_cast<std::size_t>(-1);
+        g_allocLimiterOn = true;
+        calSorter.sort(cal);
+        g_allocLimiterOn = false;
+        g_limiterMinBytes = bookkeeps ? kLimiterMinBytes : 1;
+        std::cout << "   calibration: " << g_allocSeen << " allocations, sizes:";
+        for (std::size_t i = 0; i < g_allocSeen && i < 512; ++i) std::cout << " " << g_allocSizes[i];
+        std::cout << std::endl;
+    }
 
     bool everThrew = false;
     bool everCompleted = false;
@@ -355,7 +393,7 @@ void testStrongExceptionGuarantee() {
                   << " (used " << (budget - g_allocBudget) << ", refused "
                   << g_refusedSize << " bytes, skipped " << g_allocSkipped
                   << " small, sizes:";
-        for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
+        for (std::size_t i = 0; i < g_allocSeen && i < 512; ++i) std::cout << " " << g_allocSizes[i];
         std::cout << ")" << std::endl;
 
         if (!threw) everCompleted = true;
@@ -379,8 +417,20 @@ void testStrongExceptionGuarantee() {
     // promise. What is pinned instead is that the difference exists, so
     // that nobody "fixes" the production path by accident and leaves this
     // comment stale.
-    check(!alwaysIntact,
-          "research build does not preserve the input on bad_alloc (documented asymmetry)");
+    // This asymmetry lives in a single small allocation: the join timing is
+    // recorded after the output has already been written, and that record is
+    // 48 bytes. Where the standard library allocates its own bookkeeping in
+    // the same size range, the limiter cannot refuse one without risking the
+    // other, so the asymmetry is real but not observable from here. Saying so
+    // out loud beats asserting it where it cannot hold.
+    if (g_limiterMinBytes == 1) {
+        check(!alwaysIntact,
+              "research build does not preserve the input on bad_alloc (documented asymmetry)");
+    } else {
+        std::cout << "   NOT CHECKED: the documented research-build asymmetry needs a "
+                  << "sub-" << kLimiterMinBytes << "-byte allocation to be refused, which "
+                  << "this standard library cannot survive" << std::endl;
+    }
 #else
     check(alwaysIntact, "on bad_alloc the input is left exactly as it was");
 #endif
@@ -479,7 +529,7 @@ void testDispatchDecoupling() {
 // scope because operator new must be a global replacement.
 void* operator new(std::size_t sz) {
     if (sz == 0) sz = 1;
-    if (g_allocLimiterOn && sz < kLimiterMinBytes) {
+    if (g_allocLimiterOn && sz < g_limiterMinBytes) {
         ++g_allocSkipped; // bookkeeping, not a working buffer - never refused
     } else if (g_allocLimiterOn) {
         if (g_allocBudget == 0) {
@@ -506,7 +556,7 @@ void* operator new(std::size_t sz) {
             g_allocLimiterOn = false;
             throw std::bad_alloc();
         }
-        if (g_allocSeen < 64) g_allocSizes[g_allocSeen] = sz;
+        if (g_allocSeen < 512) g_allocSizes[g_allocSeen] = sz;
         ++g_allocSeen;
         --g_allocBudget;
     }
@@ -559,7 +609,7 @@ void reportTerminate() {
     std::cout << " ***\n    refused a " << g_refusedSize << "-byte allocation"
               << " at uncaught_exceptions()=" << g_refusedDepth
               << "\n    allocations granted first:";
-    for (std::size_t i = 0; i < g_allocSeen && i < 64; ++i) std::cout << " " << g_allocSizes[i];
+    for (std::size_t i = 0; i < g_allocSeen && i < 512; ++i) std::cout << " " << g_allocSizes[i];
     std::cout << std::endl;
     std::_Exit(70); // no atexit handlers, no abort dialog, still a failure
 }
