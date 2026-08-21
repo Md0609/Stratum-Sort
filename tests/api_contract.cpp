@@ -389,7 +389,28 @@ void testDispatchDecoupling() {
 void* operator new(std::size_t sz) {
     if (sz == 0) sz = 1;
     if (g_allocLimiterOn) {
-        if (g_allocBudget == 0) throw std::bad_alloc();
+        if (g_allocBudget == 0) {
+            // DISARM BEFORE THROWING. This is not tidiness, it is the
+            // difference between a working test and a hung one.
+            //
+            // Throwing and unwinding is not allocation-free on every
+            // platform. Under the Itanium ABI the exception object comes
+            // from __cxa_allocate_exception, which does not route through
+            // operator new, so a limiter left armed here is harmless and
+            // the bug is invisible. MSVC's machinery does allocate while
+            // propagating the exception: with the limiter still armed and
+            // the budget at zero, that allocation throws too - a throw
+            // during unwinding, which is std::terminate, which on Windows
+            // is an abort dialog that blocks forever with nobody to click
+            // it. The job did not fail, it waited.
+            //
+            // Failing exactly one allocation is also what this test means
+            // in the first place: "make the k-th allocation fail". Once
+            // sort() has thrown, no further allocation of its own happens,
+            // so nothing about the coverage changes.
+            g_allocLimiterOn = false;
+            throw std::bad_alloc();
+        }
         --g_allocBudget;
     }
     void* p = std::malloc(sz);

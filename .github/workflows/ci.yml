@@ -18,7 +18,7 @@ jobs:
   build-and-test:
     name: ${{ matrix.name }} / C++${{ matrix.std }} / ${{ matrix.config }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout || 20 }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -34,9 +34,7 @@ jobs:
           - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Release }
           - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Debug   }
           - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Release }
-          # MSVC Debug is being measured, not excused: see the commit that added
-          # this. It is the only row that needs more than a couple of minutes.
-          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Debug, timeout: 25 }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Debug }
           - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 20, config: Release }
     steps:
       - uses: actions/checkout@v4
