@@ -98,25 +98,6 @@ jobs:
           cmake --build b --config ${{ matrix.config }}
           "$(find b -name 'app' -o -name 'app.exe' | head -1)"
 
-      # The macro changes the class layout, so the class is tagged with an
-      # inline namespace. A translation unit that disagrees must fail to
-      # LINK, not link quietly and misbehave. This asserts that.
-      - name: ODR guard (mismatched STRATUM_ENABLE_METRICS must not link)
-        if: matrix.cxx != 'msvc'
-        shell: bash
-        run: |
-          cd "${RUNNER_TEMP}"
-          printf '#include <stratum/StratumSort.hpp>\n#include <cstdint>\n#include <vector>\nvoid f(stratum::StratumSort<int64_t>&, std::vector<int64_t>&);\n' > s.hpp
-          printf '#include "s.hpp"\nvoid f(stratum::StratumSort<int64_t>& s, std::vector<int64_t>& v){ s.sort(v); }\n' > a.cpp
-          printf '#include "s.hpp"\nint main(){ stratum::StratumSort<int64_t> s; std::vector<int64_t> v{2,1}; f(s,v); }\n' > b.cpp
-          I="-I${GITHUB_WORKSPACE}/include"
-          ${{ matrix.cxx }} -std=c++${{ matrix.std }} $I -DSTRATUM_ENABLE_METRICS -c a.cpp -o a.o
-          ${{ matrix.cxx }} -std=c++${{ matrix.std }} $I -c b.cpp -o b.o
-          if ${{ matrix.cxx }} a.o b.o -o bad 2>/dev/null; then
-            echo "FAIL: mismatched translation units linked; the ABI tag is not working"; exit 1
-          fi
-          echo "OK: mismatched translation units are rejected at link time"
-
   sanitizers:
     name: sanitizers / ${{ matrix.cxx }}
     runs-on: ubuntu-latest

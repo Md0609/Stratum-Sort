@@ -192,6 +192,8 @@ PACKAGE_FILES := \
 	tests/api_contract.cpp \
 	tests/edge_sanitizers.cpp \
 	tests/differential_fuzz.cpp \
+	tests/odr_guard_lib.cpp \
+	tests/odr_guard_main.cpp \
 	datasets/DatasetGenerator.hpp \
 	benchmarks/timings.cpp \
 	benchmarks/SystemInfo.hpp \

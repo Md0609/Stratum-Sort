@@ -57,6 +57,37 @@ if(STRATUMSORT_BUILD_TESTS)
         add_test(NAME ${name} COMMAND ${name})
     endfunction()
 
+    # ---- ODR guard ---------------------------------------------------
+    # STRATUM_ENABLE_METRICS changes the layout of StratumSort, so the class
+    # is tagged with an inline namespace whose name depends on the macro.
+    # Two checks, both expressed as builds rather than as programs to run,
+    # so they work identically with GCC, Clang and MSVC and depend on no
+    # shell, no nm and no particular linker message:
+    #
+    #   odr_guard_agrees    both halves built the same way  -> MUST build
+    #   odr_guard_mismatch  the halves disagree             -> MUST NOT build
+    #
+    # The first is the control. Without it the second could pass for the
+    # wrong reason - any build error at all would look like success.
+    add_executable(stratum_odr_agrees EXCLUDE_FROM_ALL
+        tests/odr_guard_lib.cpp tests/odr_guard_main.cpp)
+    target_link_libraries(stratum_odr_agrees PRIVATE stratumsort)
+
+    add_library(stratum_odr_half_with_metrics OBJECT EXCLUDE_FROM_ALL
+        tests/odr_guard_lib.cpp)
+    target_link_libraries(stratum_odr_half_with_metrics PRIVATE stratumsort)
+    target_compile_definitions(stratum_odr_half_with_metrics PRIVATE STRATUM_ENABLE_METRICS)
+
+    add_executable(stratum_odr_mismatch EXCLUDE_FROM_ALL
+        tests/odr_guard_main.cpp $<TARGET_OBJECTS:stratum_odr_half_with_metrics>)
+    target_link_libraries(stratum_odr_mismatch PRIVATE stratumsort)
+
+    add_test(NAME odr_guard_agrees COMMAND ${CMAKE_COMMAND}
+             --build ${CMAKE_BINARY_DIR} --target stratum_odr_agrees --config $<CONFIG>)
+    add_test(NAME odr_guard_mismatch COMMAND ${CMAKE_COMMAND}
+             --build ${CMAKE_BINARY_DIR} --target stratum_odr_mismatch --config $<CONFIG>)
+    set_tests_properties(odr_guard_mismatch PROPERTIES WILL_FAIL TRUE)
+
     stratum_add_test(stratum_tests        tests/main.cpp)
     stratum_add_test(stratum_contract     tests/api_contract.cpp)
 
