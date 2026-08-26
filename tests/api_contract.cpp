@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <utility>
 #include <new>
 #include <random>
 #include <string>
@@ -444,6 +445,145 @@ void testStrongExceptionGuarantee() {
 // ------------------------------------------------------------------
 // 6. Determinism
 // ------------------------------------------------------------------
+// ============================================================
+// The introsort fallback
+// ============================================================
+// introSortImpl finishes a leaf with heapSort once its partitioning budget
+// runs out. That path shipped in 0.9.0 without sorting correctly: siftDown
+// indexed a node's children from the node itself rather than from the heap's
+// first slot, so the heapify loop never built a valid heap. Nothing caught it
+// because reaching introSort is easy - the (lambda, t) sweep above does it
+// routinely - while EXHAUSTING its budget needs adversarial data, and no test
+// distinguished "introsort finished" from "introsort fell back".
+//
+// So this section does not merely exercise large leaves. It pins inputs that
+// provably reach heapSort, and in the research build it asserts that they did.
+static std::vector<int64_t> sawtooth(std::size_t n, std::size_t modulus) {
+    std::vector<int64_t> v(n);
+    for (std::size_t i = 0; i < n; ++i) v[i] = static_cast<int64_t>((n - i) % modulus);
+    return v;
+}
+
+// One leaf holding the whole array: lambda and t above n leave nothing to
+// refine, so sortLeaf sees all n elements and dispatches on size alone.
+template <typename T>
+static bool sortsLikeStdSort(std::vector<T> v, std::size_t& heapSorts) {
+    std::vector<T> oracle = v;
+    std::sort(oracle.begin(), oracle.end());
+    StratumSort<T> sorter(v.size() + 1, v.size() + 1);
+    sorter.sort(v);
+#ifdef STRATUM_ENABLE_METRICS
+    const auto& usage = sorter.metrics().algorithmUsage();
+    const auto it = usage.find("HeapSort");
+    if (it != usage.end()) heapSorts += it->second;
+#else
+    (void)heapSorts;
+#endif
+    return v == oracle; // equal to the oracle implies sorted AND same multiset
+}
+
+void testIntroSortFallback() {
+    section("7. Introsort fallback (heapSort)");
+
+    // Sizes straddling the dispatch thresholds: 384 is the last quickSort
+    // size, 385 the first introSort one. The moduli are not decorative - each
+    // was measured to drive introSortImpl through its whole depth budget at
+    // that n, which is what puts execution inside heapSort.
+    const std::vector<std::pair<std::size_t, std::size_t>> forcing = {
+        {385, 179}, {386, 189}, {400, 194}, {512, 255}, {1000, 408}, {4096, 1523}};
+
+    std::size_t heapSorts = 0;
+    bool allCorrect = true;
+    for (const auto& [n, modulus] : forcing) {
+        if (!sortsLikeStdSort<int64_t>(sawtooth(n, modulus), heapSorts)) allCorrect = false;
+    }
+    check(allCorrect, "inputs that exhaust the introsort budget still sort correctly");
+#ifdef STRATUM_ENABLE_METRICS
+    check(heapSorts >= forcing.size(),
+          "those inputs really did reach heapSort (not merely introSort)");
+#endif
+
+    // Shape coverage at every threshold size, including 384 so the quickSort
+    // side of the boundary is pinned too.
+    std::mt19937_64 rng(90210);
+    std::size_t ignored = 0;
+    bool shapes = true;
+    for (std::size_t n : {384u, 385u, 386u, 400u, 512u, 1000u, 4096u}) {
+        std::vector<int64_t> asc(n), desc(n), dup(n), extreme(n), rnd(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            asc[i] = static_cast<int64_t>(i);
+            desc[i] = static_cast<int64_t>(n - i);
+            dup[i] = static_cast<int64_t>(i % 3);
+            extreme[i] = (i % 2) ? std::numeric_limits<int64_t>::max()
+                                 : std::numeric_limits<int64_t>::min();
+            rnd[i] = static_cast<int64_t>(rng());
+        }
+        for (const auto* v : {&asc, &desc, &dup, &extreme, &rnd})
+            if (!sortsLikeStdSort<int64_t>(*v, ignored)) shapes = false;
+    }
+    check(shapes, "ascending, descending, duplicate-heavy, extreme and random leaves all sort");
+
+    // Every accepted key type, at the first size that reaches introSort.
+    bool types = true;
+    {
+        std::vector<int8_t> a(385);
+        std::vector<uint8_t> b(385);
+        std::vector<int16_t> c(385);
+        std::vector<uint16_t> d(385);
+        std::vector<int32_t> e(385);
+        std::vector<uint32_t> f(385);
+        std::vector<uint64_t> g(385);
+        for (std::size_t i = 0; i < 385; ++i) {
+            const auto x = static_cast<uint64_t>(385 - i);
+            a[i] = static_cast<int8_t>(x);   b[i] = static_cast<uint8_t>(x);
+            c[i] = static_cast<int16_t>(x);  d[i] = static_cast<uint16_t>(x);
+            e[i] = static_cast<int32_t>(x);  f[i] = static_cast<uint32_t>(x);
+            g[i] = x;
+        }
+        if (!sortsLikeStdSort<int8_t>(a, ignored)) types = false;
+        if (!sortsLikeStdSort<uint8_t>(b, ignored)) types = false;   // the 0.9.0 counterexample
+        if (!sortsLikeStdSort<int16_t>(c, ignored)) types = false;
+        if (!sortsLikeStdSort<uint16_t>(d, ignored)) types = false;
+        if (!sortsLikeStdSort<int32_t>(e, ignored)) types = false;
+        if (!sortsLikeStdSort<uint32_t>(f, ignored)) types = false;
+        if (!sortsLikeStdSort<uint64_t>(g, ignored)) types = false;
+    }
+    check(types, "every accepted key type sorts through the introsort path");
+
+    // Property test. The oracle is std::sort, so one comparison covers both
+    // "sorted" and "same multiset"; a counterexample is reported with the
+    // parameters needed to reproduce it rather than just a failure count.
+    bool property = true;
+    std::size_t propHeapSorts = 0;
+    for (std::size_t seed = 1; seed <= 400; ++seed) {
+        std::mt19937_64 r(seed);
+        const std::size_t n = 385 + (r() % 4000);
+        std::vector<int64_t> v(n);
+        switch (seed % 5) {
+            case 0: for (auto& x : v) x = static_cast<int64_t>(r()); break;
+            case 1: v = sawtooth(n, 2 + r() % 512); break;
+            case 2: for (auto& x : v) x = static_cast<int64_t>(r() % 4); break;
+            case 3: for (std::size_t i = 0; i < n; ++i)  // organ pipe
+                        v[i] = static_cast<int64_t>(i < n / 2 ? i : n - i);
+                    break;
+            default: for (std::size_t i = 0; i < n; ++i)
+                         v[i] = static_cast<int64_t>((i % 2) ? i : n - i);
+                     break;
+        }
+        if (!sortsLikeStdSort<int64_t>(v, propHeapSorts)) {
+            property = false;
+            std::cout << "  counterexample: seed=" << seed << " n=" << n
+                      << " pattern=" << (seed % 5) << std::endl;
+        }
+    }
+    check(property, "400 randomised and adversarial large-leaf cases match std::sort");
+#ifdef STRATUM_ENABLE_METRICS
+    check(propHeapSorts > 0, "the property sweep also reached heapSort at least once");
+    std::cout << "   heapSort executions: " << heapSorts << " pinned + "
+              << propHeapSorts << " from the property sweep" << std::endl;
+#endif
+}
+
 void testDeterminism() {
     section("6. Determinism");
     std::mt19937_64 rng(31337);
@@ -483,7 +623,7 @@ std::size_t usageOf(const stratum::SortMetrics& m, const char* algo) {
 }
 
 void testDispatchDecoupling() {
-    section("7. Local-sort dispatch decoupling");
+    section("8. Local-sort dispatch decoupling");
     std::mt19937_64 rng(555);
 
     // Sizes chosen to land in each of the three dispatch branches given
@@ -629,6 +769,7 @@ int main() {
     testInstanceReuse();
     testStrongExceptionGuarantee();
     testDeterminism();
+    testIntroSortFallback();
 #ifdef STRATUM_ENABLE_METRICS
     testDispatchDecoupling();
 #endif

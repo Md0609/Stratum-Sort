@@ -671,13 +671,28 @@ void StratumSort<T>::introSortImpl(std::vector<T>& arr, Index left, Index right,
     insertionSort(arr, left, right);
 }
 
-// Restores the max-heap property at 'start', within the heap rooted at
-// 'start' and ending at 'end'. Both are absolute indices into arr.
+// Restores the max-heap property at 'root', within the heap that occupies
+// [base, end]. All three are absolute indices into arr.
+//
+// 'base' and 'root' are separate on purpose. The heap embedding is defined
+// relative to the heap's FIRST slot: arr[base + k] holds heap node k, whose
+// children are nodes 2k+1 and 2k+2, at arr[base + 2k + 1] and arr[base + 2k + 2].
+// A node's children are therefore a property of where the heap begins, not of
+// where the node happens to sit. Folding the two together - taking the node
+// being repaired as the origin of the indexing - only agrees with the real
+// embedding when the node IS the heap's first slot, which is true for the
+// extraction loop below and false for every step of the heapify loop but the
+// last. That is a heap that is never actually built.
 template <typename T>
-void StratumSort<T>::siftDown(std::vector<T>& arr, Index start, Index end) {
-    Index root = start;
-    while (2 * (root - start) + 1 <= end - start) {
-        const Index child = start + 2 * (root - start) + 1;
+void StratumSort<T>::siftDown(std::vector<T>& arr, Index base, Index root, Index end) {
+    // Heap node index of the last slot. Node k has a left child iff
+    // 2k + 1 <= last; the guard is written as k <= (last - 1) / 2 so that
+    // 2k + 1 is only ever formed once it is known to be within the heap.
+    const Index last = end - base;
+    if (last < 1) return; // a one-element heap has no interior node
+
+    while (root - base <= (last - 1) / 2) {
+        const Index child = base + 2 * (root - base) + 1;
         Index swapIdx = root;
 
         noteComparisons(1);
@@ -699,12 +714,24 @@ void StratumSort<T>::heapSort(std::vector<T>& arr, Index left, Index right) {
     const Index n = right - left + 1;
     if (n < 2) return;
 
+    // Reached only when introSortImpl exhausts its partitioning budget, which
+    // takes adversarial data and is therefore easy to leave untested by
+    // accident - and was: this fallback shipped in 0.9.0 without sorting
+    // correctly, because nothing observable distinguished "introsort finished"
+    // from "introsort fell back". Recording it makes the path assertable.
+    // Compiles to nothing unless STRATUM_ENABLE_METRICS is defined.
+    noteLocalAlgorithm("HeapSort");
+
+    // Heapify: repair every interior node, deepest first. The heap is
+    // [left, right] throughout, so 'left' is the base of every one of these
+    // calls; only the node under repair moves.
     for (Index start = left + (n - 2) / 2; start >= left; --start) {
-        siftDown(arr, start, right);
+        siftDown(arr, left, start, right);
     }
+    // Extract: swap the maximum to the end and shrink the heap by one.
     for (Index end = right; end > left; --end) {
         std::swap(arr[left], arr[end]);
-        siftDown(arr, left, end - 1);
+        siftDown(arr, left, left, end - 1);
     }
 }
 

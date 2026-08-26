@@ -284,7 +284,7 @@ private:
     void introSort(std::vector<T>& arr, Index left, Index right);
     void introSortImpl(std::vector<T>& arr, Index left, Index right, std::size_t depthLimit);
     void heapSort(std::vector<T>& arr, Index left, Index right);
-    void siftDown(std::vector<T>& arr, Index start, Index end);
+    void siftDown(std::vector<T>& arr, Index base, Index root, Index end);
     Index partition(std::vector<T>& arr, Index left, Index right);
 
     // ---- Phase 6: join ----------------------------------------------
