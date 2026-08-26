@@ -63,9 +63,20 @@ difference from a divide-and-conquer comparison sort, whose depth is
 `log n` by construction.
 
 A leaf that still needs a comparison sort has size at most
-`λ · 2^(w/(D+1)) ≈ 18 000` — a constant, independent of `n`. An individual
-leaf costs `O(m log m)`, but summing over leaves gives `O(n · log 18 000)`,
-so the total is `Θ(n)`.
+`λ · 2^(w/(D+1)) ≈ 18 000` — a constant, independent of `n`. What that leaf
+costs depends on which local sort it reaches, and only the largest band is
+`O(m log m)`:
+
+| leaf size `m` | local sort | worst case |
+|---|---|---|
+| `m ≤ 64` | insertion sort | `O(m²)`, with `m ≤ 64` |
+| `64 < m ≤ 384` | quicksort, no depth limit | `O(m²)`, with `m ≤ 384` |
+| `m > 384` | introsort, heapsort fallback | `O(m log m)` guaranteed |
+
+The quadratic bands do not break linearity, and the reason is not that 384
+is a small number: when `m ≤ C` for a fixed `C`, `m² ≤ C·m`, so the cost is
+linear in the leaf with constant `C/2 = 192`. Leaves tile `[0, n)` without
+overlap, so `Σ m ≤ n` and the total across all leaves is `O(n)`.
 
 This is linear in the same sense radix sort is linear: the key width is a
 fixed property of the type. It does not contradict the `Ω(n log n)`
@@ -79,10 +90,24 @@ table and an adversarial review of itself — is in
 
 | | |
 |---|---|
-| **Time, best / average / worst** | `Θ(n)` |
-| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — about 3.1× the input for an 8-byte key |
+| **Time, best / average / worst** | `Θ(n)` for `λ` and `t` fixed and chosen independently of `n`, under H1–H4 below. If `λ` or `t` scale with `n`, the legal worst case is `Θ(n log n)`; `Θ(n²)` is unreachable |
+| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32`, 4.46× on inputs that drive refinement, and 16.56× at `λ = 1` |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 | **Stable** | no |
+
+The hypotheses are part of the claim, not fine print:
+
+| | |
+|---|---|
+| **H1** | `T` is integral with `w = 8·sizeof(T) ≤ 64` bits. Enforced by `static_assert`. |
+| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants chosen independently of `n`. |
+| **H3** | Unit-cost RAM; allocating or releasing `k` words costs `O(k)`; `n + λ` fits in `size_t`. |
+| **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
+
+`H2` is what the time row depends on. The constructor accepts any `λ ≥ 1`
+and any `t`, so a caller is free to violate `H2` by scaling either with
+`n` — that is the `Θ(n log n)` case, and it is a legal configuration, not
+a misuse.
 
 ## Limitations
 
@@ -107,11 +132,23 @@ The things worth knowing before choosing this over `std::sort`:
 
 Two different kinds of number follow, and they are not interchangeable.
 
-### Complexity — deterministic counters
+### Comparison counts
 
-Comparison counts, which are exact and immune to cache behaviour and to
-machine load. If the algorithm carried an `n log n` term, comparisons per
-element would grow by a factor of 1.75 across the three decades below.
+Exact, and immune to cache behaviour and to machine load — but they are
+**not** evidence for the complexity of the algorithm as a whole, and are
+not offered as such. The counter is incremented only inside the local
+sorts. `analyze` and `scanRange` each perform two comparisons per element
+and count none of them, which leaves at least 18% of the comparison work
+outside the metric, and the distribution and refinement phases — where the
+`(D+1)·n` term lives — are invisible to it entirely. A superlinearity
+introduced there would leave the table below perfectly flat.
+
+The `Θ(n)` result rests on the structure instead: `D ≤ 6` is a compile-time
+constant, bin count is `⌈m/λ⌉ ≤ m` so it never follows the key range, each
+level costs `O(n)`, leaves tile the array without overlap, quicksort is
+confined to `m ≤ 384`, and introsort with its heapsort fallback is
+`O(m log m)`. The proof is in
+[`research/ALGORITHM.md`](research/ALGORITHM.md).
 
 | dataset | `n = 10⁴` | `10⁶` | `10⁷` | fitted exponent |
 |---|---|---|---|---|
@@ -119,8 +156,8 @@ element would grow by a factor of 1.75 across the three decades below.
 | Whole-universe span (`2⁶⁴−1`) | 9.01 | 9.02 | 9.03 | **0.9998** |
 | Adversarial (depth-exhausting) | 14.06 | 14.91 | 15.52 | **1.0137** |
 
-This is *evidence consistent with* the `Θ(n)` proof, not a substitute for
-it. `make research && ./build/research_ComplexityScaling`.
+What the table does show is that the local-sort phase does not grow with
+`n`. `make research && ./build/research_ComplexityScaling`.
 
 ### Comparative performance — wall clock
 

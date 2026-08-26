@@ -820,9 +820,11 @@ algorithm here performs `O(1)` moves and index operations per comparison,
 plus `O(m)` overhead, so `time = O(comparisons + m)` and the `O(m)` term is
 absorbed by F1a.
 
-**The distinction the reader should carry away:** an individual leaf is
-`O(m log m)`, the algorithm is `O(n)`, and the bridge between the two is a
-bound on `m` that does not involve `n`.
+**The distinction the reader should carry away:** only leaves above 384 are
+`O(m log m)` — below that the local sorts are quadratic in `m`, bounded by
+`m ≤ 384` — the algorithm is `O(n)`, and the bridge between the two is a
+bound on `m` that does not involve `n`, together with `m² ≤ 384·m` on the
+quadratic bands.
 
 ### 8.7 A tempting strengthening that is FALSE
 

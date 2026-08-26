@@ -2,10 +2,22 @@
 // Complexity scaling - EXPERIMENTAL EVIDENCE, not proof
 // ============================================================
 // Deterministic comparison counts against n. Immune to cache and to
-// machine load, unlike the clock: if the algorithm carried an n log n
-// term, comparisons/n would grow like log n - a factor 1.75 over the
-// three decades swept here. It does not. This VALIDATES the proof in
-// ALGORITHM.md 8; it does not establish it.
+// machine load, unlike the clock.
+//
+// READ THE SCOPE BEFORE USING THESE NUMBERS. The counter is incremented
+// only inside the local sorts - detectRun, insertionSort, partition and
+// siftDown. analyze() and scanRange() each perform two comparisons per
+// element and count none of them, so at least ~18% of the comparison work
+// is outside this metric, and the distribution and refinement phases,
+// where the (D+1)*n term lives, are invisible to it entirely. A
+// superlinearity introduced there would leave these tables flat.
+//
+// So what follows measures ONE PHASE, not total work. It shows that the
+// local-sort phase does not grow with n. It is not evidence for the
+// complexity of the algorithm as a whole, and the proof in ALGORITHM.md 8
+// does not rest on it: that argument is structural - D <= 6 constant, bin
+// count ceil(m/lambda) <= m, O(n) per level, leaves tiling the array,
+// quicksort confined to m <= 384, introsort O(m log m).
 #include "stratum/StratumSort.hpp"
 #include "DatasetGenerator.hpp"
 #include <cmath>
@@ -32,7 +44,9 @@ int main() {
         {"AdversarialPeeling", 1},
         {"FullRangeExtremes (span 2^64-1)", 2},
     };
-    std::printf("Comparison counts vs n. A log n term would raise cmp/n by 1.75x here.\n\n");
+    std::printf("Comparison counts vs n, LOCAL-SORT PHASE ONLY.\n"
+                "analyze() and scanRange() compare without counting, so this is not\n"
+                "total work and must not be read as evidence for overall complexity.\n\n");
     for (const auto& c : cases) {
         std::vector<double> ns, cmp;
         std::printf("%-34s %10s %14s %9s %6s %9s\n", c.name, "n", "comparisons", "cmp/n", "depth", "maxLeaf");

@@ -82,8 +82,20 @@ span. A leaf that still needs a comparison sort therefore has size at most
 λ · 2^(w/(D+1))  ≈  18 000        for the shipped λ = 32, w = 64, D = 6
 ```
 
-— a constant independent of `n`. An individual leaf costs `O(m log m)`,
-but summing over leaves gives `O(n · log 18 000)`, so the total is linear.
+— a constant independent of `n`. What that leaf costs depends on which
+local sort it reaches, and only the largest band is `O(m log m)`:
+
+| leaf size `m` | local sort | worst case |
+|---|---|---|
+| `m ≤ 64` | insertion sort | `O(m²)`, with `m ≤ 64` |
+| `64 < m ≤ 384` | quicksort, no depth limit | `O(m²)`, with `m ≤ 384` |
+| `m > 384` | introsort, heapsort fallback | `O(m log m)` guaranteed |
+
+The quadratic bands do not break linearity, and the reason is not that 384
+is a small number: when `m ≤ C` for a fixed `C`, `m² ≤ C·m`, so the cost is
+linear in the leaf with constant `C/2 = 192`. Leaves tile `[0, n)` without
+overlap, so `Σ m ≤ n` and the total across all leaves is `O(n)`.
+
 The lower bound is immediate: the initial min/max scan reads every element
 unconditionally.
 
@@ -122,7 +134,7 @@ by itself — is in the project repository, not in this package.
 | | |
 |---|---|
 | **Time, best / average / worst** | `Θ(n)` under H1–H4 |
-| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — about 3.1× the input for an 8-byte key, but about 10× for a 1-byte key, since the index array is one `size_t` per element regardless of `T` |
+| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32` (4.46× on refinement-heavy input, 16.56× at `λ = 1`), and about 10× for a 1-byte key above `n ≈ 10⁵`, since the index array is one `size_t` per element regardless of `T` |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 | **Deterministic** | yes — no randomness anywhere |
 | **Stable** | no |
@@ -147,17 +159,22 @@ by itself — is in the project repository, not in this package.
 
 Two different kinds of number, which should not be conflated.
 
-**Complexity evidence — deterministic comparison counts.** Exact, and
-immune to cache behaviour and machine load. An `n log n` term would raise
-comparisons per element by a factor of 1.75 across these three decades:
+**Comparison counts.** Exact and immune to cache behaviour and machine
+load, but **not** evidence for the complexity of the algorithm as a whole.
+The counter is incremented only inside the local sorts: `analyze` and
+`scanRange` each perform two comparisons per element and count none, which
+leaves at least 18% of the comparison work outside the metric, and the
+distribution and refinement phases are invisible to it. The `Θ(n)` result
+rests on the structure instead — `D ≤ 6` constant, bin count `⌈m/λ⌉ ≤ m`,
+`O(n)` per level, leaves tiling the array, quicksort confined to `m ≤ 384`,
+introsort `O(m log m)`. What the table shows is that the local-sort phase
+does not grow with `n`:
 
 | dataset | `n = 10⁴` | `10⁶` | `10⁷` | fitted exponent |
 |---|---|---|---|---|
 | Uniform, constant density | 9.05 | 9.01 | 9.01 | 0.9997 |
 | Whole-universe span | 9.01 | 9.02 | 9.03 | 0.9998 |
 | Adversarial (depth-exhausting) | 14.06 | 14.91 | 15.52 | 1.0137 |
-
-This is evidence *consistent with* the proof, not a substitute for it.
 
 **Comparative performance — wall clock.** Median of nine repetitions,
 alternating Stratum Sort and `std::sort` on identical copies of the same

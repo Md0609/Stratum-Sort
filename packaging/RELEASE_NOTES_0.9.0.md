@@ -40,9 +40,22 @@ divide-and-conquer comparison sort, whose depth is `log n` by definition.
 
 A leaf that still needs a comparison sort has size at most
 `λ · 2^(w/(D+1)) ≈ 18 000` for the shipped parameters — a constant
-independent of `n`. An individual leaf costs `O(m log m)`, but summing
-over leaves gives `O(n · log 18 000)`. The lower bound is immediate: the
-initial min/max scan reads every element unconditionally.
+independent of `n`. What that leaf costs depends on which local sort it
+reaches, and only the largest band is `O(m log m)`:
+
+| leaf size `m` | local sort | worst case |
+|---|---|---|
+| `m ≤ 64` | insertion sort | `O(m²)`, with `m ≤ 64` |
+| `64 < m ≤ 384` | quicksort, no depth limit | `O(m²)`, with `m ≤ 384` |
+| `m > 384` | introsort, heapsort fallback | `O(m log m)` guaranteed |
+
+The quadratic bands do not break linearity, and the reason is not that 384
+is a small number: when `m ≤ C` for a fixed `C`, `m² ≤ C·m`, so the cost is
+linear in the leaf with constant `C/2 = 192`. Leaves tile `[0, n)` without
+overlap, so `Σ m ≤ n` and the total across all leaves is `O(n)`.
+
+The lower bound is immediate: the initial min/max scan reads every element
+unconditionally.
 
 The hypotheses are part of the claim, not fine print:
 
@@ -132,9 +145,16 @@ files and failing if any reaches the archive.
 
 Two kinds of number, which are not interchangeable.
 
-**Complexity evidence — deterministic comparison counts**, immune to cache
-behaviour and machine load. An `n log n` term would raise comparisons per
-element by a factor of 1.75 over these three decades:
+**Comparison counts.** Exact and immune to cache behaviour and machine
+load, but **not** evidence for the complexity of the algorithm as a whole.
+The counter is incremented only inside the local sorts: `analyze` and
+`scanRange` each perform two comparisons per element and count none, which
+leaves at least 18% of the comparison work outside the metric, and the
+distribution and refinement phases are invisible to it. The `Θ(n)` result
+rests on the structure instead — `D ≤ 6` constant, bin count `⌈m/λ⌉ ≤ m`,
+`O(n)` per level, leaves tiling the array, quicksort confined to `m ≤ 384`,
+introsort `O(m log m)`. What the table shows is that the local-sort phase
+does not grow with `n`:
 
 | dataset | `n = 10⁴` | `10⁶` | `10⁷` | fitted exponent |
 |---|---|---|---|---|
@@ -142,7 +162,7 @@ element by a factor of 1.75 over these three decades:
 | Whole-universe span | 9.01 | 9.02 | 9.03 | 0.9998 |
 | Adversarial (depth-exhausting) | 14.06 | 14.91 | 15.52 | 1.0137 |
 
-This is evidence *consistent with* the proof, not a substitute for it.
+
 
 **Comparative performance — wall clock.** `n = 10⁶`, `int64_t`, Apple M4,
 macOS 26.6, Apple clang 21 (libc++), `-std=c++17 -O3 -DNDEBUG`, idle
@@ -182,9 +202,11 @@ Ratios travel better across machines than absolute milliseconds.
   strong exception guarantee is verified on all three platforms.
 - **Integral keys up to 64 bits only**, rejected at compile time otherwise.
 - **Not stable**, and not extensible to key/value pairs as written.
-- **`Θ(n)` auxiliary memory** where `std::sort` uses `O(log n)` — about
-  3.1× the input for an 8-byte key, and about 10× for a 1-byte key, since
-  the index array is one `size_t` per element regardless of `T`.
+- **`Θ(n)` auxiliary memory** where `std::sort` uses `O(log n)` — measured
+  3.28× the input for an 8-byte key at the default `λ = 32`, 4.46× on
+  refinement-heavy input and 16.56× at `λ = 1`; about 10× for a 1-byte key
+  above `n ≈ 10⁵` (12.25× below it), since the index array is one `size_t`
+  per element regardless of `T`.
 - **Loses to `std::sort` on already-sorted input**, by about 6×.
 - **Not thread-safe per instance**; distinct instances are independent.
 - **All timings come from one machine.** Correctness is verified on three

@@ -47,14 +47,34 @@ inline namespace STRATUM_ABI_NAMESPACE {
 // which for large n DECREASES like n^(-1/D), and whose supremum over all
 // n is the CONSTANT lambda * 2^(w/(D+1)) ~= 18000. The bound depends on
 // n; its supremum does not, and that supremum is what makes the total
-// linear: an individual leaf costs O(m log m), but summing over leaves
-// gives O(n * log 18000).
+// linear.
+//
+// What a leaf costs depends on which local sort it reaches, and only the
+// largest band is O(m log m):
+//
+//     m <= 64          insertion sort   O(m^2), with m <= 64
+//     64 < m <= 384    quicksort        O(m^2), with m <= 384
+//     m > 384          introsort        O(m log m), guaranteed by the
+//                                       heapsort fallback
+//
+// Quicksort carries no partitioning budget of its own, so its worst case
+// really is quadratic - it is bounded here only because sortLeaf never
+// hands it more than 384 elements. That does not break linearity, and the
+// reason is not that 384 is a small number: when m <= C for a fixed C,
+// m^2 <= C*m, so the cost is linear in the leaf with constant C/2 = 192.
+// Leaves tile [0, n) without overlap, so sum(m) <= n and the total across
+// all leaves is O(n).
 //
 // The guarantee holds under four hypotheses, all of them checkable:
 //   H1  T is integral with w = 8*sizeof(T) <= 64 bits (static_assert'd).
 //   H2  lambda >= 1, t >= lambda and D >= 1 are constants chosen
 //       independently of n. At D = 0 there is no refinement at all and
-//       the worst case becomes Theta(n log n).
+//       the worst case becomes Theta(n log n). H2 is a hypothesis, not a
+//       restriction the constructor enforces: it accepts any lambda >= 1
+//       and any t, so a caller may legally scale either with n. Doing so
+//       puts Theta(n) elements in a single leaf and the worst case is
+//       again Theta(n log n). Theta(n^2) is not reachable, because
+//       quicksort only ever sees m <= 384 and insertion sort m <= 64.
 //   H3  Unit-cost RAM; allocating or releasing k words costs O(k);
 //       n + lambda fits in size_t.
 //   H4  memcpy of k elements costs Theta(k).
@@ -101,9 +121,13 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //     +  O(n / lambda)        write cursors and the refinement tree
 //
 //   NOTE the middle term does not scale with T: it is one size_t per
-//   element whatever the key type. For an 8-byte key the total is about
-//   3.1x the input, but for a 1-byte key it is about 10x. Sorting narrow
-//   keys is where this sorter is least economical with memory.
+//   element whatever the key type, so sorting narrow keys is where this
+//   sorter is least economical with memory. Measured peak, 8-byte key:
+//   3.28x the input at the default lambda = 32, 4.46x on input that
+//   drives refinement, and 16.56x at lambda = 1, where every per-bin
+//   structure becomes per-element. For a 1-byte key it is about 10x above
+//   n ~ 1e5, and 12.25x below n ~ 8192, where the span cap has not yet
+//   bound the bin count.
 //
 //   The scratch is allocated on first use and reused across later calls
 //   on the same instance. It is released when the instance is destroyed,
