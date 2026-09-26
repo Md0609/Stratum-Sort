@@ -124,10 +124,11 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //   element whatever the key type, so sorting narrow keys is where this
 //   sorter is least economical with memory. Measured peak, 8-byte key:
 //   3.28x the input at the default lambda = 32, 4.46x on input that
-//   drives refinement, and 16.56x at lambda = 1, where every per-bin
-//   structure becomes per-element. For a 1-byte key it is about 10x above
-//   n ~ 1e5, and 12.25x below n ~ 8192, where the span cap has not yet
-//   bound the bin count.
+//   drives refinement, and 16.56x at lambda = t = 1 on uniform input,
+//   where every per-bin structure becomes per-element; that figure is
+//   not an upper bound for lambda = 1. For a 1-byte key it is about 10x
+//   above n ~ 1e5, and 12.25x below n ~ 8192, where the span cap has not
+//   yet bound the bin count.
 //
 //   The scratch is allocated on first use and reused across later calls
 //   on the same instance. It is released when the instance is destroyed,

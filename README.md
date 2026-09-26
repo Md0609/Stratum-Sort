@@ -91,7 +91,7 @@ table and an adversarial review of itself — is in
 | | |
 |---|---|
 | **Time, best / average / worst** | `Θ(n)` for `λ` and `t` fixed and chosen independently of `n`, under H1–H4 below. If `λ` or `t` scale with `n`, the legal worst case is `Θ(n log n)`; `Θ(n²)` is unreachable |
-| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32`, 4.46× on inputs that drive refinement, and 16.56× at `λ = 1` |
+| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32`, 4.46× on inputs that drive refinement, and 16.56× at `λ = t = 1` on uniform input (not an upper bound for `λ = 1`) |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 | **Stable** | no |
 

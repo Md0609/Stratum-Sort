@@ -134,7 +134,7 @@ by itself — is in the project repository, not in this package.
 | | |
 |---|---|
 | **Time, best / average / worst** | `Θ(n)` under H1–H4 |
-| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32` (4.46× on refinement-heavy input, 16.56× at `λ = 1`), and about 10× for a 1-byte key above `n ≈ 10⁵`, since the index array is one `size_t` per element regardless of `T` |
+| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32` (4.46× on refinement-heavy input, 16.56× at `λ = t = 1` on uniform input, not an upper bound for `λ = 1`), and about 10× for a 1-byte key above `n ≈ 10⁵`, since the index array is one `size_t` per element regardless of `T` |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 | **Deterministic** | yes — no randomness anywhere |
 | **Stable** | no |
