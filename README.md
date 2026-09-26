@@ -248,7 +248,7 @@ assertions, and the sanitizers. Seeded, so a failure reproduces.
 ## Download
 
 ```bash
-make package        # -> dist/stratumsort-v0.9.0.zip
+make package        # -> dist/stratumsort-v0.10.0.zip
 ```
 
 The package contains the library, its tests, one example and the usage

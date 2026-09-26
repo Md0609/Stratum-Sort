@@ -1,4 +1,4 @@
-# Stratum Sort 0.9.0
+# Stratum Sort 0.10.0
 
 A linear-time sorting algorithm for integral keys up to 64 bits.
 Header-only, C++17, no dependencies.
@@ -231,7 +231,7 @@ ctest --test-dir build
 
 ## Verified platforms
 
-`0.9.0` is a release candidate. The version is not `1.0.0` because the API
+`0.10.0` is a release candidate. The version is not `1.0.0` because the API
 has no field history: nobody has used it yet.
 
 | | |

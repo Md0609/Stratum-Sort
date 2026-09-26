@@ -40,7 +40,7 @@
 # further consistent gain and cost portability, so neither is default.
 # See research/BENCHMARKS.md to re-check on your own hardware.
 
-VERSION := 0.9.0
+VERSION := 0.10.0
 PKGNAME := stratumsort-v$(VERSION)
 
 CXX := g++
