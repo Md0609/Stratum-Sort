@@ -203,7 +203,7 @@ alternating the two sorts.
 
 ```bash
 make            # library check, tests, timings and the example
-make test       # three suites: edge cases, and 125 + 134 contract checks
+make test       # three suites: edge cases, and 129 + 140 contract checks
 make timings    # release timings against std::sort
 make examples   # run the minimal example
 ```

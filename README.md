@@ -227,8 +227,8 @@ Full API and tuning guidance: [`docs/usage.md`](docs/usage.md).
 make && make test
 ```
 
-Three suites: edge cases and a dataset sweep, then 125 contract checks in
-the release configuration and 134 in the research one, covering the whole
+Three suites: edge cases and a dataset sweep, then 129 contract checks in
+the release configuration and 140 in the research one, covering the whole
 `(λ, t)` parameter space, spans reaching the entire key universe, every
 integral key type, instance reuse and the strong exception guarantee.
 
