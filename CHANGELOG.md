@@ -3,6 +3,57 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — unreleased
+
+Fixes a correctness defect that shipped in 0.9.0, and corrects
+documentation claims that an audit of 0.9.0 found inaccurate. The public
+API, `Config.hpp` and the tuning parameters are unchanged.
+
+### Fixed
+- **The introsort fallback did not sort.** `heapSort`, which introsort
+  falls back to when it exhausts its partitioning budget, never built a
+  valid heap: `siftDown` located a node's children relative to the node
+  being repaired instead of the heap's first slot. On that path the
+  output was **not sorted**, with the multiset intact, and no internal
+  assertion or sanitizer reported it. Minimal reproduction:
+  `StratumSort<uint8_t>(1000, 64)` on `n = 385` with
+  `v[i] = uint8_t(385 - i)`. Reaching the fallback needs a leaf of more
+  than 384 elements *and* input that exhausts introsort's budget inside
+  it. Every confirmed reproduction uses non-default parameters; with the
+  defaults it was not reproduced in 527 targeted adversarial cases, which
+  is not a proof that the defaults are unaffected.
+
+### Added
+- API contract section 7, regression tests for that fallback: inputs
+  measured to exhaust the introsort budget at sizes 385 to 4096;
+  ascending, descending, duplicate-heavy, extreme and random leaves at
+  sizes 384 to 4096; every fixed-width integer key type; and 400 seeded
+  randomised and adversarial cases compared against `std::sort`.
+  Contract checks go from 125 to 129 in the release build and from 134 to
+  140 in the research build. Compiled against the 0.9.0 headers, the
+  section fails.
+- With `STRATUM_ENABLE_METRICS`, `metrics().algorithmUsage()` now counts
+  `"HeapSort"` when the fallback runs, so a test can tell "introsort
+  finished" from "introsort fell back". Without the macro it compiles to
+  nothing.
+
+### Changed
+Documentation only.
+- Leaf cost is stated per local-sort band. 0.9.0 said every leaf costs
+  `O(m log m)`, which is false for `64 < m ≤ 384`: that band goes to a
+  quicksort with no depth limit, whose worst case is quadratic. Linearity
+  still holds because `m` is bounded there by a constant.
+- `Θ(n)` is qualified: it holds for `λ` and `t` fixed independently of
+  `n`, under H1–H4. If `λ` or `t` scale with `n`, which the constructor
+  allows, the worst case is `Θ(n log n)`.
+- Auxiliary memory: "about 3.1×" is replaced by measured peaks. For an
+  8-byte key: 3.28× at the defaults on uniform input, 4.46× on
+  refinement-heavy input, 16.56× on uniform input at `λ = t = 1`. For a
+  1-byte key: about 10× for large `n` and 12.25× for small `n`.
+- Comparison counts are no longer presented as evidence for the overall
+  complexity: the counter only sees the local sorts. The table is kept,
+  labelled as a measurement of that phase.
+
 ## [0.9.0] — 2026-08-21
 
 First public release candidate. `0.9.0`, not `1.0.0`, and the difference
