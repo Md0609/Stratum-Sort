@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] — unreleased
+## [0.9.0] — 2026-08-21
 
 First public release candidate. `0.9.0`, not `1.0.0`, and the difference
 is deliberate:
