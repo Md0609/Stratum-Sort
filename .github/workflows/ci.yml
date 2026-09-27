@@ -1,0 +1,166 @@
+# Continuous integration for Stratum Sort.
+#
+# The point of this matrix is to replace "should be portable" with evidence.
+# Until it has run green, README.md and CHANGELOG.md must keep saying that
+# only macOS arm64 is verified.
+#
+# C++17 is the required standard and runs on every platform. C++20 and C++23
+# are extra columns on Linux only, to keep the matrix small.
+name: CI
+
+on:
+  push:
+    branches: [main, v10-dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }} / C++${{ matrix.std }} / ${{ matrix.config }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 17, config: Release }
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 17, config: Debug   }
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 20, config: Release }
+          - { name: ubuntu-gcc,    os: ubuntu-latest,  cxx: g++,     std: 23, config: Release }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 17, config: Release }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 17, config: Debug   }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 20, config: Release }
+          - { name: ubuntu-clang,  os: ubuntu-latest,  cxx: clang++, std: 23, config: Release }
+          - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Release }
+          - { name: macos-clang,   os: macos-latest,   cxx: clang++, std: 17, config: Debug   }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Release }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 17, config: Debug }
+          - { name: windows-msvc,  os: windows-latest, cxx: msvc,    std: 20, config: Release }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          ${{ matrix.cxx != 'msvc' && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config ${{ matrix.config }} --output-on-failure --verbose
+
+      # A user gets the headers and nothing else. This proves that is
+      # enough, on every platform in the matrix. Driven through CMake rather
+      # than a raw compiler invocation so the same step works with MSVC,
+      # where `cl` is not on PATH without vcvars and takes /flags, not
+      # -flags.
+      - name: External consumer (headers only)
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/consumer" && cd "${RUNNER_TEMP}/consumer"
+          cat > app.cpp <<'CPP'
+          #include <stratum/StratumSort.hpp>
+          #include <algorithm>
+          #include <cstdint>
+          #include <cstdio>
+          #include <random>
+          #include <vector>
+          int main() {
+            std::mt19937_64 rng(1);
+            std::vector<int64_t> v(200000);
+            for (auto& x : v) x = static_cast<int64_t>(rng());
+            auto ref = v; std::sort(ref.begin(), ref.end());
+            stratum::StratumSort<int64_t> s; s.sort(v);
+            std::vector<uint8_t> w{200, 7, 7, 255, 0};
+            stratum::StratumSort<uint8_t> s2; s2.sort(w);
+            bool ok = v == ref && w == std::vector<uint8_t>{0, 7, 7, 200, 255};
+            std::printf("%s\n", ok ? "external consumer OK" : "external consumer FAILED");
+            return ok ? 0 : 1;
+          }
+          CPP
+          cat > CMakeLists.txt <<'CML'
+          cmake_minimum_required(VERSION 3.14)
+          project(consumer LANGUAGES CXX)
+          add_subdirectory("$ENV{GITHUB_WORKSPACE}" stratumsort_build)
+          add_executable(app app.cpp)
+          target_link_libraries(app PRIVATE StratumSort::stratumsort)
+          CML
+          cmake -B b -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+                -DCMAKE_CXX_STANDARD=${{ matrix.std }} \
+                -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+                ${{ matrix.cxx != 'msvc' && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }} \
+                -DSTRATUMSORT_BUILD_TESTS=OFF -DSTRATUMSORT_BUILD_EXAMPLES=OFF
+          cmake --build b --config ${{ matrix.config }}
+          "$(find b -name 'app' -o -name 'app.exe' | head -1)"
+
+  sanitizers:
+    name: sanitizers / ${{ matrix.cxx }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ASan + UBSan suites
+        run: |
+          make CXX=${{ matrix.cxx }} sanitizers
+          make CXX=${{ matrix.cxx }} fuzz N=50000
+
+  package:
+    name: package is reproducible and leak-free
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: package-verify
+        run: make package-verify
+      - name: byte-for-byte reproducible
+        run: |
+          make package && sha256sum dist/*.zip | tee /tmp/a
+          rm -rf dist && make package && sha256sum dist/*.zip | tee /tmp/b
+          diff <(cut -d' ' -f1 /tmp/a) <(cut -d' ' -f1 /tmp/b)
+      - name: SHA-256 of the source package
+        run: cd dist && for f in *.zip; do sha256sum "$f" > "$f.sha256"; done && cat *.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stratumsort-package
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+  # One package per platform, each built on its own native runner from the
+  # source package above: extracted, built and tested there with that
+  # runner's compiler, then archived with a BUILDINFO.txt recording what was
+  # verified (packaging/platform_package.py). Runs only once every other job
+  # has passed, so a platform package never comes from a red commit.
+  platform-package:
+    name: platform package / ${{ matrix.os }}
+    needs: [build-and-test, sanitizers, package]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  cxx: g++,     python: python3 }
+          - { os: macos-latest,   cxx: clang++, python: python3 }
+          - { os: windows-latest, cxx: msvc,    python: python }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stratumsort-package
+          path: source
+      - name: Build, test and archive on this runner
+        shell: bash
+        run: ${{ matrix.python }} packaging/platform_package.py source/stratumsort-v*.zip ${{ matrix.cxx }} platform
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stratumsort-${{ runner.os }}-${{ runner.arch }}
+          path: platform/*
