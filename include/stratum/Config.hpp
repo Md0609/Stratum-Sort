@@ -80,7 +80,7 @@ namespace stratum {
 // The default below was measured as a practical optimum for n ~ 1e6 on a
 // machine with a 4 MiB L2. It is NOT universal: for n ~ 1e7 the same
 // condition would put the lower bound near 160. A caller sorting much
-// larger inputs should raise it.
+// larger inputs should raise it, up to MAX_TARGET_ELEMENTS_PER_BIN below.
 //
 // Upper bound: see MAX_SUBDIVISION_DEPTH. Raising lambda does not change
 // the complexity class, but it raises the input size above which the
@@ -107,6 +107,28 @@ constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 32;
 // because P(X > lambda) ~ 0.5 for Poisson(lambda) - by arithmetic, not
 // because the data needs it.
 constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
+
+// Ceilings on lambda and t. They are what makes hypothesis H2 a property
+// of the code instead of an assumption about the caller: the constructor
+// clamps lambda into [1, MAX_TARGET_ELEMENTS_PER_BIN] and t into
+// [lambda, MAX_LEAF_THRESHOLD], so neither can grow with n whatever the
+// caller passes - data.size() included. Without them, lambda = t = n put
+// the whole array in one leaf and the worst case was Theta(n log n).
+//
+// 10000 is the smallest value that changes no configuration the project
+// itself uses: the contract tests pass t = 10000 and lambda up to 4385.
+// A larger ceiling could not lower the worst-case constant, which is a
+// maximum over every admissible (lambda, t) - a larger ceiling only adds
+// configurations - and it raises the leaf bound ceiling * 2^(w/(D+1)).
+// Its only gain would be letting the cache rule above be followed past
+// ~6.5e8 elements.
+constexpr std::size_t MAX_TARGET_ELEMENTS_PER_BIN = 10000;
+constexpr std::size_t MAX_LEAF_THRESHOLD = 10000;
+static_assert(MAX_LEAF_THRESHOLD >= MAX_TARGET_ELEMENTS_PER_BIN,
+              "t >= lambda must remain satisfiable at the ceiling");
+static_assert(DEFAULT_TARGET_ELEMENTS_PER_BIN <= MAX_TARGET_ELEMENTS_PER_BIN &&
+                  DEFAULT_LEAF_THRESHOLD <= MAX_LEAF_THRESHOLD,
+              "the defaults must lie below the ceilings");
 
 // D - maximum refinement depth.
 //
@@ -176,10 +198,11 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // a different algorithm. ANY change to lambda must re-check n*.
 // Raising the leaf threshold does not affect it.
 //
-// All of the above assumes lambda, t and D are constants chosen
-// independently of n (hypothesis H2 of the proof), AND that D >= 1. A
-// caller who scales one of them with the input size - t = n, say - is
-// outside the hypothesis, and the linear bound has to be re-derived.
+// All of the above needs lambda, t and D to be constants independent of n,
+// AND D >= 1 (hypothesis H2 of the proof). The code guarantees both: the
+// constructor clamps lambda and t to the ceilings above, so a caller who
+// passes t = n gets at most MAX_LEAF_THRESHOLD, and D >= 1 is asserted at
+// compile time below.
 //
 // D = 0 is not merely outside the proof, it is genuinely superlinear:
 // refine's first test is `count <= t || depth >= D`, so D = 0 fires it at
@@ -191,6 +214,7 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // The value 6 itself has never been swept; it is known to work, not known
 // to be optimal.
 constexpr std::size_t MAX_SUBDIVISION_DEPTH = 6;
+static_assert(MAX_SUBDIVISION_DEPTH >= 1, "D = 0 disables refinement: the worst case becomes Theta(n log n)");
 
 // ------------------------------------------------------------------
 // LOCAL SORT PARAMETERS

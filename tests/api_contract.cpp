@@ -24,9 +24,13 @@
 // This file tests the CONTRACT, not the performance:
 //   1. correctness across the whole parameter space
 //   2. the clamping rules of the constructor
-//   3. the documented guarantees (strong exception safety, buffer reuse)
-//   4. the invariants the algorithm claims to maintain
-//   5. the edge cases of the range arithmetic
+//   3. the edge cases of the range arithmetic
+//   4. instance and buffer reuse
+//   5. the strong exception guarantee
+//   6. determinism
+//   7. the introsort fallback (heapSort)
+//   8. the local-sort dispatch, decoupled from the leaf threshold
+//   9. the parameter ceilings
 //
 // Built in the PRODUCTION configuration on purpose: it validates the code
 // a caller actually gets. Assertions inside the algorithm are active
@@ -165,6 +169,35 @@ void testConstructorClamping() {
     StratumSort<int64_t> e(64, 32);
     check(e.targetElementsPerBin() == 64 && e.leafThreshold() == 64,
           "swapped arguments are clamped, not reinterpreted");
+
+    // The ceilings, which make H2 hold for every argument: nothing a caller
+    // passes - data.size(), data.size() + 1, SIZE_MAX - survives above them.
+    const std::size_t LMAX = stratum::MAX_TARGET_ELEMENTS_PER_BIN;
+    const std::size_t TMAX = stratum::MAX_LEAF_THRESHOLD;
+    const std::size_t DEF = stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN;
+    const std::size_t huge = std::numeric_limits<std::size_t>::max();
+    const std::size_t intMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    const std::size_t n = 1000000;
+    struct Want { std::size_t lambda, t, wantLambda, wantT; };
+    const std::vector<Want> table = {
+        {n, n, LMAX, TMAX},           {n + 1, n + 1, LMAX, TMAX},
+        {32, n, 32, TMAX},            {n, 64, LMAX, LMAX},        // t < lambda: raised, then capped
+        {LMAX, TMAX, LMAX, TMAX},     {LMAX + 1, TMAX + 1, LMAX, TMAX},
+        {huge, huge, LMAX, TMAX},     {huge, 0, LMAX, LMAX},
+        {1, huge, 1, TMAX},           {intMax, intMax, LMAX, TMAX},
+        {1, 1, 1, 1},                 {0, huge, DEF, TMAX},
+        {500, 10, 500, 500},          {LMAX - 1, LMAX - 1, LMAX - 1, LMAX - 1}};
+    bool ceilings = true;
+    for (const Want& w : table) {
+        StratumSort<int64_t> s(w.lambda, w.t);
+        if (s.targetElementsPerBin() != w.wantLambda || s.leafThreshold() != w.wantT) {
+            ceilings = false;
+            std::cout << "  (" << w.lambda << ", " << w.t << ") became (" << s.targetElementsPerBin()
+                      << ", " << s.leafThreshold() << "), expected (" << w.wantLambda << ", " << w.wantT
+                      << ")\n";
+        }
+    }
+    check(ceilings, "lambda is clamped into [1, 10000] and t into [lambda, 10000]");
 }
 
 // ------------------------------------------------------------------
@@ -442,11 +475,8 @@ void testStrongExceptionGuarantee() {
 #endif
 }
 
-// ------------------------------------------------------------------
-// 6. Determinism
-// ------------------------------------------------------------------
 // ============================================================
-// The introsort fallback
+// 7. The introsort fallback
 // ============================================================
 // introSortImpl finishes a leaf with heapSort once its partitioning budget
 // runs out. That path shipped in 0.9.0 without sorting correctly: siftDown
@@ -480,6 +510,101 @@ static bool sortsLikeStdSort(std::vector<T> v, std::size_t& heapSorts) {
     (void)heapSorts;
 #endif
     return v == oracle; // equal to the oracle implies sorted AND same multiset
+}
+
+// A leaf produced by depth exhaustion at the DEFAULT configuration, holding
+// 'core' in its original order. One value per refinement level is placed so
+// that each split peels exactly that value off, and a final maximum sizes
+// the top-level buckets so the whole group lands in bucket 0. Distribution
+// is stable, so the leaf sees the core exactly as given. The core must
+// contain 0, and its size must give the same fan-out at every level;
+// otherwise this returns an empty vector.
+static std::vector<int64_t> peeledAtDefaults(const std::vector<int64_t>& core) {
+    const uint64_t L = stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN;
+    const uint64_t D = stratum::MAX_SUBDIVISION_DEPTH;
+    const uint64_t s = (core.size() + D + L - 1) / L;
+    if (core.empty() || (core.size() + 1 + L - 1) / L != s ||
+        *std::min_element(core.begin(), core.end()) != 0)
+        return {};
+    uint64_t p = static_cast<uint64_t>(*std::max_element(core.begin(), core.end())) + 1;
+    std::vector<int64_t> v(core);
+    for (uint64_t k = 1; k <= D; ++k) {
+        p *= s;
+        v.push_back(static_cast<int64_t>(p));
+    }
+    const uint64_t sTop = (v.size() + 1 + L - 1) / L;
+    v.push_back(static_cast<int64_t>(sTop * (p + 1) - 1));
+    return v;
+}
+
+// McIlroy's adversary ("A Killer Adversary for Quicksort", 1999) run against
+// a replica of partition() and quickSort(). It decides each comparison as
+// late as possible, so the final values force the most expensive path
+// through this exact partition scheme. The research build checks below
+// that the order still drives the shipped quickSort into its quadratic
+// regime, so a change to partition() cannot quietly make it an easy case.
+struct QuickSortAdversary {
+    std::vector<std::size_t> val, a;
+    std::size_t next = 0, candidate;
+    explicit QuickSortAdversary(std::size_t m) : val(m, m), a(m), candidate(m) {
+        for (std::size_t i = 0; i < m; ++i) a[i] = i;
+    }
+    bool less(std::size_t x, std::size_t y) { // val == size() means "not decided yet"
+        const std::size_t gas = val.size();
+        if (val[x] == gas && val[y] == gas) val[x == candidate ? x : y] = next++;
+        if (val[x] == gas) candidate = x;
+        else if (val[y] == gas) candidate = y;
+        return val[x] < val[y];
+    }
+    void insertion(std::ptrdiff_t l, std::ptrdiff_t r) {
+        for (std::ptrdiff_t i = l + 1; i <= r; ++i) {
+            const std::size_t key = a[i];
+            std::ptrdiff_t j = i - 1;
+            while (j >= l && less(key, a[j])) {
+                a[j + 1] = a[j];
+                --j;
+            }
+            a[j + 1] = key;
+        }
+    }
+    std::ptrdiff_t partition(std::ptrdiff_t l, std::ptrdiff_t r) {
+        const std::ptrdiff_t mid = l + (r - l) / 2;
+        if (less(a[mid], a[l])) std::swap(a[mid], a[l]);
+        if (less(a[r], a[l])) std::swap(a[r], a[l]);
+        if (less(a[r], a[mid])) std::swap(a[r], a[mid]);
+        const std::size_t pivot = a[mid];
+        std::swap(a[mid], a[r - 1]);
+        std::ptrdiff_t i = l, j = r - 1;
+        while (true) {
+            do ++i; while (less(a[i], pivot));
+            do --j; while (less(pivot, a[j]));
+            if (i >= j) break;
+            std::swap(a[i], a[j]);
+        }
+        std::swap(a[i], a[r - 1]);
+        return i;
+    }
+    void quick(std::ptrdiff_t l, std::ptrdiff_t r) {
+        while (r - l > static_cast<std::ptrdiff_t>(stratum::LOCAL_PARTITION_CUTOFF)) {
+            const std::ptrdiff_t p = partition(l, r);
+            if (p - l < r - p) { quick(l, p - 1); l = p + 1; }
+            else { quick(p + 1, r); r = p - 1; }
+        }
+        insertion(l, r);
+    }
+};
+
+// The values 0..m-1 in the order that is worst for quickSort.
+static std::vector<int64_t> quickSortKillerOrder(std::size_t m) {
+    QuickSortAdversary adv(m);
+    adv.quick(0, static_cast<std::ptrdiff_t>(m) - 1);
+    std::vector<std::size_t> byValue(m);
+    for (std::size_t i = 0; i < m; ++i) byValue[i] = i;
+    std::stable_sort(byValue.begin(), byValue.end(),
+                     [&](std::size_t x, std::size_t y) { return adv.val[x] < adv.val[y]; });
+    std::vector<int64_t> order(m);
+    for (std::size_t rank = 0; rank < m; ++rank) order[byValue[rank]] = static_cast<int64_t>(rank);
+    return order;
 }
 
 void testIntroSortFallback() {
@@ -550,6 +675,28 @@ void testIntroSortFallback() {
     }
     check(types, "every accepted key type sorts through the introsort path");
 
+    // The same defect at the DEFAULT configuration. There, a leaf above 384
+    // elements can only come from depth exhaustion, and this 392-element
+    // input produces one: a 385-element sawtooth, peeled out one refinement
+    // level at a time. Modulus 190 both reaches heapSort and, measured,
+    // came back unsorted from 0.9.0 (179 above reaches heapSort too, but
+    // the broken heapSort happened to sort it).
+    {
+        const std::vector<int64_t> input = peeledAtDefaults(sawtooth(385, 190));
+        std::vector<int64_t> oracle = input;
+        std::sort(oracle.begin(), oracle.end());
+        std::vector<int64_t> v = input;
+        StratumSort<int64_t> sorter;
+        sorter.sort(v);
+        check(input.size() == 392 && v == oracle,
+              "the n = 392 counterexample sorts with the default parameters");
+#ifdef STRATUM_ENABLE_METRICS
+        const auto& usage = sorter.metrics().algorithmUsage();
+        check(usage.count("HeapSort") == 1 && usage.at("HeapSort") >= 1,
+              "the n = 392 counterexample reaches heapSort with the default parameters");
+#endif
+    }
+
     // Property test. The oracle is std::sort, so one comparison covers both
     // "sorted" and "same multiset"; a counterexample is reported with the
     // parameters needed to reproduce it rather than just a failure count.
@@ -584,6 +731,9 @@ void testIntroSortFallback() {
 #endif
 }
 
+// ------------------------------------------------------------------
+// 6. Determinism
+// ------------------------------------------------------------------
 void testDeterminism() {
     section("6. Determinism");
     std::mt19937_64 rng(31337);
@@ -605,7 +755,7 @@ void testDeterminism() {
 
 #ifdef STRATUM_ENABLE_METRICS
 // ------------------------------------------------------------------
-// 7. The local-sort dispatch is decoupled from the leaf threshold
+// 8. The local-sort dispatch is decoupled from the leaf threshold
 // ------------------------------------------------------------------
 // THIS IS THE REGRESSION GUARD FOR THAT DEFECT. The dispatch
 // thresholds used to be derived from the leaf threshold, so changing how
@@ -668,6 +818,152 @@ void testDispatchDecoupling() {
 }
 #endif
 
+// ------------------------------------------------------------------
+// 9. Parameter ceilings
+// ------------------------------------------------------------------
+// Before the ceilings, lambda = t = n was legal, put the whole array in one
+// leaf and made the worst case Theta(n log n). This runs the configurations
+// that used to allow that, and the ones at and far past the ceiling,
+// against inputs built to be expensive: correctness everywhere, and in the
+// research build a leaf and a cost per element that no longer follow n.
+
+// Distinct values in [0, n) in a scrambled order, plus two far outliers
+// that make the top-level buckets much wider than the cluster, so a single
+// bucket receives nearly everything.
+static std::vector<int64_t> permutedCluster(std::size_t n) {
+    std::vector<int64_t> v(n);
+    for (std::size_t i = 0; i < n; ++i) v[i] = static_cast<int64_t>((i * 7919) % n);
+    v[n / 3] = int64_t(1) << 62;
+    v[2 * n / 3] = (int64_t(1) << 62) + 1;
+    return v;
+}
+
+#ifdef STRATUM_ENABLE_METRICS
+static std::size_t largestExpensiveLeaf(const std::vector<int64_t>& v, std::size_t lambda,
+                                        std::size_t t) {
+    StratumSort<int64_t> probe(lambda, t);
+    const auto leaves = probe.debugPartitionOnly(v);
+    std::size_t worst = 0;
+    for (const auto& lf : leaves) {
+        if (lf.count < 2) continue;
+        const auto& buf = lf.inBufferA ? probe.debugBufferA() : probe.debugBufferB();
+        const auto mm = std::minmax_element(buf.begin() + lf.start, buf.begin() + lf.start + lf.count);
+        if (*mm.first != *mm.second) worst = std::max(worst, lf.count);
+    }
+    return worst;
+}
+#endif
+
+void testParameterCeilings() {
+    section("9. Parameter ceilings");
+    const std::size_t huge = std::numeric_limits<std::size_t>::max();
+    const std::size_t LMAX = stratum::MAX_TARGET_ELEMENTS_PER_BIN;
+    const std::size_t TMAX = stratum::MAX_LEAF_THRESHOLD;
+    const std::size_t n = 30000; // above both ceilings
+
+    std::vector<std::pair<std::string, std::vector<int64_t>>> inputs;
+    {
+        std::vector<int64_t> v(n);
+        for (std::size_t i = 0; i < n; ++i) v[i] = static_cast<int64_t>(i);
+        inputs.push_back({"ascending", v});
+        std::reverse(v.begin(), v.end());
+        inputs.push_back({"descending", v});
+    }
+    {
+        std::vector<int64_t> v(n);
+        for (std::size_t i = 0; i < n; ++i) v[i] = static_cast<int64_t>(((i * 7919) % n) % 4);
+        inputs.push_back({"four distinct values", v});
+    }
+    {
+        std::vector<int64_t> v(n); // a tight cluster with a sprinkling of far outliers
+        for (std::size_t i = 0; i < n; ++i)
+            v[i] = (i % 1000 == 0) ? static_cast<int64_t>(i) << 40
+                                   : 1000000 + static_cast<int64_t>((i * 7919) % 100);
+        inputs.push_back({"concentrated", v});
+    }
+    {
+        std::vector<int64_t> v; // dense core plus one far outlier per level, as in section 1
+        uint64_t span = 200;
+        for (uint64_t i = 0; i < span; ++i) v.push_back(static_cast<int64_t>(i));
+        for (int k = 0; k < 40 && span < (1ULL << 60); ++k) {
+            span *= 3;
+            v.push_back(static_cast<int64_t>(span));
+        }
+        while (v.size() < n) v.push_back(static_cast<int64_t>((v.size() * 7919) % 200));
+        inputs.push_back({"depth-exhausting", v});
+    }
+    inputs.push_back({"permuted cluster + 2 outliers", permutedCluster(n)});
+    inputs.push_back({"quickSort worst order in a depth-exhausted leaf",
+                      peeledAtDefaults(quickSortKillerOrder(384))});
+    inputs.push_back({"introsort-exhausting sawtooth in a depth-exhausted leaf",
+                      peeledAtDefaults(sawtooth(4096, 1523))});
+    inputs.push_back({"n = 392 default-parameter counterexample", peeledAtDefaults(sawtooth(385, 190))});
+
+    const std::vector<std::pair<std::size_t, std::size_t>> configs = {
+        {0, 0},       {32, 64},    {n, n},       {n + 1, n + 1},        {huge, huge}, {1, huge},
+        {huge, 1},    {LMAX, TMAX}, {LMAX + 1, TMAX + 1}, {1, 1},       {32, n}};
+    bool correct = true;
+    auto run = [&](const std::string& name, const std::vector<int64_t>& v, std::size_t lambda,
+                   std::size_t t) {
+        if (v.empty() || !sortsCorrectly(v, lambda, t)) {
+            correct = false;
+            std::cout << "  failed: " << name << " with (" << lambda << ", " << t << ")\n";
+        }
+    };
+    for (const auto& c : configs) {
+        for (const auto& in : inputs) run(in.first, in.second, c.first, c.second);
+
+        // Values on both sides of every top-level bucket boundary, for this
+        // configuration's own grid.
+        const uint64_t lambda = StratumSort<int64_t>(c.first, c.second).targetElementsPerBin();
+        const uint64_t S = uint64_t(1) << 62;
+        const uint64_t sTop = lambda >= n ? 1 : (n + lambda - 1) / lambda;
+        const uint64_t W = S / sTop + 1;
+        std::vector<int64_t> v = {0, static_cast<int64_t>(S)};
+        for (uint64_t i = 0; v.size() < n; ++i) {
+            const uint64_t b = sTop > 1 ? 1 + (i / 2) % (sTop - 1) : 1;
+            v.push_back(static_cast<int64_t>((i & 1) ? b * W : b * W - 1));
+        }
+        run("bucket boundaries", v, c.first, c.second);
+    }
+    check(correct, "expensive inputs sort correctly below, at and far above the ceilings");
+
+#ifdef STRATUM_ENABLE_METRICS
+    // lambda = t = n on the permuted cluster: before the ceilings, one leaf
+    // of n - 2 elements and a cost per element growing like log n.
+    const std::size_t sizes[2] = {20000, 160000};
+    double perElement[2] = {0, 0};
+    bool bounded = true;
+    for (int k = 0; k < 2; ++k) {
+        const std::size_t m = sizes[k];
+        std::vector<int64_t> v = permutedCluster(m);
+        const std::size_t leaf = largestExpensiveLeaf(v, m, m);
+        if (leaf > TMAX) bounded = false;
+        StratumSort<int64_t> s(m, m);
+        s.sort(v);
+        perElement[k] = static_cast<double>(s.metrics().comparisons()) / static_cast<double>(m);
+        std::cout << "   lambda = t = n = " << m << ": largest expensive leaf " << leaf << ", "
+                  << perElement[k] << " comparisons per element" << std::endl;
+    }
+    check(bounded, "with lambda = t = n the largest expensive leaf stays within the ceiling");
+    check(perElement[1] <= 1.05 * perElement[0],
+          "with lambda = t = n the comparisons per element do not grow from n = 20000 to 160000");
+
+    // The worst orders reach the paths they are meant to, at the defaults.
+    StratumSort<int64_t> q;
+    std::vector<int64_t> qv = peeledAtDefaults(quickSortKillerOrder(384));
+    q.sort(qv);
+    check(q.metrics().algorithmUsage().count("QuickSort") == 1 &&
+              q.metrics().comparisons() >= 384u * 384u / 8u,
+          "the quickSort worst order drives quickSort quadratic inside a depth-exhausted leaf");
+    StratumSort<int64_t> h;
+    std::vector<int64_t> hv = peeledAtDefaults(sawtooth(4096, 1523));
+    h.sort(hv);
+    check(h.metrics().algorithmUsage().count("HeapSort") == 1,
+          "the 4096-element sawtooth reaches heapSort inside a depth-exhausted leaf");
+#endif
+}
+
 } // namespace
 
 // Allocation limiter for the exception-safety test. Defined at namespace
@@ -711,6 +1007,16 @@ void* operator new(std::size_t sz) {
     return p;
 }
 void* operator new[](std::size_t sz) { return operator new(sz); }
+// The nothrow forms, with the standard's default behaviour: call the form
+// above and return nullptr instead of throwing. Left unreplaced, a sanitizer
+// runtime supplies its own, and the free() below then releases a block it
+// did not allocate - std::stable_sort's temporary buffer, under ASan.
+void* operator new(std::size_t sz, const std::nothrow_t&) noexcept {
+    try { return operator new(sz); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t sz, const std::nothrow_t&) noexcept {
+    try { return operator new[](sz); } catch (...) { return nullptr; }
+}
 
 // GCC's -Wmismatched-new-delete fires here, and it is a false positive:
 // replacing the GLOBAL operator new/delete pair with malloc/free is exactly
@@ -725,6 +1031,8 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -773,6 +1081,7 @@ int main() {
 #ifdef STRATUM_ENABLE_METRICS
     testDispatchDecoupling();
 #endif
+    testParameterCeilings();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

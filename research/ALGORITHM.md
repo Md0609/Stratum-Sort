@@ -375,7 +375,7 @@ sufficient (no claim is made that they are necessary).
 | | |
 |---|---|
 | **H1** | `T` is an integral type of width `w = 8·sizeof(T) ≤ 64` bits. Enforced by three `static_assert`s (integral, not `bool`, `sizeof(T) ≤ 8`). |
-| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants chosen independently of `n`. |
+| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants independent of `n`. **Enforced by the code:** the constructor clamps `λ` into `[1, Λ]` and `t` into `[λ, Λ]` with `Λ = 10 000` (`MAX_TARGET_ELEMENTS_PER_BIN`, `MAX_LEAF_THRESHOLD`), and `D = 6` is a compile-time constant with `static_assert(D ≥ 1)`. |
 | **H3** | Unit-cost RAM: arithmetic on `uint64_t` and `size_t`, and one array access, cost `O(1)`; **allocating or releasing a block of `k` words costs `O(k)`**; and `n + λ` fits in `size_t`. |
 | **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
 
@@ -395,15 +395,18 @@ top-level bin can hold `Θ(n)` elements — take `n−2` values alternating
 `1` and collects them all — and that bin goes straight to `introSort`:
 `Θ(n log n)`. The proof never covered this (§8.4 divides by `D`), but the
 hypothesis list has to say so. Any `D ≥ 1` is fine; `D` may also grow with
-`n`, which only shrinks the residual.
+`n`, which only shrinks the residual. `D` is not a constructor argument,
+and `Config.hpp` rejects `D = 0` at compile time.
 
-`λ` and `t` are constructor arguments, so a caller can violate H2. The
-asymptotic claim is about a **fixed** configuration: for each
-choice of `(λ, t, D)` there is a constant `c(λ, t, D, w)` with
-`T(n) ≤ c·n` for all `n`. A caller who scales a parameter with the input —
-`t = n`, say, which turns the whole array into one leaf — is outside the
-hypothesis, and the conclusion has to be re-derived. §8.8 quantifies what
-each parameter costs inside the constant.
+`λ` and `t` are constructor arguments, and before 0.10.0 a caller could
+violate H2 with them: `λ = t = n` was accepted, turned the whole array
+into one leaf and made the worst case `Θ(n log n)`. The constructor now
+clamps both to `Λ = 10 000`, whatever it is passed — `data.size()`,
+`SIZE_MAX` — so every configuration it can produce satisfies H2 with the
+same bounds `λ ≤ t ≤ Λ`. The claim is therefore **uniform**: there is one
+constant `c(Λ, D, w)` with `T(n) ≤ c·n` for every `n`, every input and
+every constructor argument (§8.9). §8.8 quantifies what each parameter
+costs inside the constant.
 
 **On H3.** The allocation clause is needed because `refine` allocates: see
 §8.5, which accounts for every word. The `n + λ` clause is needed because
@@ -723,7 +726,7 @@ array `s_top ≥ ⌈m/λ⌉` of the whole run. So each scratch vector is resized
 
 **The other two build configurations.** With `STRATUM_ENABLE_METRICS` the
 instrumentation adds `O(1)` work per counted event — a counter increment,
-a `push_back`, or a lookup in a map with at most five fixed keys — and the
+a `push_back`, or a lookup in a map with at most six fixed keys — and the
 events are one per comparison, per leaf and per split, all of which are
 `O(n)` by the table above. Its auxiliary vectors (`binSizes_`,
 `subdivisionRecords_`) grow to `O(N)` entries. So the research
@@ -804,6 +807,18 @@ max( t,  M )  =  max( t,  λ·2^(w/(D+1)) )  =  max(64, 18 090)  =  18 090
 Hence `log₂ max(t, M) ≤ 14.15`. Note it is the *global supremum* `M` that
 appears here, not `B(n)`: linearity needs one `n`-free number, and `M` is
 it.
+
+That is the shipped configuration. For **every** configuration the
+constructor can produce, `λ ≤ Λ` and `t ≤ Λ` with `Λ = 10 000` (§8.0), so
+
+```
+max( t, M )  ≤  max( Λ,  Λ·2^(w/(D+1)) )  =  10 000 · 2^(64/7)  ≈  5.65·10⁶
+```
+
+and `log₂ max(t, M) ≤ 22.43`: a number free of `n` and of the constructor
+arguments. `heapSort` runs only inside `introSort`, on disjoint subranges
+of one leaf, each of size `k ≤ m ≤ max(t, M)`; its `Θ(k log k)` is part of
+the `introSort` row and inherits the same bound.
 
 Combining every row, the total local-sorting cost is at most
 
@@ -925,13 +940,54 @@ decision that measurement made, not an asymptotic necessity.
 
 ### 8.9 Total
 
-Summing §8.5 and §8.6, with `D`, `λ`, `t`, `w` constants by H1–H2:
+**Every quantity the cost depends on is bounded independently of `n` and
+of the constructor arguments:**
+
+| quantity | bound | why |
+|---|---|---|
+| `λ` | `1 ≤ λ ≤ Λ = 10 000` | constructor clamp (§8.0) |
+| `t` | `λ ≤ t ≤ Λ` | constructor clamp |
+| `D` | `= 6`, and `≥ 1` | compile-time constant, `static_assert` |
+| `w` | `≤ 64` | H1, `static_assert` |
+| tree levels | `≤ D + 1` | `refine`'s depth test |
+| tree nodes `N` | `< (D+1)(2n/λ + 1) ≤ (D+1)(2n + 1)` | F2 |
+| expensive leaf `m` | `≤ L = max(t, λ·2^(w/(D+1))) ≤ Λ·2^(64/7) ≈ 5.65·10⁶` | §8.4, §8.6 |
+| local-sort thresholds | `L₁ = 64`, `L₂ = 384`, cutoff `12` | `Config.hpp` |
+| `introSort` budget | `2⌊log₂ m⌋ ≤ 44` | `introSort`, with `m ≤ L` |
+
+**Summing the phases**, each against `n` (time counts operations under
+H3; `c` stands for absolute constants):
 
 ```
-T(n)  =  O(n)  +  O((D+1)·n)  +  O(n·log₂ m_max)  =  Θ(n)
+T(n)  =  T_analyze + T_distribute + T_refine + T_leaves + T_append + T_destroy
 ```
 
-`Θ` and not just `O`, since `analyze` alone reads every element.
+| term | bound | from |
+|---|---|---|
+| `T_analyze` | `≤ c·n` | one pass, two comparisons per element |
+| `T_distribute` | `≤ c·(4n + s_top) ≤ c·(5n + 1)` | zeroing both buffers, then `countAndPlace(n, s_top)` with `s_top ≤ n/λ + 1` |
+| `T_refine` | `≤ c·D·(3n + 2n/λ) + c·N` | per depth, `scanRange` and `countAndPlace` over disjoint bins (F1b) with `Σ s < 2n/λ` (F2); allocations `O(n)` words (§8.5, H3) |
+| `T_leaves` | `≤ (2 + max(32, 192 + c₀, c·log₂ L))·n + c·N` | `detectRun` plus the §8.6 branch of each leaf, summed over leaves that tile `[0, n)` (F1a); `sortRefined` visits `N` nodes |
+| `T_append` | `≤ c·n + c·N` | one `memcpy` per leaf (H4), `Σ m = n` |
+| `T_destroy` | `≤ c·N + c·s_top` | on return, the tree is destroyed: each of the `N` nodes releases its `children` vector once, and `sort` releases its locals of size `s_top` (H3, F2) |
+
+Every coefficient is a function of `Λ`, `D` and `w` alone, so
+
+```
+T(n)  ≤  C(Λ, D, w) · n  +  C′      ⟹      T(n) = O(n)
+```
+
+and, since `analyze` reads all `n` elements and the join writes all `n`,
+
+```
+T(n)  ≥  n      ⟹      T(n) = Ω(n)      ⟹      T(n) = Θ(n)
+```
+
+**in the worst case, over every input and every constructor argument.**
+No step averages over inputs and none rests on a measurement. Without
+the clamp the same derivation gives `T_leaves = Θ(n · log L(n))`, with
+`L(n)` unbounded when `λ` or `t` grows with `n` — `Θ(n log n)` at
+`λ = t = n` — and that is precisely the case the ceilings remove.
 
 **What "linear" means here.** The constant contains `w`, through the
 depth bound and through `m_max`. This is linear in exactly the sense radix

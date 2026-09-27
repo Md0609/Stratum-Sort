@@ -72,7 +72,7 @@ comparison sort finishes it, and the pieces are concatenated.
 
 ## The complexity guarantee, and what it rests on
 
-**Stratum Sort is Θ(n) in the worst case under the four hypotheses below.**
+**Stratum Sort is Θ(n) in the worst case, for every input and every constructor argument, under the four hypotheses below.**
 
 The recursion depth is bounded by the key width, not by `n`: every
 refinement level consumes at least one bit of the interval's observed
@@ -108,7 +108,7 @@ does arithmetic on keys rather than only comparing them.
 | | |
 |---|---|
 | **H1** | `T` is integral with `w = 8·sizeof(T) ≤ 64` bits. Enforced by `static_assert`. |
-| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants chosen independently of `n`. |
+| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants independent of `n`. Enforced: the constructor clamps `λ` and `t` to at most 10 000, so passing `data.size()` cannot make them grow with `n`; `D = 6` is a compile-time constant. |
 | **H3** | Unit-cost RAM: arithmetic and one array access are `O(1)`, allocating or releasing `k` words costs `O(k)`, and `n + λ` fits in `size_t`. |
 | **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
 
@@ -133,7 +133,7 @@ by itself — is in the project repository, not in this package.
 
 | | |
 |---|---|
-| **Time, best / average / worst** | `Θ(n)` under H1–H4 |
+| **Time, best / average / worst** | `Θ(n)` under H1–H4, for every constructor argument |
 | **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32` (4.46× on refinement-heavy input, 16.56× at `λ = t = 1` on uniform input, not an upper bound for `λ = 1`), and about 10× for a 1-byte key above `n ≈ 10⁵`, since the index array is one `size_t` per element regardless of `T` |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 | **Deterministic** | yes — no randomness anywhere |
@@ -203,7 +203,7 @@ alternating the two sorts.
 
 ```bash
 make            # library check, tests, timings and the example
-make test       # three suites: edge cases, and 129 + 140 contract checks
+make test       # three suites: edge cases, and 132 + 148 contract checks
 make timings    # release timings against std::sort
 make examples   # run the minimal example
 ```
@@ -236,8 +236,8 @@ has no field history: nobody has used it yet.
 
 | | |
 |---|---|
-| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**Windows x86_64** — MSVC 19.51 (`windows-latest`), C++17 Release and Debug and C++20 Release, CMake, full test suite and the ODR link guard. |
-| **Not verified** | 32-bit targets, big-endian machines, and compilers older than the three above. On Windows specifically: C++23, the Make build, and ASan/UBSan were not exercised. |
+| **Verified** | **Linux x86_64** (Ubuntu 24.04) — GCC 13.3.0 and Clang 18.1.3, both with libstdc++: C++17/20/23 Release and C++17 Debug under CMake, and the ASan/UBSan suites and differential fuzz under Make.<br>**macOS arm64** (macOS 26) — AppleClang 21.0.0 (libc++): C++17 Release and Debug under CMake.<br>**Windows x86_64** (Windows Server 2025) — MSVC 19.51.36257: C++17 Release and Debug and C++20 Release under CMake, full test suite and the ODR link guard. |
+| **Not verified** | 32-bit targets, big-endian machines, and any other compiler or compiler version. On macOS: C++20/23, the Make build, and ASan/UBSan were not exercised. On Windows: C++23, the Make build, and ASan/UBSan were not exercised. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.
@@ -256,6 +256,8 @@ datasets/           input generators used by the tests and the benchmark
 benchmarks/         timings.cpp — the only binary whose clock may be quoted
 examples/basic.cpp  minimal working example
 docs/usage.md       API reference and tuning guide
+BUILDINFO.txt       platform packages only: the runner, compiler and test
+                    results of the CI job that built the package
 ```
 
 ## License

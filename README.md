@@ -90,7 +90,7 @@ table and an adversarial review of itself — is in
 
 | | |
 |---|---|
-| **Time, best / average / worst** | `Θ(n)` for `λ` and `t` fixed and chosen independently of `n`, under H1–H4 below. If `λ` or `t` scale with `n`, the legal worst case is `Θ(n log n)`; `Θ(n²)` is unreachable |
+| **Time, best / average / worst** | `Θ(n)` in the worst case, for every input and every constructor argument, under H1–H4 below |
 | **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32`, 4.46× on inputs that drive refinement, and 16.56× at `λ = t = 1` on uniform input (not an upper bound for `λ = 1`) |
 | **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
 | **Stable** | no |
@@ -100,14 +100,18 @@ The hypotheses are part of the claim, not fine print:
 | | |
 |---|---|
 | **H1** | `T` is integral with `w = 8·sizeof(T) ≤ 64` bits. Enforced by `static_assert`. |
-| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants chosen independently of `n`. |
+| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants independent of `n`. Enforced: the constructor clamps `λ` and `t` to at most 10 000, and `D = 6` is a compile-time constant. |
 | **H3** | Unit-cost RAM; allocating or releasing `k` words costs `O(k)`; `n + λ` fits in `size_t`. |
 | **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
 
-`H2` is what the time row depends on. The constructor accepts any `λ ≥ 1`
-and any `t`, so a caller is free to violate `H2` by scaling either with
-`n` — that is the `Θ(n log n)` case, and it is a legal configuration, not
-a misuse.
+`H2` is what the time row depends on, and the code guarantees it. Up to
+0.9.0 the constructor accepted any `λ` and `t`, so passing `data.size()`
+for both put the whole array in one leaf and the worst case was
+`Θ(n log n)`. Both are now clamped to at most 10 000 (`Config.hpp`,
+`MAX_TARGET_ELEMENTS_PER_BIN` and `MAX_LEAF_THRESHOLD`): the largest leaf a
+comparison sort can receive is then about `5.7·10⁶` elements for any
+arguments, and the bound holds uniformly. `Θ(n²)` was never reachable —
+quicksort only sees `m ≤ 384` and insertion sort `m ≤ 64`.
 
 ## Limitations
 
@@ -204,8 +208,8 @@ Also compiles cleanly as C++20 and C++23.
 
 | | |
 |---|---|
-| **Verified** | **Linux x86_64** — GCC 14 (libstdc++) and Clang 19 (libc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**macOS arm64** — Apple clang 21 (libc++) and GCC 15 (libstdc++), C++17/20/23, Make and CMake, Release and Debug, ASan/UBSan.<br>**Windows x86_64** — MSVC 19.51 (`windows-latest`), C++17 Release and Debug and C++20 Release, CMake, full test suite and the ODR link guard. |
-| **Not verified** | 32-bit targets, big-endian machines, and compilers older than the three above. On Windows specifically: C++23, the Make build, and ASan/UBSan were not exercised. |
+| **Verified** | **Linux x86_64** (Ubuntu 24.04) — GCC 13.3.0 and Clang 18.1.3, both with libstdc++: C++17/20/23 Release and C++17 Debug under CMake, and the ASan/UBSan suites and differential fuzz under Make.<br>**macOS arm64** (macOS 26) — AppleClang 21.0.0 (libc++): C++17 Release and Debug under CMake.<br>**Windows x86_64** (Windows Server 2025) — MSVC 19.51.36257: C++17 Release and Debug and C++20 Release under CMake, full test suite and the ODR link guard. |
+| **Not verified** | 32-bit targets, big-endian machines, and any other compiler or compiler version. On macOS: C++20/23, the Make build, and ASan/UBSan were not exercised. On Windows: C++23, the Make build, and ASan/UBSan were not exercised. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.
@@ -227,8 +231,8 @@ Full API and tuning guidance: [`docs/usage.md`](docs/usage.md).
 make && make test
 ```
 
-Three suites: edge cases and a dataset sweep, then 129 contract checks in
-the release configuration and 140 in the research one, covering the whole
+Three suites: edge cases and a dataset sweep, then 132 contract checks in
+the release configuration and 148 in the research one, covering the whole
 `(λ, t)` parameter space, spans reaching the entire key universe, every
 integral key type, instance reuse and the strong exception guarantee.
 
@@ -253,6 +257,16 @@ make package        # -> dist/stratumsort-v0.10.0.zip
 
 The package contains the library, its tests, one example and the usage
 documentation — everything needed to build and use it, and nothing else.
+
+A release also carries one package per platform, each built and tested by
+CI on that platform's native runner: `stratumsort-v0.10.0-linux-x86_64.tar.gz`,
+`stratumsort-v0.10.0-macos-arm64.tar.gz` and
+`stratumsort-v0.10.0-windows-x86_64.zip`. Each is the source package plus a
+`BUILDINFO.txt` recording the compiler and the test results, with a
+`.sha256` beside it. None contains compiled code — the library is
+header-only; what they add is the record of the native environment each
+was validated in. `packaging/platform_package.py` builds one on the
+machine it runs on.
 
 ## Research
 

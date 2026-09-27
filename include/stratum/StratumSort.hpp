@@ -32,8 +32,9 @@ inline namespace STRATUM_ABI_NAMESPACE {
 // every element of interval j+1.
 //
 // ---- Complexity ---------------------------------------------------
-// Theta(n) time and Theta(n) auxiliary space, treating the key width w as
-// a constant - the same sense in which radix sort is linear. This is NOT
+// Theta(n) worst-case time and Theta(n) auxiliary space, for every input
+// and every constructor argument, treating the key width w as a
+// constant - the same sense in which radix sort is linear. This is NOT
 // a bound in the comparison model and does not contradict the
 // Omega(n log n) comparison lower bound: the algorithm does arithmetic on
 // the keys, not only comparisons.
@@ -45,7 +46,8 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //     B(n) = min( n, (lambda^(D+1) * 2^w / n)^(1/D) )
 //
 // which for large n DECREASES like n^(-1/D), and whose supremum over all
-// n is the CONSTANT lambda * 2^(w/(D+1)) ~= 18000. The bound depends on
+// n is the CONSTANT lambda * 2^(w/(D+1)) ~= 18000 at the default lambda,
+// and at most ~5.7e6 at the ceiling lambda = 10000. The bound depends on
 // n; its supremum does not, and that supremum is what makes the total
 // linear.
 //
@@ -67,14 +69,15 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //
 // The guarantee holds under four hypotheses, all of them checkable:
 //   H1  T is integral with w = 8*sizeof(T) <= 64 bits (static_assert'd).
-//   H2  lambda >= 1, t >= lambda and D >= 1 are constants chosen
-//       independently of n. At D = 0 there is no refinement at all and
-//       the worst case becomes Theta(n log n). H2 is a hypothesis, not a
-//       restriction the constructor enforces: it accepts any lambda >= 1
-//       and any t, so a caller may legally scale either with n. Doing so
-//       puts Theta(n) elements in a single leaf and the worst case is
-//       again Theta(n log n). Theta(n^2) is not reachable, because
-//       quicksort only ever sees m <= 384 and insertion sort m <= 64.
+//   H2  lambda >= 1, t >= lambda and D >= 1 are constants independent
+//       of n. Enforced: the constructor clamps lambda into [1, 10000] and
+//       t into [lambda, 10000] (Config.hpp, MAX_TARGET_ELEMENTS_PER_BIN and
+//       MAX_LEAF_THRESHOLD), and D >= 1 is static_assert'd. A caller who
+//       passes data.size() for either argument gets the ceiling, so the
+//       largest leaf a comparison sort can receive is at most
+//       10000 * 2^(w/(D+1)) ~= 5.7e6 for every configuration, and Theta(n)
+//       holds for every input and every argument. Before the ceilings,
+//       lambda = t = n put the whole array in one leaf: Theta(n log n).
 //   H3  Unit-cost RAM; allocating or releasing k words costs O(k);
 //       n + lambda fits in size_t.
 //   H4  memcpy of k elements costs Theta(k).
@@ -170,6 +173,9 @@ public:
     // Both arguments are clamped rather than rejected, so no combination
     // can produce undefined behaviour:
     //   - lambda == 0 becomes the default (a bin must hold >= 1 element);
+    //   - lambda above MAX_TARGET_ELEMENTS_PER_BIN and t above
+    //     MAX_LEAF_THRESHOLD (both 10000) are lowered to it, which is what
+    //     keeps the Theta(n) bound independent of the arguments;
     //   - t < lambda is raised to lambda (a bin of the target occupancy
     //     must be allowed to become a leaf).
     // The clamping is silent by design: these are tuning hints, not a

@@ -85,10 +85,14 @@ void StratumSort<T>::noteMemory(std::size_t) {}
 template <typename T>
 StratumSort<T>::StratumSort(std::size_t targetElementsPerBin, std::size_t leafThreshold)
     : targetElementsPerBin_(targetElementsPerBin == 0 ? DEFAULT_TARGET_ELEMENTS_PER_BIN
-                                                      : targetElementsPerBin),
-      leafThreshold_(std::max(leafThreshold, targetElementsPerBin_)) {
-    assert(targetElementsPerBin_ >= 1);
-    assert(leafThreshold_ >= targetElementsPerBin_);
+                            : targetElementsPerBin > MAX_TARGET_ELEMENTS_PER_BIN
+                                ? MAX_TARGET_ELEMENTS_PER_BIN
+                                : targetElementsPerBin),
+      leafThreshold_(leafThreshold < targetElementsPerBin_ ? targetElementsPerBin_
+                     : leafThreshold > MAX_LEAF_THRESHOLD  ? MAX_LEAF_THRESHOLD
+                                                           : leafThreshold) {
+    assert(targetElementsPerBin_ >= 1 && targetElementsPerBin_ <= MAX_TARGET_ELEMENTS_PER_BIN);
+    assert(leafThreshold_ >= targetElementsPerBin_ && leafThreshold_ <= MAX_LEAF_THRESHOLD);
 }
 
 // ============================================================

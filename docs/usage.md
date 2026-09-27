@@ -94,9 +94,16 @@ an instance used once on a huge array keeps that memory alive.
 ## Tuning
 
 Both constructor arguments are hints. They are clamped, never rejected:
-`λ == 0` becomes the default, and `t < λ` is raised to `λ`. No combination
-can produce undefined behaviour. Use the accessors to see what an instance
-actually ended up with.
+`λ == 0` becomes the default, `λ` and `t` above 10 000 are lowered to
+10 000, and `t < λ` is raised to `λ`. No combination can produce undefined
+behaviour. Use the accessors to see what an instance actually ended up
+with.
+
+The ceiling is part of the complexity guarantee, not a tuning limit
+chosen for speed: it keeps `λ` and `t` independent of `n` whatever is
+passed — `data.size()` included — so the worst case is `Θ(n)` for every
+argument. Without it, `λ = t = n` made the whole array one leaf and the
+worst case `Θ(n log n)`.
 
 ### λ — `targetElementsPerBin`, default 32
 
@@ -117,9 +124,9 @@ effect on running time. It trades two opposing costs:
 
 **The useful lower bound therefore depends on your `n` and your cache**,
 roughly `n·64/λ ≲ L2`. The default suits `n ≈ 10⁶` on a 4 MiB L2. At
-`n ≈ 10⁷` the same condition puts the lower bound near 160, so raise λ
-for much larger inputs — bearing in mind that past 64 the `(λ+1)/4` model
-above no longer describes the leaf cost.
+`n ≈ 10⁷` the same condition puts the lower bound near 160, so raise λ,
+up to the 10 000 ceiling, for much larger inputs — bearing in mind that
+past 64 the `(λ+1)/4` model above no longer describes the leaf cost.
 
 Raising λ does not change the complexity class, but it does raise the
 input size above which the linear regime applies — roughly
@@ -156,7 +163,8 @@ in doubt.
 `D` and the three local-sort dispatch thresholds — each with its
 justification and, where a value has never been measured, an explicit note
 saying so. One constraint is load-bearing: **`D ≥ 1`.** At `D = 0` there
-is no refinement at all and the worst case becomes `Θ(n log n)`.
+is no refinement at all and the worst case becomes `Θ(n log n)`, which is
+why `Config.hpp` rejects it with a `static_assert`.
 
 ## Build configurations
 

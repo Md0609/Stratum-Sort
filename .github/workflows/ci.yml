@@ -92,6 +92,7 @@ jobs:
           cmake -B b -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
                 -DCMAKE_CXX_STANDARD=${{ matrix.std }} \
                 -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+                ${{ matrix.cxx != 'msvc' && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }} \
                 -DSTRATUMSORT_BUILD_TESTS=OFF -DSTRATUMSORT_BUILD_EXAMPLES=OFF
           cmake --build b --config ${{ matrix.config }}
           "$(find b -name 'app' -o -name 'app.exe' | head -1)"
@@ -124,7 +125,42 @@ jobs:
           make package && sha256sum dist/*.zip | tee /tmp/a
           rm -rf dist && make package && sha256sum dist/*.zip | tee /tmp/b
           diff <(cut -d' ' -f1 /tmp/a) <(cut -d' ' -f1 /tmp/b)
+      - name: SHA-256 of the source package
+        run: cd dist && for f in *.zip; do sha256sum "$f" > "$f.sha256"; done && cat *.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: stratumsort-package
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+  # One package per platform, each built on its own native runner from the
+  # source package above: extracted, built and tested there with that
+  # runner's compiler, then archived with a BUILDINFO.txt recording what was
+  # verified (packaging/platform_package.py). Runs only once every other job
+  # has passed, so a platform package never comes from a red commit.
+  platform-package:
+    name: platform package / ${{ matrix.os }}
+    needs: [build-and-test, sanitizers, package]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  cxx: g++,     python: python3 }
+          - { os: macos-latest,   cxx: clang++, python: python3 }
+          - { os: windows-latest, cxx: msvc,    python: python }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stratumsort-package
+          path: source
+      - name: Build, test and archive on this runner
+        shell: bash
+        run: ${{ matrix.python }} packaging/platform_package.py source/stratumsort-v*.zip ${{ matrix.cxx }} platform
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stratumsort-${{ runner.os }}-${{ runner.arch }}
+          path: platform/*
