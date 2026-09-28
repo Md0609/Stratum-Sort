@@ -134,6 +134,12 @@ build/stability_san: tests/stability.cpp $(ALGO_HEADERS) datasets/DatasetGenerat
 	@mkdir -p build
 	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
+# The whole contract suite, sanitized: it reaches every path of the engine,
+# including the ones only 0.11.0 has (presorted, counting, automatic).
+build/contract_san: tests/api_contract.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
+
 build/float_keys_san: tests/float_keys.cpp $(ALGO_HEADERS)
 	@mkdir -p build
 	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
@@ -193,11 +199,13 @@ contract: build/contract build/contract_research
 # float_keys under the sanitizers walks every 101st float pattern: the
 # exhaustive walk is `make test`'s job, the sanitizers are here for the
 # sorting code around it.
-sanitizers: build/sanitizers build/fast_division_san build/stability_san build/float_keys_san
+sanitizers: build/sanitizers build/fast_division_san build/stability_san build/float_keys_san \
+            build/contract_san
 	./build/sanitizers
 	./build/fast_division_san
 	./build/stability_san
 	./build/float_keys_san 101
+	./build/contract_san
 
 # 20000 random cases by default; pass N=... for a longer soak.
 fuzz: build/fuzz

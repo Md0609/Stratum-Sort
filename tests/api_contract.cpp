@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <utility>
@@ -1173,6 +1174,85 @@ void testAutomaticParameters() {
     }
 }
 
+// ------------------------------------------------------------------
+// 13. Counting instead of moving (0.11.0)
+// ------------------------------------------------------------------
+// When a grid has width 1 every bucket holds one key, and for an element
+// that is its own key the engine counts and writes instead of moving
+// (Engine.hpp, countingFill). That path rebuilds elements from keys, so it
+// is checked for every self-keyed type, at the extremes of each type, at
+// the top level (no element buffer allocated) and nested inside a
+// refinement.
+template <typename T>
+static bool countingCase(std::vector<T> v) {
+    std::vector<T> want = v;
+    std::sort(want.begin(), want.end());
+    stratum::sort(v);
+    return v == want;
+}
+
+template <typename T>
+static bool countingBattery(std::mt19937_64& rng) {
+    const T lo = std::numeric_limits<T>::min(), hi = std::numeric_limits<T>::max();
+    bool ok = true;
+    for (std::size_t n : {3u, 100u, 5000u, 70000u}) {
+        std::vector<T> few(n), extremes(n), nested(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            few[i] = static_cast<T>(lo + static_cast<T>(rng() % 3));
+            extremes[i] = (rng() & 1) ? lo : hi;
+            // A far outlier makes the top level wide; the cluster below it
+            // is then refined, and THAT node has width 1.
+            nested[i] = (i % 997 == 0) ? hi : static_cast<T>(lo + static_cast<T>(rng() % 4));
+        }
+        ok = ok && countingCase(few) && countingCase(extremes) && countingCase(nested);
+    }
+    return ok;
+}
+
+enum class Level : int16_t { Low = -300, Mid = 0, High = 300 };
+
+void testCountingFill() {
+    section("13. Counting instead of moving");
+    std::mt19937_64 rng(1313);
+    const bool integral = countingBattery<int8_t>(rng) && countingBattery<uint8_t>(rng) &&
+                          countingBattery<int16_t>(rng) && countingBattery<uint16_t>(rng) &&
+                          countingBattery<int32_t>(rng) && countingBattery<uint32_t>(rng) &&
+                          countingBattery<int64_t>(rng) && countingBattery<uint64_t>(rng) &&
+                          countingBattery<char>(rng) && countingBattery<char16_t>(rng) &&
+                          countingBattery<char32_t>(rng) && countingBattery<wchar_t>(rng);
+    check(integral, "few distinct values, type extremes and a nested width-1 node, every integral type");
+
+    std::vector<Level> e(50000);
+    const Level levels[] = {Level::Low, Level::Mid, Level::High};
+    for (auto& x : e) x = levels[rng() % 3];
+    std::vector<Level> ew = e;
+    std::sort(ew.begin(), ew.end());
+    stratum::sort(e);
+    check(e == ew, "an enum with a negative underlying value, rebuilt from its keys");
+
+    // Floats with few bit patterns: -0 and +0 are different keys, and the
+    // rebuilt element must be the exact bit pattern, not an equal value.
+    std::vector<double> d(60000);
+    const double pool[] = {-0.0, 0.0, 1.5, -std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::infinity()};
+    for (auto& x : d) x = pool[rng() % 5];
+    std::vector<double> dw = d;
+    std::sort(dw.begin(), dw.end(), [](double a, double b) {
+        return stratum::OrderedKey<double>::key(a) < stratum::OrderedKey<double>::key(b);
+    });
+    stratum::sort(d);
+    check(std::memcmp(d.data(), dw.data(), d.size() * sizeof(double)) == 0,
+          "doubles with signed zeros and infinities come back bit for bit");
+
+    // At the top level nothing but the counters is allocated.
+    std::vector<int64_t> dup(200000);
+    for (auto& x : dup) x = static_cast<int64_t>(rng() % 7) - 3;
+    StratumSort<int64_t> s;
+    s.sort(dup);
+    check(std::is_sorted(dup.begin(), dup.end()) && s.scratchBytes() < 1024,
+          "a width-1 top level allocates only its counters, not an element buffer");
+}
+
 } // namespace
 
 // Allocation limiter for the exception-safety test. Defined at namespace
@@ -1294,6 +1374,7 @@ int main() {
     testPresortedInputs();
     testPresortedExceptionGuarantee();
     testAutomaticParameters();
+    testCountingFill();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

@@ -74,12 +74,18 @@ struct OrderedKeyImpl<K, typename std::enable_if<std::is_integral<K>::value &&
     static constexpr bool supported = true;
     static uint64_t key(K value) { return keyImpl(value, std::is_signed<K>{}); }
     static bool less(K a, K b) { return a < b; }
+    // The inverse of key(): exact for every key key() can produce.
+    static K fromKey(uint64_t k) { return fromKeyImpl(k, std::is_signed<K>{}); }
 
 private:
     static uint64_t keyImpl(K value, std::true_type) {
         return static_cast<uint64_t>(static_cast<int64_t>(value)) ^ (uint64_t{1} << 63);
     }
     static uint64_t keyImpl(K value, std::false_type) { return static_cast<uint64_t>(value); }
+    static K fromKeyImpl(uint64_t k, std::true_type) {
+        return static_cast<K>(static_cast<int64_t>(k ^ (uint64_t{1} << 63)));
+    }
+    static K fromKeyImpl(uint64_t k, std::false_type) { return static_cast<K>(k); }
 };
 
 // ---- Enumerations --------------------------------------------------
@@ -93,6 +99,7 @@ struct OrderedKeyImpl<K, typename std::enable_if<std::is_enum<K>::value>::type> 
         return OrderedKeyImpl<Underlying>::key(static_cast<Underlying>(value));
     }
     static bool less(K a, K b) { return static_cast<Underlying>(a) < static_cast<Underlying>(b); }
+    static K fromKey(uint64_t k) { return static_cast<K>(OrderedKeyImpl<Underlying>::fromKey(k)); }
 };
 
 // ---- IEEE-754 floating point --------------------------------------
@@ -139,6 +146,7 @@ struct FloatKey {
     }
     static uint64_t key(F value) { return static_cast<uint64_t>(encode(value)); }
     static bool less(F a, F b) { return encode(a) < encode(b); }
+    static F fromKey(uint64_t k) { return decode(static_cast<Bits>(k)); }
 };
 
 template <>
@@ -161,6 +169,13 @@ struct SelfKeyTraits {
     using Element = T;
     static uint64_t key(const T& value) { return OrderedKey<T>::key(value); }
     static bool less(const T& a, const T& b) { return OrderedKey<T>::less(a, b); }
+
+    // The element IS its key: two elements with equal keys are the same
+    // bit pattern, so an element can be rebuilt from its key. That is
+    // what lets the engine finish a node whose every bucket holds a single
+    // key by counting instead of moving (Engine.hpp, countingFill()).
+    static constexpr bool kElementIsKey = true;
+    static T fromKey(uint64_t k) { return OrderedKey<T>::fromKey(k); }
 };
 
 // The traits 0.10.0's integral keys use. Kept under its own name so that
@@ -184,6 +199,9 @@ struct ExtractedKeyTraits {
                   "key");
 
     KeyFn fn;
+
+    // Equal keys do not make equal records: the payload differs.
+    static constexpr bool kElementIsKey = false;
 
     uint64_t key(const E& e) const { return OrderedKey<KeyType>::key(fn(e)); }
     bool less(const E& a, const E& b) const { return OrderedKey<KeyType>::less(fn(a), fn(b)); }

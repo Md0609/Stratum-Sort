@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
         quick ? std::vector<std::size_t>{100000}
               : std::vector<std::size_t>{1000, 10000, 100000, 1000000, 10000000};
     const std::vector<std::size_t> lambdas =
-        quick ? std::vector<std::size_t>{32} : std::vector<std::size_t>{1, 8, 32, 128, 1024};
+        quick ? std::vector<std::size_t>{16} : std::vector<std::size_t>{1, 8, 16, 32, 128, 1024};
     const std::vector<std::string> shapes = {"uniform", "duplicates", "binary", "ascending",
                                              "adversarial"};
 

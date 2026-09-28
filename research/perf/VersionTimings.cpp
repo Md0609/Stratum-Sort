@@ -44,11 +44,30 @@ double timeMs(F&& f) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
+// The adversarial shapes are built against a lambda: an adversary built for
+// one lambda is just another input for a different one. 0.10.0 defaults to
+// lambda = 32, 0.11.0 to 16 (automatic), so each version is timed against
+// the adversary built for ITS OWN default - the only fair comparison. std::sort
+// gets the one built for the current default.
+template <typename T>
+std::vector<T> oldInputFor(const std::string& shape, std::size_t n, const std::vector<T>& current) {
+    if (shape != "adversarial" && shape != "worst_case") return current;
+    stratum::testing::DatasetGenerator g(42);
+    const auto a = g.adversarialPeeling(n, stratum_v0_10_0::DEFAULT_TARGET_ELEMENTS_PER_BIN,
+                                        shape == "adversarial" ? 0 : 4096);
+    std::vector<T> v(n);
+    for (std::size_t i = 0; i < n; ++i) v[i] = static_cast<T>(a[i]);
+    return v;
+}
+
 template <typename T>
 void runShape(const std::string& shape, std::size_t n, int reps) {
     const std::vector<T> input = stratum::bench::makeShape<T>(shape, n);
     std::vector<T> expected = input;
     std::sort(expected.begin(), expected.end());
+    const std::vector<T> inputOld = oldInputFor(shape, n, input);
+    std::vector<T> expectedOld = inputOld;
+    std::sort(expectedOld.begin(), expectedOld.end());
 
     std::vector<double> tOld, tNew, tReuse, tStd;
     bool ok = true;
@@ -56,9 +75,9 @@ void runShape(const std::string& shape, std::size_t n, int reps) {
     const stratum::StratumSort<T> shared;
     for (int r = 0; r < reps; ++r) {
         {
-            std::vector<T> d = input;
+            std::vector<T> d = inputOld;
             tOld.push_back(timeMs([&] { stratum_v0_10_0::StratumSort<T>().sort(d); }));
-            ok = ok && d == expected;
+            ok = ok && d == expectedOld;
         }
         {
             std::vector<T> d = input;
@@ -76,9 +95,10 @@ void runShape(const std::string& shape, std::size_t n, int reps) {
         }
     }
     const double o = medianOf(tOld), nw = medianOf(tNew), ru = medianOf(tReuse), sd = medianOf(tStd);
-    std::printf("%-15s %9zu | %9.3f %9.3f %9.3f %9.3f | %+7.1f%% %+7.1f%% | %6.2f %6.2f %s\n",
+    std::printf("%-15s %9zu | %9.3f %9.3f %9.3f %9.3f | %+7.1f%% %+7.1f%% | %6.2f %6.2f %s%s\n",
                 shape.c_str(), n, o, nw, ru, sd, 100.0 * (nw / o - 1.0), 100.0 * (ru / o - 1.0),
-                o / sd, nw / sd, ok ? "" : " WRONG");
+                o / sd, nw / sd, ok ? "" : " WRONG",
+                &inputOld == &input || inputOld == input ? "" : "  (each vs its own adversary)");
     std::fflush(stdout);
 }
 

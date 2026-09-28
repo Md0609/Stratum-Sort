@@ -586,6 +586,14 @@ public:
         probe_.end("refine");
     }
 
+    // The top level itself has width 1 and the element is its key: count
+    // and write, in place. Needs only the counters.
+    void runCounting(std::size_t n, const Grid& top) {
+        probe_.begin("distribute");
+        countingFill(/*inData=*/true, 0, n, top, 0);
+        probe_.end("distribute");
+    }
+
 private:
     E* buffer(bool inData) const { return inData ? data_ : aux_; }
 
@@ -636,6 +644,12 @@ private:
         }
 
         const Grid g = planSplit(lo, hi, count, lambda_);
+        if constexpr (Traits::kElementIsKey && !Sink::kRecord) {
+            if (g.width == 1) {
+                countingFill(inData, start, count, g, depth);
+                return;
+            }
+        }
         const std::size_t s = g.binCount;
         assert(arenaTop_ + s <= arenaCapacity_);
         Count* const ends = arena_ + arenaTop_;
@@ -758,6 +772,50 @@ private:
                 hi = mid;
         }
         return hi;
+    }
+
+    // ---- Counting instead of moving -----------------------------------
+    // When a grid has width 1, every bucket holds exactly ONE key (the cap
+    // bound: Lemma 2 of research/ALGORITHM.md), so every child is a span-0
+    // leaf and the node's sorted content is fully described by one count
+    // per key. If the element is its own key (integers, enums, floats:
+    // SelfKeyTraits), the elements need not be moved at all: count, then
+    // write each key count times straight into its final place in the
+    // caller's array. No scatter into the other buffer, no copy back, and
+    // at the top level no auxiliary buffer at all.
+    //
+    // This is 0.10.0's partition finished another way: the same buckets,
+    // each already known to be sorted. Its cost is O(count + s) with
+    // s = span + 1 <= ceil(count / lambda), inside the per-node bound of
+    // the proof. It is what low-cardinality inputs - a few distinct
+    // values, 8- and 16-bit keys - spend their time on, and where MSVC's
+    // std::sort was measured to beat the scatter by 1.5-2.7x.
+    void countingFill(bool inData, std::size_t start, std::size_t count, const Grid& g,
+                      std::size_t depth) {
+        const std::size_t s = g.binCount;
+        assert(g.width == 1);
+        assert(arenaTop_ + s <= arenaCapacity_);
+        Count* const counts = arena_ + arenaTop_;
+        std::fill(counts, counts + s, Count{0});
+        const E* const src = buffer(inData) + start;
+        const uint64_t origin = g.origin;
+        for (std::size_t i = 0; i < count; ++i) {
+            const uint64_t b = tr_.key(src[i]) - origin;
+            assert(b < s);
+            ++counts[b];
+        }
+        probe_.split(count, s, 0, depth + 1);
+        E* out = data_ + start;
+        for (std::size_t b = 0; b < s; ++b) {
+            const std::size_t c = counts[b];
+            probe_.leaf(c, c == 0);
+            if (c == 0) continue;
+            const E value = Traits::fromKey(origin + b);
+            std::fill(out, out + c, value);
+            out += c;
+        }
+        assert(out == data_ + start + count);
+        probe_.localAlgorithm("CountingFill");
     }
 
     // ---- Leaves ------------------------------------------------------
@@ -984,6 +1042,25 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
                                                       leafThreshold, probe, sink);
         engine.runSingleLeaf(n);
         return;
+    }
+
+    // Width 1 at the top and the element is its key: count and write. The
+    // only allocation is the counters, still before the first write.
+    if constexpr (Traits::kElementIsKey && !Sink::kRecord) {
+        if (top.width == 1) {
+            if (n <= std::numeric_limits<uint32_t>::max()) {
+                uint32_t* const counts = WorkspaceAccess::counts<E, uint32_t>(workspace, top.binCount);
+                Engine<Traits, uint32_t, Sink, Stable>(tr, data, nullptr, counts, top.binCount, lambda,
+                                                       leafThreshold, probe, sink)
+                    .runCounting(n, top);
+            } else {
+                uint64_t* const counts = WorkspaceAccess::counts<E, uint64_t>(workspace, top.binCount);
+                Engine<Traits, uint64_t, Sink, Stable>(tr, data, nullptr, counts, top.binCount, lambda,
+                                                       leafThreshold, probe, sink)
+                    .runCounting(n, top);
+            }
+            return;
+        }
     }
 
     // EVERY allocation of the sort happens here, before the first write.
