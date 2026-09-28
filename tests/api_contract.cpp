@@ -1113,6 +1113,66 @@ void testPresortedExceptionGuarantee() {
 #endif
 }
 
+// ------------------------------------------------------------------
+// 12. Automatic parameters (0.11.0)
+// ------------------------------------------------------------------
+// The constructor without arguments and a Parameters with 0 fields choose
+// lambda from n; everything given explicitly keeps 0.10.0's fixed, clamped
+// meaning. Both halves of that sentence are pinned here, plus a real sort
+// on each side of the threshold.
+void testAutomaticParameters() {
+    section("12. Automatic parameters");
+    const std::size_t big = stratum::AUTOMATIC_LARGE_INPUT;
+    auto is = [](const stratum::Parameters& p, std::size_t l, std::size_t t) {
+        return p.targetElementsPerBin == l && p.leafThreshold == t;
+    };
+
+    StratumSort<int64_t> a;
+    check(a.automaticParameters(), "the default constructor is automatic");
+    check(a.targetElementsPerBin() == 16 && a.leafThreshold() == 32,
+          "an automatic sorter reports the small-input values (16, 32)");
+    check(is(a.effectiveParameters(1000), 16, 32) && is(a.effectiveParameters(big), 16, 32) &&
+              is(a.effectiveParameters(big + 1), 32, 64),
+          "automatic: (16, 32) up to 2^22 elements, (32, 64) above");
+
+    StratumSort<int64_t> fixed(16, 32);
+    check(!fixed.automaticParameters() && is(fixed.effectiveParameters(100000000), 16, 32),
+          "explicit (16, 32) stays fixed for every n");
+    StratumSort<int64_t> zero(0, 0);
+    check(!zero.automaticParameters() && is(zero.effectiveParameters(big + 1), 16, 16),
+          "positional (0, 0) keeps 0.10.0's meaning: default lambda, t raised to lambda, fixed");
+
+    stratum::Parameters p;
+    check(StratumSort<int64_t>(p).automaticParameters(), "Parameters{} is automatic");
+    p.targetElementsPerBin = 64;
+    check(is(StratumSort<int64_t>(p).effectiveParameters(big + 1), 64, 128),
+          "Parameters with lambda set and t = 0: t = 2 * lambda");
+    stratum::Parameters q;
+    q.leafThreshold = 100;
+    check(is(StratumSort<int64_t>(q).effectiveParameters(10), 16, 100) &&
+              is(StratumSort<int64_t>(q).effectiveParameters(big + 1), 32, 100),
+          "Parameters with t set and lambda = 0: lambda automatic, t fixed");
+    stratum::Parameters r;
+    r.targetElementsPerBin = 20000;
+    r.leafThreshold = 5;
+    check(is(StratumSort<int64_t>(r).effectiveParameters(10), 10000, 10000),
+          "Parameters fields are clamped like the positional arguments");
+
+    // A real sort on each side of the threshold, by the class and by the
+    // free functions, with a shape that refines.
+    std::mt19937_64 rng(2222);
+    for (std::size_t n : {big, big + 1}) {
+        std::vector<int64_t> v(n);
+        for (auto& x : v) x = static_cast<int64_t>(rng() % (n * 4));
+        std::vector<int64_t> want = v;
+        std::sort(want.begin(), want.end());
+        std::vector<int64_t> w = v;
+        StratumSort<int64_t>().sort(v);
+        stratum::sort(w);
+        check(v == want && w == want, "automatic sort of n = " + std::to_string(n));
+    }
+}
+
 } // namespace
 
 // Allocation limiter for the exception-safety test. Defined at namespace
@@ -1233,6 +1293,7 @@ int main() {
     testParameterCeilings();
     testPresortedInputs();
     testPresortedExceptionGuarantee();
+    testAutomaticParameters();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

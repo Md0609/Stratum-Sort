@@ -423,6 +423,11 @@ void lambdaSuite(Report& rep, bool large) {
     for (const char* shape : {"random", "normal", "nearly_sorted", "whole_universe", "duplicates"})
         for (std::size_t n : sizes)
             lambdaSweep<int64_t>(rep, shape, n, n <= 100000 ? 15 : n <= 1000000 ? 9 : 5);
+    // Around the automatic threshold (Config.hpp, AUTOMATIC_LARGE_INPUT).
+    if (large)
+        for (const char* shape : {"random", "normal"})
+            for (std::size_t n : {std::size_t{1} << 21, std::size_t{1} << 22, std::size_t{1} << 23})
+                lambdaSweep<int64_t>(rep, shape, n, 5);
     for (std::size_t n : sizes) lambdaSweep<uint32_t>(rep, "random", n, n <= 100000 ? 15 : n <= 1000000 ? 9 : 5);
 }
 
@@ -491,8 +496,14 @@ int main(int argc, char** argv) {
     rep.line("| CPU | " + info.cpuModel + " |");
     rep.line("| Caches | " + info.caches + " |");
     rep.line("| Logical cores | " + std::to_string(info.logicalCores) + " |");
-    rep.line("| Defaults | lambda = " + std::to_string(stratum::StratumSort<int64_t>().targetElementsPerBin()) +
-             ", t = " + std::to_string(stratum::StratumSort<int64_t>().leafThreshold()) + " |");
+    {
+        const stratum::StratumSort<int64_t> automatic;
+        const auto lo = automatic.effectiveParameters(stratum::AUTOMATIC_LARGE_INPUT);
+        const auto hi = automatic.effectiveParameters(stratum::AUTOMATIC_LARGE_INPUT + 1);
+        rep.line("| Defaults | automatic: lambda = " + std::to_string(lo.targetElementsPerBin) + ", t = " +
+                 std::to_string(lo.leafThreshold) + " up to 2^22 elements; " +
+                 std::to_string(hi.targetElementsPerBin) + " / " + std::to_string(hi.leafThreshold) + " above |");
+    }
     rep.line("");
     rep.line("Ratios are medians over medians, both sorts timed alternately on identical copies of the "
              "input. \"stratum\" is a fresh instance per call; \"reused ws\" keeps one workspace. "

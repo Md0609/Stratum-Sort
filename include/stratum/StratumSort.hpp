@@ -189,13 +189,21 @@ public:
     // swapping them at a call site compiles. StratumSort(64, 32) is
     // read as (64, 64), not (32, 64). The Parameters overload below names
     // them and removes the hazard; this one stays for compatibility.
-    explicit StratumSort(std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN,
+    //
+    // AUTOMATIC PARAMETERS. The constructor without arguments does not fix
+    // lambda: each sort chooses it from n (Config.hpp, AUTOMATIC
+    // PARAMETERS) - 16 up to 2^22 elements, 32 above, t = 2 * lambda.
+    // The accessors then report the small-input values (16, 32);
+    // effectiveParameters(n) reports what a sort of n elements uses. A
+    // sorter constructed with explicit arguments uses them for every n,
+    // exactly as in 0.10.0.
+    StratumSort();
+    explicit StratumSort(std::size_t targetElementsPerBin,
                          std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
 
     // The same, with the two parameters named (Config.hpp, Parameters), so
-    // they cannot be swapped by accident. Clamped identically.
-    explicit StratumSort(const Parameters& parameters)
-        : StratumSort(parameters.targetElementsPerBin, parameters.leafThreshold) {}
+    // they cannot be swapped by accident. A field left at 0 is automatic.
+    explicit StratumSort(const Parameters& parameters);
 
     // Sorts 'data' in place into ascending order, using the workspace this
     // instance owns. Not safe to call concurrently on one instance.
@@ -212,6 +220,11 @@ public:
 
     std::size_t targetElementsPerBin() const { return targetElementsPerBin_; }
     std::size_t leafThreshold() const { return leafThreshold_; }
+
+    // Whether lambda / t are chosen per call from n, and what a sort of n
+    // elements actually uses.
+    bool automaticParameters() const { return requested_.targetElementsPerBin == 0 || requested_.leafThreshold == 0; }
+    Parameters effectiveParameters(std::size_t n) const { return resolveParameters(requested_, n); }
 
     // Bytes of scratch this instance currently holds, and a way to give
     // them back without destroying the instance.
@@ -244,6 +257,7 @@ private:
 
     std::size_t targetElementsPerBin_;   // lambda: target occupancy
     std::size_t leafThreshold_;          // t: base-case size
+    Parameters requested_;               // 0 fields: chosen per call from n
     Workspace<T> workspace_;
 
 #ifdef STRATUM_ENABLE_METRICS

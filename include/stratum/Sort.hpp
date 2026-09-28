@@ -60,20 +60,10 @@ inline namespace STRATUM_ABI_NAMESPACE {
 
 namespace detail {
 
-inline Parameters clampParameters(Parameters p) {
-    std::size_t lambda = p.targetElementsPerBin;
-    if (lambda == 0) lambda = DEFAULT_TARGET_ELEMENTS_PER_BIN;
-    if (lambda > MAX_TARGET_ELEMENTS_PER_BIN) lambda = MAX_TARGET_ELEMENTS_PER_BIN;
-    std::size_t t = p.leafThreshold;
-    if (t < lambda) t = lambda;
-    if (t > MAX_LEAF_THRESHOLD) t = MAX_LEAF_THRESHOLD;
-    return {lambda, t};
-}
-
 template <bool Stable, typename Traits>
 void run(const Traits& traits, typename Traits::Element* first, std::size_t n,
          Workspace<typename Traits::Element>& workspace, const Parameters& p) {
-    const Parameters c = clampParameters(p);
+    const Parameters c = resolveParameters(p, n);
 #ifdef STRATUM_ENABLE_METRICS
     workspace.metrics().reset();
     const Probe probe(&workspace.metrics());

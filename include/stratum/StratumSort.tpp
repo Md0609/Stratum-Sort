@@ -13,6 +13,16 @@ inline namespace STRATUM_ABI_NAMESPACE {
 // ============================================================
 // Construction
 // ============================================================
+// Without arguments: automatic. The accessors report the small-input
+// values; each sort resolves the pair for its own n.
+template <typename T>
+StratumSort<T>::StratumSort()
+    : targetElementsPerBin_(DEFAULT_TARGET_ELEMENTS_PER_BIN),
+      leafThreshold_(DEFAULT_LEAF_THRESHOLD),
+      requested_{0, 0} {}
+
+// Positional: 0.10.0's contract, clamped, fixed for every n. lambda == 0
+// means the default value (16), t below lambda is raised to lambda.
 template <typename T>
 StratumSort<T>::StratumSort(std::size_t targetElementsPerBin, std::size_t leafThreshold)
     : targetElementsPerBin_(targetElementsPerBin == 0 ? DEFAULT_TARGET_ELEMENTS_PER_BIN
@@ -21,10 +31,18 @@ StratumSort<T>::StratumSort(std::size_t targetElementsPerBin, std::size_t leafTh
                                 : targetElementsPerBin),
       leafThreshold_(leafThreshold < targetElementsPerBin_ ? targetElementsPerBin_
                      : leafThreshold > MAX_LEAF_THRESHOLD  ? MAX_LEAF_THRESHOLD
-                                                           : leafThreshold) {
+                                                           : leafThreshold),
+      requested_{targetElementsPerBin_, leafThreshold_} {
     assert(targetElementsPerBin_ >= 1 && targetElementsPerBin_ <= MAX_TARGET_ELEMENTS_PER_BIN);
     assert(leafThreshold_ >= targetElementsPerBin_ && leafThreshold_ <= MAX_LEAF_THRESHOLD);
 }
+
+// Named: a field left at 0 is automatic, a field set is clamped.
+template <typename T>
+StratumSort<T>::StratumSort(const Parameters& parameters)
+    : targetElementsPerBin_(resolveParameters(parameters, 0).targetElementsPerBin),
+      leafThreshold_(resolveParameters(parameters, 0).leafThreshold),
+      requested_(parameters) {}
 
 // ============================================================
 // Sorting
@@ -38,7 +56,8 @@ void StratumSort<T>::sortRange(T* first, std::size_t n, Workspace<T>& workspace)
     const detail::Probe probe;
 #endif
     detail::SortLeaves sink;
-    detail::sortWith</*Stable=*/false>(Traits{}, first, n, targetElementsPerBin_, leafThreshold_,
+    const Parameters p = resolveParameters(requested_, n);
+    detail::sortWith</*Stable=*/false>(Traits{}, first, n, p.targetElementsPerBin, p.leafThreshold,
                                        workspace, probe, sink);
 }
 
@@ -81,8 +100,9 @@ std::vector<typename StratumSort<T>::LeafView> StratumSort<T>::debugPartitionOnl
     debugA_ = data;
     std::vector<detail::LeafRecord> records;
     detail::RecordLeaves sink{&records};
+    const Parameters p = resolveParameters(requested_, data.size());
     detail::sortWith</*Stable=*/false>(Traits{}, debugA_.data(), debugA_.size(),
-                                       targetElementsPerBin_, leafThreshold_, workspace_, probe,
+                                       p.targetElementsPerBin, p.leafThreshold, workspace_, probe,
                                        sink);
 
     debugB_.assign(data.size(), T{});

@@ -70,34 +70,18 @@ namespace stratum {
 //   - Scatter cost grows as lambda shrinks: the distribution pass keeps
 //     n/lambda counters and writes into n/lambda output streams.
 //
-// WHY 16, AND WHY NOT A FUNCTION OF n OR OF THE CACHE (0.11.0).
-// Up to 0.10.0 the default was 32 with the caveat that it was tuned to one
-// cache - "n * 64 / lambda <~ L2", "much larger inputs want a larger
-// lambda". The 64 was the bytes each bin cost: a 48-byte tree node plus
-// its histogram entries. 0.11.0 keeps no tree and one 4-byte counter per
-// bucket (detail/Engine.hpp), which moved the point where the fan-out
-// saturates the cache by more than an order of magnitude - and with it the
-// optimum. It was re-measured, lambdas alternated in one process
-// (research/perf/LambdaSweep.cpp, benchmarks/stratum_bench.cpp --suite
-// lambda), on three machines: a Xeon (Linux, GCC), a GitHub Linux x86_64
-// runner and an Apple M1 (AppleClang), n from 1e4 to 1e8, shapes random,
-// normal, nearly sorted, whole-universe, duplicates, 64- and 32-bit keys.
-// Worst slowdown against each row's own best lambda:
-//
-//                      Xeon    Linux runner    Apple M1
-//     lambda = 32      1.34        1.39          1.40      (0.10.0 default)
-//     lambda = 16      1.13        1.09          1.17
-//     lambda = 8       1.18        1.00          1.61
-//
-// 16 is the minimax choice on every machine, and it holds from 1e4 to 1e8
-// (at 5e7 and 1e8 the curve is flat within 10% for every lambda from 8 to
-// 512: the sort is bound by main memory, not by the fan-out). An
-// n-dependent rule was considered and rejected on that evidence: no region
-// was found where it would gain measurably, and it would make the
-// partition - and so the order of equal keys in the unstable sorts -
-// depend on n in a way callers would have to learn. A cache-size query was
-// rejected for a stronger reason: the output of an unstable sort_by_key
-// would then differ between machines.
+// WHY 16 (0.11.0). Up to 0.10.0 the default was 32 with the caveat that it
+// was tuned to one cache - "n * 64 / lambda <~ L2", "much larger inputs
+// want a larger lambda". The 64 was the bytes each bin cost: a 48-byte tree
+// node plus its histogram entries. 0.11.0 keeps no tree and one 4-byte
+// counter per bucket (detail/Engine.hpp), which moved the point where the
+// fan-out saturates the cache by more than an order of magnitude, and with
+// it the optimum. Re-measured on four environments (the table is under
+// AUTOMATIC PARAMETERS below): up to a few million elements 16 is within
+// 10-17% of each machine's best, where 32 was up to 40% off. Above that,
+// larger inputs do still want a larger lambda on three of the four, which
+// is what the automatic parameters below implement - as a function of n,
+// never of the cache.
 //
 // Upper bound: see MAX_SUBDIVISION_DEPTH. lambda enters the worst-case
 // leaf bound as M = lambda * 2^(w/(D+1)): 9045 at lambda = 16 (18090 at
@@ -272,22 +256,86 @@ constexpr std::size_t LOCAL_PARTITION_CUTOFF = 12;
 constexpr std::size_t INTROSORT_DEPTH_FACTOR = 2;
 
 // ------------------------------------------------------------------
+// AUTOMATIC PARAMETERS (0.11.0)
+// ------------------------------------------------------------------
+// A default-constructed StratumSort, and every free function called
+// without explicit Parameters, chooses lambda from n alone:
+//
+//     n <= AUTOMATIC_LARGE_INPUT (2^22)   lambda = 16, t = 32
+//     n >  AUTOMATIC_LARGE_INPUT          lambda = 32, t = 64
+//
+// WHY A STEP IN n, MEASURED ON FOUR ENVIRONMENTS. Worst slowdown against
+// each row's own best lambda (research/perf/LambdaSweep.cpp and the lambda
+// suite of benchmarks/stratum_bench.cpp, shapes random, normal, nearly
+// sorted, whole universe, duplicates, 64- and 32-bit keys):
+//
+//                                  n <= 1e6          n = 1e7
+//                               lambda 16  32     lambda 16  32
+//     Xeon, Linux, GCC             1.10  1.29        1.12  1.00
+//     x86_64 runner, Linux, GCC    1.09  1.39        1.09  1.17
+//     Apple M1, AppleClang         1.17  1.40        1.17  1.10
+//     EPYC runner, Windows, MSVC   1.05  1.15        1.27  1.04
+//
+// No single lambda is best everywhere; 16 up to about 4 million elements
+// and 32 above is within 17% of every row's best on every machine. On the
+// Xeon the crossover lies between 2^22 (16 best) and 2^23 (24-32 best),
+// hence the threshold; it is not resolved more finely than that.
+//
+// WHY NOT THE CACHE SIZE. It would have to be queried per platform, and
+// the partition - hence the order of equal keys in the UNSTABLE sorts -
+// would then differ between machines. A function of n alone is
+// deterministic and reproducible everywhere.
+//
+// WHY THE PROOF DOES NOT CARE. Hypothesis H2 needs lambda and t to be
+// constants independent of n. A lambda that takes one of two fixed values
+// depending on n satisfies it: both lie below the ceilings, so every bound
+// of research/ALGORITHM.md holds with the constant of the larger one.
+constexpr std::size_t AUTOMATIC_LARGE_INPUT = std::size_t{1} << 22;
+constexpr std::size_t LARGE_INPUT_TARGET_ELEMENTS_PER_BIN = 32;
+constexpr std::size_t LARGE_INPUT_LEAF_THRESHOLD = 64;
+static_assert(LARGE_INPUT_TARGET_ELEMENTS_PER_BIN <= MAX_TARGET_ELEMENTS_PER_BIN &&
+                  LARGE_INPUT_LEAF_THRESHOLD <= MAX_LEAF_THRESHOLD &&
+                  LARGE_INPUT_LEAF_THRESHOLD >= LARGE_INPUT_TARGET_ELEMENTS_PER_BIN,
+              "the automatic parameters must be admissible");
+
+// ------------------------------------------------------------------
 // RUN-TIME PARAMETERS, NAMED
 // ------------------------------------------------------------------
 // lambda and t as one aggregate with named fields, accepted by
 // StratumSort's constructor and by every free function (Sort.hpp):
 //
-//     stratum::Parameters p;
-//     p.targetElementsPerBin = 64;
-//     p.leafThreshold = 128;
+//     stratum::Parameters p;            // both 0: automatic, as above
+//     p.targetElementsPerBin = 64;      // fixed lambda
+//     p.leafThreshold = 128;            // fixed t
 //
 // StratumSort(64, 32) compiles and means (64, 64); with named fields the
-// two cannot be swapped by accident. Clamped exactly like the positional
-// constructor: lambda into [1, MAX_TARGET_ELEMENTS_PER_BIN] (0 means the
-// default), t into [lambda, MAX_LEAF_THRESHOLD].
+// two cannot be swapped by accident. A field left at 0 is chosen
+// automatically - lambda from n as above, t as 2 * lambda. A field set is
+// clamped exactly like the positional constructor: lambda into
+// [1, MAX_TARGET_ELEMENTS_PER_BIN], t into [lambda, MAX_LEAF_THRESHOLD].
 struct Parameters {
-    std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN; // lambda
-    std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD;                 // t
+    std::size_t targetElementsPerBin = 0; // lambda; 0 = automatic
+    std::size_t leafThreshold = 0;        // t;      0 = automatic (2 * lambda)
 };
+
+// The parameters a sort of n elements uses when nothing was fixed.
+inline Parameters automaticParameters(std::size_t n) {
+    if (n > AUTOMATIC_LARGE_INPUT)
+        return {LARGE_INPUT_TARGET_ELEMENTS_PER_BIN, LARGE_INPUT_LEAF_THRESHOLD};
+    return {DEFAULT_TARGET_ELEMENTS_PER_BIN, DEFAULT_LEAF_THRESHOLD};
+}
+
+// Resolves a Parameters for a sort of n elements: 0 fields chosen
+// automatically, set fields clamped.
+inline Parameters resolveParameters(const Parameters& p, std::size_t n) {
+    const Parameters automatic = automaticParameters(n);
+    std::size_t lambda = p.targetElementsPerBin == 0 ? automatic.targetElementsPerBin
+                                                     : p.targetElementsPerBin;
+    if (lambda > MAX_TARGET_ELEMENTS_PER_BIN) lambda = MAX_TARGET_ELEMENTS_PER_BIN;
+    std::size_t t = p.leafThreshold == 0 ? 2 * lambda : p.leafThreshold;
+    if (t < lambda) t = lambda;
+    if (t > MAX_LEAF_THRESHOLD) t = MAX_LEAF_THRESHOLD;
+    return {lambda, t};
+}
 
 } // namespace stratum
