@@ -111,6 +111,13 @@ jobs:
         run: |
           make CXX=${{ matrix.cxx }} sanitizers
           make CXX=${{ matrix.cxx }} fuzz N=50000
+      # ThreadSanitizer: one const sorter shared by several threads, one
+      # workspace each. The runner kernel's high-entropy ASLR breaks TSan's
+      # shadow-memory layout, so lower it for this step only.
+      - name: ThreadSanitizer suite
+        run: |
+          sudo sysctl vm.mmap_rnd_bits=28
+          make CXX=${{ matrix.cxx }} tsan
 
   package:
     name: package is reproducible and leak-free

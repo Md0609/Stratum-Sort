@@ -18,193 +18,358 @@ target_link_libraries(your_target PRIVATE StratumSort::stratumsort)
 ```
 
 There is nothing to compile or link — `stratumsort` is an INTERFACE
-target that only sets an include directory and `cxx_std_17`.
-
-## The API
+target that only sets an include directory and `cxx_std_17`. One include
+gives you everything:
 
 ```cpp
 #include "stratum/StratumSort.hpp"
+```
 
+## Which function do I want?
+
+| you have | call | stable | extra memory |
+|---|---|---|---|
+| integers, enums, `char` types | `stratum::sort(v)` | equal keys are identical | ≈ `n·sizeof(T)` |
+| `float` / `double` | `stratum::sort(v)` — IEEE-754 `totalOrder` | idem | ≈ `n·sizeof(T)` |
+| records with a numeric key, order of equal keys irrelevant | `stratum::sort_by_key(v, key)` | no | ≈ `n·sizeof(record)` |
+| records with a numeric key, order of equal keys must be kept | `stratum::stable_sort_by_key(v, key)` | **yes** | ≈ `n·sizeof(record)` |
+| records that are not trivially copyable, or very large | `stratum::sorted_indices(first, last, key)` | **yes** | `n` (key, index) pairs |
+| 0.10.0 code | `stratum::StratumSort<T>().sort(v)` — unchanged | — | ≈ `n·sizeof(T)` |
+
+"≈" means `n·sizeof(T)` plus `(2⌈n/λ⌉ + 2)` counters of 4 bytes — 1.06×
+the input for an 8-byte key — and **less** on several common inputs (see
+"Memory" below).
+
+## The free functions
+
+```cpp
 namespace stratum {
 
-template <typename T>
+// Keys that are their own value: integral (not bool), enum, float, double.
+template <typename T> void sort(std::vector<T>& v);
+template <typename T> void sort(T* first, T* last);
+template <typename T> void stable_sort(std::vector<T>& v);
+template <typename T> void stable_sort(T* first, T* last);
+
+// Records moved as a whole, ordered by key(record). The record must be
+// trivially copyable; key must return an integral, enum, float or double.
+template <typename E, typename KeyFn> void sort_by_key(std::vector<E>& v, KeyFn key);
+template <typename E, typename KeyFn> void stable_sort_by_key(std::vector<E>& v, KeyFn key);
+// (and the (E* first, E* last, KeyFn key) forms)
+
+// The permutation that sorts [first, last) by key, stably. Any element type.
+template <typename It, typename KeyFn>
+std::vector<std::size_t> sorted_indices(It first, It last, KeyFn key);
+
+}
+```
+
+Every `sort*` function also has a form taking a `Workspace<E>&` and a
+`Parameters` (see below): `stratum::sort(v, workspace, parameters)`.
+
+```cpp
+std::vector<double> prices = /* ... */;
+stratum::sort(prices);                                   // totalOrder
+
+struct Order { uint64_t customer; uint32_t amount; uint32_t day; };
+std::vector<Order> orders = /* ... */;
+stratum::stable_sort_by_key(orders, [](const Order& o) { return o.customer; });
+// orders of one customer keep their previous relative order
+
+std::vector<std::string> names = /* ... */;
+std::vector<std::size_t> byLength =
+    stratum::sorted_indices(names.begin(), names.end(),
+                            [](const std::string& s) { return s.size(); });
+```
+
+### Key types
+
+| key | order | notes |
+|---|---|---|
+| signed / unsigned integers, 8–64 bits | numeric | `INT64_MIN` and `INT64_MAX` together are fine |
+| `char`, `wchar_t`, `char16_t`, `char32_t` (and `char8_t` in C++20) | numeric value of the code unit | |
+| enums, scoped or not | the underlying integer | negative enumerators work |
+| `float`, `double` | IEEE 754 `totalOrder` | see below |
+| `bool`, `__int128`, `long double`, strings, pointers | **rejected at compile time** | |
+
+**Floating point.** `float` and `double` are sorted by IEEE 754-2008
+`totalOrder`:
+
+```
+-NaN < -inf < … < -0.0 < +0.0 < … < +inf < +NaN
+```
+
+Without NaN, the result is also a valid result of `std::sort(v.begin(),
+v.end())` — the only difference is that `-0.0` is placed before `+0.0`
+instead of in unspecified order. With NaN, `std::sort` with `operator<` is
+undefined behaviour; `stratum::sort` puts negative NaNs first and positive
+ones last, deterministically. The output is a permutation of the input's
+exact bit patterns: `-0.0` stays `-0.0` and NaN payloads survive. The key
+mapping is proved exhaustively for all 2³² `float` patterns by
+`tests/float_keys.cpp`. `long double` is not supported: its width and
+layout differ between platforms.
+
+**The key function** is called several times per element (once per pass),
+must return the same key for the same record every time, must not modify
+the record, and must not throw — the strong exception guarantee relies on
+nothing after the first write being able to fail. A lambda returning a
+member is the intended use.
+
+### Stability — exactly what is promised
+
+- `stable_sort`, `stable_sort_by_key` and `sorted_indices` keep elements
+  with equal keys in their input order, **for every input and every
+  parameter**. `tests/stability.cpp` checks this against
+  `std::stable_sort` with an identifying payload on every record,
+  including inputs with thousands of copies of each key and adversarial
+  inputs that force the internal merge sort.
+- `sort` and `sort_by_key` are deterministic but make **no** promise about
+  equal keys: a different λ, or a different `n` under automatic parameters,
+  can order them differently. For `sort` on integers, enums and floats the
+  difference is unobservable (equal keys are equal bit patterns).
+- Cost: on the record benchmarks `stable_sort_by_key` runs at the same
+  speed as `sort_by_key` (±3%; the merge sort only runs on leaves above 64
+  elements), and it uses the same memory.
+
+## The class — 0.10.0's interface, unchanged
+
+```cpp
+namespace stratum {
+
+template <typename T>                 // integral, not bool, <= 64 bits
 class StratumSort {
 public:
-    explicit StratumSort(std::size_t targetElementsPerBin = 32,
-                         std::size_t leafThreshold        = 64);
+    StratumSort();                                          // automatic λ, t
+    explicit StratumSort(std::size_t targetElementsPerBin,
+                         std::size_t leafThreshold = 32);   // fixed λ, t
+    explicit StratumSort(const Parameters& parameters);     // named
 
-    void sort(std::vector<T>& data);        // in place, ascending
+    void sort(std::vector<T>& data);                        // own workspace
+    void sort(T* first, T* last);
+    void sort(std::vector<T>& data, Workspace<T>& ws) const; // caller's workspace
+    void sort(T* first, T* last, Workspace<T>& ws) const;
 
     std::size_t targetElementsPerBin() const;
     std::size_t leafThreshold() const;
+    bool        automaticParameters() const;
+    Parameters  effectiveParameters(std::size_t n) const;   // what a sort of n uses
+
+    std::size_t scratchBytes() const;                       // held by the instance
+    void        releaseScratch() noexcept;
 };
 
 }
 ```
 
-That is the entire public surface of a normal build. Defining
-`STRATUM_ENABLE_METRICS` adds an instrumentation API on top of it; see
-"Build configurations" below, and note the warning there about defining it
-consistently.
+Every 0.10.0 call site compiles and behaves as before: explicit
+`(λ, t)` are clamped exactly as in 0.10.0 and used for every `n`. Two
+things changed underneath: the default constructor now chooses λ per call
+(below), and an instance allocates about a third of the memory.
 
-## Element type
+## Workspaces, reuse and threads
 
-`T` must be an integral type of at most 64 bits. Three `static_assert`s
-enforce it:
-
-| rejected | why |
-|---|---|
-| non-integral | every formula is exact integer arithmetic |
-| `bool` | `std::vector<bool>` is the packed specialisation — no contiguous storage |
-| wider than 64 bits (e.g. `__int128`) | the offset arithmetic is carried in `uint64_t`, so a wider key would be truncated |
-
-The third one matters: some toolchains report `std::is_integral<__int128>`
-as true, and without the check the truncated index overflowed the heap.
-Signed and unsigned both work, including inputs containing `INT64_MIN`
-and `INT64_MAX` simultaneously.
-
-## Reuse
-
-An instance owns scratch buffers and reuses them across calls, so sorting
-many arrays with one instance avoids re-allocating:
+A `Workspace<E>` holds the scratch of a sort. It grows to the largest
+sort it has served and is kept until `release()` or destruction, so
+reusing one avoids allocating on every call:
 
 ```cpp
-stratum::StratumSort<int64_t> sorter;
-for (auto& batch : batches) sorter.sort(batch);
+stratum::Workspace<int64_t> ws;
+for (auto& batch : batches) stratum::sort(batch, ws);
 ```
 
-The memory is released when the instance is destroyed, not between calls:
-an instance used once on a huge array keeps that memory alive.
+It is movable and not copyable, and `bytes()` reports what it holds.
 
-## Guarantees
+**Threads.** Nothing in the library is shared or global. The rules:
 
-- **Deterministic.** No randomness; the same input always produces the
-  same sequence of operations.
-- **Strong exception safety** in a release build. Every allocation happens
-  before the first write to your array, so if `sort()` throws, the input
-  is untouched. (This does *not* hold if you define
-  `STRATUM_ENABLE_METRICS` — that build records the join phase's timing
-  after the join has run, and recording allocates.)
-- **No global state.** Distinct instances are independent and may be used
-  concurrently. A *single* instance is not thread-safe.
-- **Not stable.** Unobservable for the integral keys accepted here, since
-  equal elements are indistinguishable — but it does rule out a
-  straightforward extension to key/value pairs.
+| call | safe from several threads at once? |
+|---|---|
+| `stratum::sort(v)` and the other free functions without a workspace | yes — each call builds its own |
+| free functions with a workspace | yes, **one workspace per thread** |
+| `sorter.sort(v, ws) const` on **one shared** `const StratumSort<T>` | yes, one workspace per thread |
+| `sorter.sort(v)` (the instance's own workspace) | **no** on one instance, as in 0.10.0 |
 
-## Tuning
+```cpp
+const stratum::StratumSort<int64_t> sorter;             // shared, read-only
+std::vector<std::thread> pool;
+for (auto& chunk : chunks)
+    pool.emplace_back([&sorter, &chunk] {
+        stratum::Workspace<int64_t> ws;                 // one per thread
+        sorter.sort(chunk, ws);
+    });
+for (auto& t : pool) t.join();
+```
 
-Both constructor arguments are hints. They are clamped, never rejected:
-`λ == 0` becomes the default, `λ` and `t` above 10 000 are lowered to
-10 000, and `t < λ` is raised to `λ`. No combination can produce undefined
-behaviour. Use the accessors to see what an instance actually ended up
-with.
+No lock is taken and none is needed. `tests/concurrency.cpp` runs this
+pattern under ThreadSanitizer (`make tsan`).
 
-The ceiling is part of the complexity guarantee, not a tuning limit
-chosen for speed: it keeps `λ` and `t` independent of `n` whatever is
-passed — `data.size()` included — so the worst case is `Θ(n)` for every
-argument. Without it, `λ = t = n` made the whole array one leaf and the
-worst case `Θ(n log n)`.
+## Memory
 
-### λ — `targetElementsPerBin`, default 32
+On the general path a sort of `n` elements needs `n·sizeof(E)` bytes plus
+`(2⌈n/λ⌉ + 2)` counters (4 bytes each when `n < 2³²`), and nothing that
+depends on the input's shape. Measured at the allocator, `n = 10⁶`:
 
-The target occupancy per bin, and the only parameter with a first-order
-effect on running time. It trades two opposing costs:
+| input | 0.10.0 | 0.11.0 |
+|---|---|---|
+| `int64_t`, default parameters | 26.25 B/elem (3.28×) | **8.5 B/elem (1.06×)** |
+| `int64_t`, `λ = t = 1` | 16.57× | 2.00× |
+| `uint32_t`, default | — | 4.5 B/elem (1.13×) |
+| `uint8_t`, any shape | 10× | **a few hundred bytes** |
+| already ascending, or non-increasing | 3.28× | **0** |
+| sorted, with an unsorted tail of `n − k` elements (`k ≥ n/2`) | 3.28× | `(n − k)` elements |
+| few distinct values (`span < n/λ`) | 3.28× | only the counters |
+| 16-byte records, `stable_sort_by_key` | — | 16.5 B/elem (1.03×) |
 
-- **Local sorting grows with λ.** Leaves hold about λ elements. **While
-  leaves stay within the insertion-sort branch — that is, while
-  `λ ≤ LOCAL_INSERTION_MAX_ELEMENTS`, which is 64 — the expected
-  comparisons per element are about `(λ+1)/4`.** Above that the leaves are
-  finished by quicksort or introsort instead, the quadratic model stops
-  applying, and the cost per element grows like `log λ` rather than
-  linearly in λ. The formula is a guide for the default range, not a law.
-- **Scattering grows as λ shrinks.** The distribution pass writes into
-  `n/λ` output streams at once, each holding a cache line live, so the
-  write working set is about `(n/λ)·64` bytes. When that approaches L2,
-  throughput collapses.
+`std::sort` needs `O(log n)`; this is the remaining memory limitation, and
+it is structural — see "Limitations" in the README.
 
-**The useful lower bound therefore depends on your `n` and your cache**,
-roughly `n·64/λ ≲ L2`. The default suits `n ≈ 10⁶` on a 4 MiB L2. At
-`n ≈ 10⁷` the same condition puts the lower bound near 160, so raise λ,
-up to the 10 000 ceiling, for much larger inputs — bearing in mind that
-past 64 the `(λ+1)/4` model above no longer describes the leaf cost.
+## Parameters and the automatic default
 
-Raising λ does not change the complexity class, but it does raise the
-input size above which the linear regime applies — roughly
-`λ · 2^(w/(D+1))`, which is about 1.8·10⁴ at λ = 32 and 5.8·10⁵ at
-λ = 1024.
+Two numbers steer the algorithm; both are **hints**, clamped rather than
+rejected, so no combination can produce undefined behaviour or break the
+complexity bound.
 
-### t — `leafThreshold`, default 64
+```cpp
+struct Parameters {
+    std::size_t targetElementsPerBin = 0; // λ; 0 = automatic
+    std::size_t leafThreshold        = 0; // t; 0 = automatic (2λ)
+};
+```
 
-The size at which refinement stops. Precondition `t ≥ λ`, enforced by the
-constructor.
+**Automatic (the default everywhere).** λ is chosen per call from `n`:
 
-**`t` is not a tuned value, it is a safe lower bound.** Its only job is to
-sit above the upper tail of the occupancy distribution, so a bin is not
-refined merely for landing slightly above average. With λ = 32,
-`P(Poisson(32) > 64) ≈ 2·10⁻⁷`, and `t = 64`, 96 and 128 produce
-byte-identical internal counters on every dataset. Once `t` clears the
-tail its exact value is irrelevant.
+| `n` | λ | t |
+|---|---|---|
+| `≤ 2²²` (4 194 304) | 16 | 32 |
+| `> 2²²` | 32 | 64 |
 
-Setting `t = λ` is legal and fuses the two parameters back into one, at
-the cost of sending roughly half of all elements into refinement purely
-because `P(X > λ) ≈ 0.5` for Poisson(λ) — by arithmetic, not because the
-data needs it.
+This is a deterministic function of `n` only. It deliberately does **not**
+read the cache size or the core count: `sort_by_key` orders equal keys
+according to λ, and a machine-dependent λ would make that order change
+between your laptop and your server. The rule was chosen by measuring
+every λ from 8 to 1024 on four environments (Linux/GCC on two x86_64
+machines, Apple M1/AppleClang, Windows/MSVC on AMD EPYC): on every
+measured row the automatic choice is within 1.2× of that row's best λ, and
+usually within 1.1×, where 0.10.0's fixed λ = 32 reached 1.40×.
+`effectiveParameters(n)` tells you what a sort of `n` elements will use.
 
-### A hazard worth knowing
+**Explicit.** Name the fields, so they cannot be swapped:
 
-Both parameters are `std::size_t` and adjacent, so swapping them at a call
-site compiles silently. `StratumSort(64, 32)` is read as `(64, 64)`, not
-`(32, 64)`, because `t` is clamped up to `λ`. Check with the accessors if
-in doubt.
+```cpp
+stratum::Parameters p;
+p.targetElementsPerBin = 32;
+p.leafThreshold = 64;
+stratum::sort(v, ws, p);
+stratum::StratumSort<int64_t> s(p);
+```
+
+Clamping: λ = 0 means automatic; λ and t above 10 000 are lowered to
+10 000; t below λ is raised to λ. The ceiling is part of the complexity
+guarantee: it keeps λ and t independent of `n` whatever is passed —
+`data.size()` included — so the worst case stays `Θ(n)`.
+
+### What λ and t do, if you tune them
+
+- **λ, the target elements per bin**, trades local sorting (leaves hold
+  about λ elements; insertion-sort cost grows like `(λ+1)/4` comparisons
+  per element up to λ = 64) against scattering (the distribution writes
+  into `n/λ` streams at once). Smaller λ also lowers the largest leaf a
+  comparison sort can ever receive, `λ·2^(w/7)`: about 9 000 at λ = 16.
+  There is rarely a reason to leave the automatic value; if you measure,
+  alternate the candidates inside one process on your own data.
+- **t, the leaf threshold**, is a safe lower bound, not a tuned value: it
+  only needs to sit above the upper tail of the occupancy of a bin.
+  `t = 2λ` was re-measured against `t/λ` from 1 to 8 and is optimal or
+  within 4% everywhere; `t = λ` sends about half the elements into an
+  extra refinement pass for no reason.
+
+**A hazard, still present for compatibility:** `StratumSort(64, 32)` is
+read as `(64, 64)`, not `(32, 64)`, because t is raised to λ. The
+`Parameters` form removes it.
 
 ### Compile-time constants
 
 `include/stratum/Config.hpp` holds the rest — the maximum refinement depth
-`D` and the three local-sort dispatch thresholds — each with its
-justification and, where a value has never been measured, an explicit note
-saying so. One constraint is load-bearing: **`D ≥ 1`.** At `D = 0` there
-is no refinement at all and the worst case becomes `Θ(n log n)`, which is
-why `Config.hpp` rejects it with a `static_assert`.
+`D = 6`, the local-sort dispatch thresholds, the automatic-parameter table
+— each with its justification. One constraint is load-bearing: **`D ≥ 1`**,
+enforced with a `static_assert`.
+
+## Performance — what to expect
+
+Measured by CI on GitHub's runners with `benchmarks/stratum_bench.cpp`,
+`n = 10⁶`, time relative to `std::sort` on the same input (below 1 is
+faster). Full tables per platform are in the README.
+
+| input | Linux x86_64, GCC | macOS arm64, AppleClang | Windows x86_64, MSVC |
+|---|---|---|---|
+| random `int64_t` | 0.23× | 0.60× | 0.37× |
+| already sorted / reversed | 0.03× / 0.12× | 0.42× / 0.36× | 0.04× / 0.05× |
+| nearly sorted (1% swaps) | 0.52× | 0.76× | 1.06× |
+| few distinct values | 0.08× | 0.24× | 0.18× |
+| random `uint8_t` | 0.03× | 0.08× | 0.04× |
+| 16-byte records, stable vs `std::stable_sort` | 0.23× | 0.24× | 0.40× |
+
+Where it loses: inputs built against its own partition (1.2–1.7× on
+macOS and Windows), low-entropy keys on Apple M1 (1.5×), nearly sorted
+input under MSVC, and nearly sorted floating point on every platform.
+The README lists every loss with its cause.
+
+## Guarantees
+
+- **Deterministic.** No randomness; the same input and the same `n`
+  always produce the same sequence of operations and the same output.
+- **`Θ(n)` worst case**, for every input and every argument, treating the
+  key width as a constant (the sense in which radix sort is linear).
+- **Strong exception safety** in a release build. Every allocation happens
+  before the first write to your array, so if a sort throws
+  (`std::bad_alloc`), the input is untouched. This does *not* hold with
+  `STRATUM_ENABLE_METRICS` (the instrumentation allocates while
+  recording), nor if a key function throws.
+- **No global state.** See "Workspaces, reuse and threads".
 
 ## Build configurations
 
 | | metrics | assertions | use for |
 |---|---|---|---|
 | release | no | no | production; the only meaningful timings |
-| test | no | **yes** | correctness; ~5% slower, never for timing |
+| test | no | **yes** | correctness; slower, never for timing |
 | research | yes | yes | instrumentation; several times slower |
 
 Define `STRATUM_ENABLE_METRICS` to compile in the counters — comparisons,
 bins, subdivisions, depth, per-phase timing — reachable through
-`sorter.metrics()`. Without it, none of that exists in the object code.
-Never quote a timing from that build.
+`sorter.metrics()` or `workspace.metrics()`. Without it, none of that
+exists in the object code. Never quote a timing from that build.
 
-> **Define it for the whole program or not at all.** The macro adds a
-> member to `StratumSort<T>`, so the class has a different size and layout
-> in the two configurations — 112 versus 352 bytes for `int64_t` on a
-> 64-bit target.
->
-> That mismatch is made safe rather than left to chance: the class lives in
-> an inline namespace tagged by the macro, so the two configurations are
-> **different types**. You still write `stratum::StratumSort<T>` and see no
-> difference. But if two translation units disagree and the type crosses
-> between them, the build fails at link time with an undefined symbol
-> mentioning `stratum::abi_v1` or `stratum::abi_metrics_v1` — instead of
-> linking quietly and corrupting memory later. Set the macro in your build
-> system for every target that includes the header, or leave it unset
-> everywhere.
+> **Define it for the whole program or not at all.** The macro adds
+> members to `StratumSort<T>` and `Workspace<E>`, so they have a different
+> size and layout in the two configurations. That mismatch is made safe
+> rather than left to chance: the classes live in an inline namespace
+> tagged by the macro, so the two configurations are **different types**.
+> You still write `stratum::StratumSort<T>`. But if two translation units
+> disagree and the type crosses between them, the build fails at link time
+> with an undefined symbol mentioning `stratum::abi_v1` or
+> `stratum::abi_metrics_v1` — instead of linking quietly and corrupting
+> memory later.
 
-## Running the tests
+## Running the tests and the benchmark
 
 ```bash
-make test         # three suites, assertions active
-make sanitizers   # range-arithmetic limits under ASan/UBSan
+make test         # all suites, assertions active
+make sanitizers   # ASan/UBSan
+make tsan         # ThreadSanitizer: shared sorter, one workspace per thread
 make fuzz N=200000
-make timings      # release timings against std::sort
+make bench        # benchmarks/stratum_bench against std::sort, SUITE=quick|ci|types|lambda|full
 ```
 
 Or with CMake:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest --test-dir build
+cmake -B build -DSTRATUMSORT_BUILD_BENCHMARKS=ON && cmake --build build --target stratum_bench --config Release
 ```
+
+`stratum_bench` prints the compiler, standard, flags, CPU, caches and core
+count with every table, times Stratum and `std::sort` alternately on
+identical copies of each input, and reports medians with the p10–p90
+spread, ns/element, elements/s and the peak auxiliary memory measured at
+the allocator. Run it on your own machine before relying on any number
+above.

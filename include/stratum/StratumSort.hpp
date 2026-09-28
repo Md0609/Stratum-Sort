@@ -49,7 +49,9 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //     B(n) = min( n, (lambda^(D+1) * 2^w / n)^(1/D) )
 //
 // which for large n DECREASES like n^(-1/D), and whose supremum over all
-// n is the CONSTANT lambda * 2^(w/(D+1)) ~= 18000 at the default lambda,
+// n is the CONSTANT lambda * 2^(w/(D+1)): ~= 9045 at lambda = 16 and
+// ~= 18090 at lambda = 32 (the automatic default uses 32 only for
+// n > 2^22, where B(n) < 7300, so no automatic sort sees a leaf above 9045),
 // and at most ~5.7e6 at the ceiling lambda = 10000. The bound depends on
 // n; its supremum does not, and that supremum is what makes the total
 // linear.
@@ -86,12 +88,15 @@ inline namespace STRATUM_ABI_NAMESPACE {
 // 0.11.0 changed how the memory is used and nothing about the partition:
 // the grids, the buckets, the refinement rule, the leaves and the local
 // sorts are 0.10.0's, element for element. detail/Engine.hpp explains the
-// difference; research/ALGORITHM.md needs none.
+// difference; research/ALGORITHM.md section 13 re-derives every bound the
+// new machinery touches (memory, the presorted paths, the automatic
+// parameters, the counting fill).
 //
 // ---- Guarantees ---------------------------------------------------
 // STABILITY: none. This sorter is NOT stable. For the integral key types
 //   it accepts, equal elements are indistinguishable, so this is
-//   unobservable.
+//   unobservable. Records that must keep the order of equal keys use
+//   stratum::stable_sort_by_key (Sort.hpp).
 //
 // THREAD SAFETY: the SETTINGS of a sorter (lambda, t) are immutable after
 //   construction. Its SCRATCH lives in a Workspace:
@@ -131,10 +136,17 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //
 //   and nothing else: no per-element index, no refinement tree, and no
 //   term that depends on the shape of the input. Measured peak for an
-//   8-byte key: 1.03x the input at the default lambda = 32 (0.10.0: 3.28x),
-//   and 2.0x at lambda = t = 1 (0.10.0: 16.56x). For a 1-byte key it is
-//   1.0x plus at most 2 KiB (0.10.0: 10x). An input with every key equal,
-//   and an input of at most lambda elements, allocate nothing.
+//   8-byte key: 1.06x the input at the automatic lambda = 16 (8.5 bytes
+//   per element; 0.10.0: 3.28x at its default 32), 1.03x at lambda = 32,
+//   and 2.0x at lambda = t = 1 (0.10.0: 16.56x). Less on many inputs:
+//     - already ascending or non-increasing: nothing at all;
+//     - a sorted prefix of at least half the input: n - k elements;
+//     - a key span smaller than n / lambda - few distinct values, 8-bit
+//       keys from n = 4096, 16-bit keys from n ~ 10^6 - so that the
+//       top-level grid has width 1 (research/ALGORITHM.md 13.6): only the
+//       span + 1 counters, a few hundred bytes for uint8_t (0.10.0: 10x
+//       the input);
+//     - at most lambda elements: nothing.
 //   research/perf/MemoryProfile.cpp measures all of it at the allocator.
 //
 //   The workspace an instance owns is allocated on first use and reused

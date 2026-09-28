@@ -131,15 +131,27 @@ struct FloatKey {
     static_assert(std::numeric_limits<F>::is_iec559, "float keys need IEEE-754 arithmetic");
     static_assert(sizeof(F) == sizeof(Bits), "unexpected floating-point width");
     static constexpr bool supported = true;
-    static constexpr Bits kSign = Bits{1} << (8 * sizeof(Bits) - 1);
+    static constexpr unsigned kTop = 8 * sizeof(Bits) - 1;
+    static constexpr Bits kSign = Bits{1} << kTop;
 
+    // Both directions are written as one XOR with a mask derived from the
+    // sign bit, never as a conditional. The two are equal on every bit
+    // pattern, but a conditional is compiled to a BRANCH by MSVC, and the
+    // sign of random data is a coin flip: on the Windows runner that
+    // misprediction made float keys cost 1.9x what int64 keys cost, and
+    // lose to std::sort on inputs with few distinct values. GCC and Clang
+    // were already branch-free; for them this is 0-15% faster.
+    //   encode: sign set   -> mask all ones  -> ~b
+    //           sign clear -> mask = kSign   -> b | kSign
     static Bits encode(F value) {
         Bits b;
         std::memcpy(&b, &value, sizeof b);
-        return (b & kSign) ? static_cast<Bits>(~b) : static_cast<Bits>(b | kSign);
+        return static_cast<Bits>(b ^ (static_cast<Bits>(Bits{0} - (b >> kTop)) | kSign));
     }
+    //   decode: key top set   -> mask = kSign  -> k ^ kSign
+    //           key top clear -> mask all ones -> ~k
     static F decode(Bits k) {
-        const Bits b = (k & kSign) ? static_cast<Bits>(k ^ kSign) : static_cast<Bits>(~k);
+        const Bits b = static_cast<Bits>(k ^ (static_cast<Bits>((k >> kTop) - Bits{1}) | kSign));
         F value;
         std::memcpy(&value, &b, sizeof value);
         return value;

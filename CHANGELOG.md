@@ -3,7 +3,97 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] — unreleased
+## [0.11.0] — unreleased
+
+Turns most of 0.10.0's documented limitations into capabilities: a third
+of the memory, presorted input in a single pass, floating-point and enum
+keys, records with a stable variant, one sorter shared across threads, and
+a λ chosen from `n` instead of fixed. The partition — and with it the
+`Θ(n)` proof — is unchanged; `research/ALGORITHM.md` §13 re-derives every
+bound the new machinery touches. Every 0.10.0 call site compiles and
+sorts as before.
+
+### Changed
+- **Memory: 3.28× → 1.06× the input** (`int64_t`, default parameters,
+  measured at the allocator). The caller's array is now one of the two
+  cascading buffers; the per-element bucket-index cache is gone (the index
+  is recomputed with an exact reciprocal division, which is 23–52% *faster*
+  than storing it); the refinement tree is gone (depth-first visit); all
+  histograms share one arena of `2⌈n/λ⌉ + 2` 32-bit counters. At
+  `λ = t = 1`: 16.57× → 2.00×. Two allocations per sort instead of ~30,
+  and none of the peak depends on the input's shape.
+- **Automatic parameters.** `StratumSort<T>()` and `Parameters{}` choose
+  `(λ, t) = (16, 32)` for `n ≤ 2²²` and `(32, 64)` above, per call.
+  0.10.0's fixed `λ = 32` was tuned to one cache; re-measured on four
+  environments, it was up to 1.40× slower than the best λ, the automatic
+  rule is within 1.2×. Deterministic: a function of `n` only, never of the
+  machine. Explicit `(λ, t)` keep 0.10.0's fixed, clamped contract.
+  Effect on the bound: the largest leaf a comparison sort can receive under
+  automatic parameters drops from 18 090 to 9 045.
+- `DEFAULT_TARGET_ELEMENTS_PER_BIN` is now 16 and `DEFAULT_LEAF_THRESHOLD`
+  32: the values an explicit `StratumSort<T>(λ)` falls back to.
+- `float`/`double` key encoding is branch-free, so MSVC no longer compiles
+  it to an unpredictable branch on the sign bit.
+
+### Added
+- **Presorted input in one pass.** The min/max analysis now also measures
+  the ascending prefix, resuming the min/max scan where the prefix breaks.
+  Ascending input returns after that pass (0 bytes, 0 writes);
+  non-increasing input is reversed; a sorted prefix of at least half the
+  input is kept, the tail sorted and one backward merge buffers only the
+  tail. `std::sort` ratio on sorted input: 5.95× slower → 0.03–0.42×.
+- **Counting fill.** A width-1 grid over keys that are their own element
+  (Lemma 2's case) is finished by counting and writing, without moving
+  elements: `uint8_t`, few distinct values and similar inputs need only
+  the counters. `uint8_t` memory 10× → a few hundred bytes.
+- **Free functions** (`Sort.hpp`): `stratum::sort`, `stable_sort`,
+  `sort_by_key`, `stable_sort_by_key` (vectors and pointer ranges, with or
+  without a `Workspace` and `Parameters`), and `sorted_indices` for any
+  element type.
+- **Key types:** every integral type but `bool` (including `char`,
+  `wchar_t`, `char16_t`, `char32_t`), enums through their underlying type,
+  and `float`/`double` in IEEE 754 `totalOrder` — bijective on bit
+  patterns, so `-0.0` and NaN payloads survive; proved over all 2³² floats.
+- **Stable variant.** Only three steps could reorder equal keys (the
+  leaves' quicksort/introsort, and two reversals); the stable variant
+  replaces exactly those — a bottom-up merge sort whose buffer is the
+  leaf's own range in the other buffer, and run-preserving reversals.
+- **`Workspace<E>`** and `sort(data, workspace) const`: one `const`
+  sorter shared by any number of threads, each with its own workspace,
+  without locks. `sort(data)` keeps 0.10.0's per-instance contract.
+- `StratumSort(const Parameters&)`, `automaticParameters()`,
+  `effectiveParameters(n)`, `scratchBytes()`, `releaseScratch()`,
+  `sort(T* first, T* last)`.
+- Tests: `tests/fast_division.cpp` (the reciprocal is exact, 12.2 M
+  checks), `tests/float_keys.cpp` (exhaustive over 2³² floats),
+  `tests/stability.cpp` (3 694 checks against `std::stable_sort` with
+  identifying payloads), `tests/concurrency.cpp` (also under
+  ThreadSanitizer, `make tsan`); API contract sections 10–13 (presorted
+  paths, exception safety on the prefix path, automatic parameters,
+  counting fill); floats and records in the differential fuzz. Contract
+  checks: 132 → 154 (release), 148 → 170 (research).
+- **Cross-platform benchmark:** `benchmarks/stratum_bench.cpp` and the
+  `Benchmarks` workflow on Linux x86_64, macOS arm64 and Windows x86_64.
+  18 input shapes including a McIlroy adversary against the platform's own
+  `std::sort`; `std::sort` and `std::stable_sort` alternated on identical
+  copies; medians with p10–p90, ns/element, elements/s, peak auxiliary
+  bytes at the allocator; compiler, standard, flags, CPU, caches and cores
+  printed with every table.
+- `research/perf/` (the before/after instruments of this release) and
+  `research/baselines/v0_10_0/` (the frozen 0.10.0 headers they compare
+  against).
+
+### Fixed
+- A research-build test silently overflowed `int64_t` when building its
+  adversary at `λ = 16` and tested a different input than intended; it now
+  checks for overflow, and the 4096-element case is pinned at `(32, 64)`.
+
+### Not changed
+- The partition, the proof, the local-sort thresholds, `D = 6`, the
+  ceilings `Λ = 10 000`, the strong exception guarantee, and the ABI
+  namespace mechanism of `STRATUM_ENABLE_METRICS`.
+
+## [0.10.0] — 2026-09-28
 
 Fixes a correctness defect that shipped in 0.9.0, makes the `Θ(n)`
 worst case hold for every constructor argument, and corrects

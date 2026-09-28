@@ -65,15 +65,19 @@
 //     suffices is proved next to visitChildren().
 //
 // Peak auxiliary memory is therefore n * sizeof(T) + (2 ceil(n/lambda)+2)
-// counters - 8.25 bytes per element for an 8-byte key at lambda = 32,
-// against 26.25 - and nothing in it depends on the input's shape.
+// counters - 8.5 bytes per element for an 8-byte key at the automatic
+// lambda = 16 (8.25 at 32), against 26.25 - and nothing in it depends on
+// the input's shape. Two paths need less: presorted input (sortWith) and
+// a width-1 grid over keys that are their own element (countingFill),
+// which needs the counters alone.
 //
 // The last term is structural. A split into ceil(m / lambda) buckets needs
 // one counter per bucket: that fan-out IS the algorithm (it is what Lemma 4
 // spends the bit budget on), so O(n / lambda) counters cannot go without
-// changing the algorithm. The n-element buffer can: the in-place variant
-// is discussed in research/history/V11_memory.md, and why it is not the
-// default.
+// changing the algorithm. The n-element buffer could only go with an
+// in-place distribution; research/history/V11_informe.md (section 3.3)
+// measures one - 3.5x to 14x slower at this fan-out, and not stable - and
+// research/ALGORITHM.md section 13.3 has the full memory accounting.
 //
 // EXCEPTION SAFETY IS UNCHANGED. Every allocation - the buffer and the
 // arena, both sized from n before anything is read twice - happens before

@@ -1,5 +1,11 @@
 # Stratum Sort — complete technical description
 
+> **Version note.** Sections 3–12 use the vocabulary of the 0.10.0
+> implementation, and their numeric examples use its default `λ = 32`.
+> 0.11.0 keeps the partition and the proof, and rebuilds the machinery
+> around them; **§13** maps every name, re-derives each bound the rebuild
+> touches, and replaces §8.5's allocation table.
+
 This document is self-contained. Everything needed to reimplement the
 algorithm from scratch, in any language, is here: the motivation, the
 derivation of every formula, the meaning of every parameter, the proof of
@@ -12,8 +18,8 @@ Notation used throughout:
 |---|---|
 | `n` | number of elements |
 | `w` | bits in the key type (64 for `int64_t`) |
-| `λ` | target occupancy per bin (default 32) |
-| `t` | leaf threshold (default 64) |
+| `λ` | target occupancy per bin (0.10.0 default 32; 0.11.0 automatic: 16 for `n ≤ 2²²`, 32 above — §13.7) |
+| `t` | leaf threshold (0.10.0 default 64; 0.11.0 automatic: `2λ`) |
 | `D` | maximum refinement depth (default 6) |
 | `span` | `max − min` of a range of values, **never** `max − min + 1` |
 
@@ -123,6 +129,11 @@ at `n = 10⁶`:
 λ = 32 is a practical optimum for `n ≈ 10⁶` on that machine. It is **not
 universal**: at `n = 10⁷` the same condition puts the lower bound near
 160.
+
+*0.11.0:* the table above was measured on 0.10.0, whose per-bin overhead
+(a tree node and two histograms, ~64 bytes) is gone. Re-measured on four
+environments, the optimum moved to λ = 16 up to `n = 2²²` and 24–32 above;
+§13.7 has the data and the deterministic rule that follows from it.
 
 ### 3.2 t — leaf threshold
 
@@ -1184,3 +1195,334 @@ Everything needed, in order:
 
 If your implementation is correct, the leaves will tile `[0, n)` exactly.
 If they do not, one of steps 2, 4 or 7 is wrong.
+
+## 13. 0.11.0: what the engine changed, and why every bound still holds
+
+Sections 3–12 describe the algorithm in the vocabulary of the 0.10.0
+implementation (`refine`, `countAndPlace`, `bufferA_`, the `RefinedRange`
+tree). 0.11.0 keeps the **partition** — the grids, the buckets, the stopping
+rule, the local sorts — and rebuilds the machinery around it: how memory is
+used, what happens before the partition starts, and what element types can
+flow through it. This section re-derives every statement of §8 that the
+rebuild touches. Statements it does not mention transfer unchanged, and
+13.1 is the argument that they do.
+
+### 13.0 Map from 0.10.0 names to 0.11.0 names
+
+| 0.10.0 | 0.11.0 (`include/stratum/detail/Engine.hpp`) |
+|---|---|
+| `planPartition` / `planRefinement` | `planTop` / `planSplit` — same formulas |
+| `refine` | `Engine::process` |
+| `countAndPlace` | `Engine::run` (top level: fused copy + count) and the two loops in `process` |
+| `scanRange` | the `lo`/`hi` loop in `process` |
+| `(key − origin) / width` | `FastDivider64` (exact reciprocal, `detail/FastDivision.hpp`) |
+| `bucketOfScratch_` (cached index) | **gone** — recomputed in both passes |
+| `bufferA_`, `bufferB_` | the caller's array and **one** workspace buffer |
+| `RefinedRange` tree, per-node histograms | **gone** — depth-first visit, one counter arena |
+| `sortRefined` + `appendLeaves` | `Engine::leaf` + `copyHome`, done as each leaf is found |
+| `analyze` (min/max) | `analyze` (min/max **and** the sorted prefix, one pass) |
+| — | presorted front end (13.4), stable variant (13.5), counting fill (13.6) |
+
+### 13.1 The partition is the same partition
+
+**Claim.** For every input that reaches the general engine and every
+`(λ, t)`, 0.11.0 produces the same leaves as 0.10.0 with the same
+`(λ, t)`: the same offsets, the same elements, and the same order inside
+each leaf.
+
+1. **Same buckets.** `FastDivider64` returns `⌊x/d⌋` exactly for every
+   64-bit `x` and every `d ≥ 1` (Granlund–Montgomery, *Division by
+   invariant integers using multiplication*, 1994, Thm 4.2; the three code
+   shapes are shift for powers of two, `mulhi(x, m) ≫ s` when the magic
+   fits in 64 bits, and the add-back form `((x − q)/2 + q) ≫ s` when it
+   needs 65). `tests/fast_division.cpp` checks every divisor below
+   `2¹⁶` against the dividends next to its multiples (`kd − 1`, `kd`,
+   `kd + 1`) and the top of the range, every power of two ± 2 (the
+   boundaries between the three shapes), the widths the algorithm itself
+   produces for spans up to `2⁶⁴ − 1`, and four million random pairs.
+2. **Same grids.** `planTop`/`planSplit` are §5's formulas, including the
+   cap `s ≤ σ + 1` and the width normalisation at `s = 1`.
+3. **Same order.** Every distribution is count-then-place with cursors
+   advancing in input order, so it is stable, and every one starts from the
+   same order as 0.10.0's. The top level copies the input into the
+   workspace *while* counting and places back into the caller's array;
+   0.10.0 copied into `bufferA_` and placed into `bufferB_`. The sequence of
+   elements each bucket receives is identical.
+4. **Same buffer discipline.** Levels still alternate between two buffers
+   at the same absolute offsets (§10). Only the names changed: depth 0
+   lives in the caller's array, depth 1 in the workspace, and so on.
+
+Hence Properties 1–4, Lemmas 1–5 and the residual theorem of §8.4 hold
+verbatim: they are statements about grids, spans and counts, all
+unchanged. Checked mechanically: the research build's counters are equal
+between the two versions on the parameter-ceiling adversaries — 7 and 1569
+`heapSort` executions, 14.2476 and 14.3409 comparisons per element. The
+research build's `debugPartitionOnly` disables 13.4's prefix merge and
+13.6's counting fill — the two places where 0.11.0 finishes a node
+differently — so the leaves it reports are the partition's.
+
+### 13.2 The hypotheses, revisited
+
+**H1 becomes a condition on the key, not on the element.** The engine sees
+elements only through a traits object with `key : E → [0, 2^w)`,
+`w ≤ 64`, and `less(a, b) ⇔ key(a) < key(b)` (`KeyTraits.hpp`). Every step
+of §8 uses keys only — spans, widths, buckets, comparisons — so the proof
+holds for any traits satisfying this, with `w` the width of the **key**
+type:
+
+| key type | `key(x)` | `w` |
+|---|---|---|
+| unsigned integral, `char` types | `x` | `8·sizeof` |
+| signed integral | `x` with the sign bit flipped (two's complement → offset binary) | `8·sizeof` |
+| enum | `key` of its underlying type | underlying width |
+| `float` / `double` (IEC 559) | `~bits` if the sign bit is set, else `bits | signbit` | 32 / 64 |
+| `sort_by_key(E, fn)` | `key(fn(e))` for one of the above | that type's width |
+
+The float map is IEEE 754's `totalOrder`. For sign 0 the bit pattern, read
+as unsigned, is monotone in the value (exponent above mantissa); setting
+the sign bit moves these to `[2^(w−1), 2^w)`. For sign 1 a larger pattern
+is a larger magnitude, hence a smaller value; `~bits = (2^w − 1) − bits`
+reverses that order and lands in `[0, 2^(w−1))`. So
+`−NaN < −∞ < … < −0 < +0 < … < +∞ < +NaN`, the map is a bijection and
+`fromKey` inverts it bit for bit. `tests/float_keys.cpp` checks all 2³²
+floats (monotone, bijective, round trip) and the double edge set.
+
+The class `StratumSort<T>` keeps 0.10.0's three `static_assert`s. The free
+functions assert `OrderedKey<K>::supported`, which admits exactly the rows
+above.
+
+**H2 for automatic parameters.** Explicit `(λ, t)` are clamped exactly as
+in 0.10.0. The automatic choice (`Parameters{}`, `StratumSort<T>()`) is
+`(16, 32)` for `n ≤ 2²²` and `(32, 64)` above — a function of `n` taking
+two values, both inside the clamp. §8.9's constant `c(Λ, D, w)` is
+**uniform** over every clamped `(λ, t)`, so a choice that depends on `n` but
+stays inside the clamp is covered by the same constant. That uniformity is
+what licenses an automatic rule at all; a rule that let `λ` grow with `n`
+would not be covered (§8.9, last paragraph).
+
+**H3's allocation clause now covers O(1) allocations.** The engine
+allocates at most two blocks per sort — the element buffer and the counter
+arena — both from a grow-only `Workspace`, and none at all when a reused
+workspace is already large enough. The per-node allocate/release pairs of
+0.10.0 (§8.5, fourth row) no longer exist. Counters are `uint32_t` when
+`n ≤ 2³² − 1`: every value a counter holds is a position `≤ n`.
+
+**H4** is unchanged; 13.6 adds `std::fill` of `k` elements at `Θ(k)`.
+
+### 13.3 Memory — replaces the allocation table of §8.5
+
+| what | when | size |
+|---|---|---|
+| element buffer | general path | `n` elements |
+| element buffer | sorted-prefix path (13.4) | `n − k ≤ ⌊n/2⌋` elements |
+| element buffer | stable variant, `n ≤ λ` and `n > 64` | `n ≤ Λ` elements |
+| element buffer | already ascending, non-increasing, `n ≤ λ` unstable, top-level width 1 with `key` bijective (13.6) | **none** |
+| counter arena | general path | `2⌈n/λ⌉ + 2` counters |
+| counters | top-level width 1 (13.6) | `s_top = σ_g + 1 ≤ ⌈n/λ⌉` |
+| stack | always | `≤ D + 1` refinement frames, `O(log m)` in the local sorts, `≤ log₂ n` frames of the prefix chain (13.4) |
+
+**Peak auxiliary bytes** on the general path:
+`n·sizeof(E) + (2⌈n/λ⌉ + 2)·sizeof(Count)`, independent of the input's
+shape. For an 8-byte key: 8.5 B/element at `λ = 16` (1.06× the input),
+8.25 at `λ = 32`, 16 at `λ = 1` (2.0×). 0.10.0 needed
+`2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` words: 26.25 B/element at
+`λ = 32`, 3.28× measured.
+
+**Why `2⌈n/λ⌉ + 2` counters always suffice.** Invariant: when `process`
+is called on a node of `m` elements, at least `⌈m/λ⌉` counters are free.
+A split takes `s ≤ ⌈m/λ⌉` (the cap only lowers `s`), so it always finds
+them. After placing, it *keeps* its `s` counters — they now hold the end of
+every child — only if `⌈largest child/λ⌉` counters remain free, which
+restores the invariant for every child; otherwise it releases them at once,
+leaving its own `⌈m/λ⌉ ≥ ⌈m′/λ⌉` free for any child `m′`. At the top
+level the root keeps its `s_top` ends and `2s_top − s_top = s_top ≥ ⌈m/λ⌉`
+for any top-level bin — unless the top-level cap binds, in which case every
+top-level bin has span 0 (Lemma 2) and none splits. Induction on depth. ∎
+
+**The cost of not keeping them.** A node that released its counters finds
+its children by galloping: along a placed node the bucket index is
+non-decreasing (Property 4), so the end of the child starting at `p` is an
+exponential probe then a binary search, at most `2⌈log₂ c⌉ + 2` bucket
+computations for a child of `c ≥ 1` elements. Since `log₂ c + 1 ≤ c`, a
+node of `m` elements pays at most `4m` bucket computations, and §8.5's
+per-level `O(n)` (F1b) is untouched. Empty children are invisible to the
+search and cost nothing.
+
+**What cannot go.** The `O(n/λ)` counters are the fan-out `⌈m/λ⌉` itself —
+what Lemma 4 spends the bit budget on — so removing them changes the
+algorithm. The `n`-element buffer could go only with an in-place
+distribution (American-flag cycle leader, same partition, same division).
+Measured on the top-level step: +251% at `n = 10⁵`, +533% at `10⁶`,
++1303% at `10⁷` — with `⌈n/λ⌉` buckets every step of a cycle is a
+dependent cache/TLB miss, which is why in-place radix sorts use 256
+buckets. It is also not stable. Fixing it (IPS⁴o-style blocks, or a
+bounded first-level fan-out) changes the partition and Lemma 4
+(research/history/V11_informe.md §3.3).
+
+### 13.4 The presorted front end
+
+`analyze` does the min/max pass of 0.10.0 and, in the same pass, measures
+the longest non-decreasing prefix `[0, k)`: it scans the monotone prefix,
+and at the first break the prefix's extremes are its two ends, so the
+min/max scan **resumes** at `k` instead of restarting. One pass in every
+case, `≤ 2n` key evaluations.
+
+| result | action | cost |
+|---|---|---|
+| `k = n` (includes all keys equal) | nothing | `Θ(n)`, zero writes, zero allocations |
+| whole input non-increasing | reversal (stable variant: reverse, then reverse each run of equal keys back) | `Θ(n)`, zero allocations |
+| `k ≥ n/2` | sort `[k, n)` recursively, then one backward merge buffering only the tail | see below |
+| otherwise | the general engine, §8 | §8.9 |
+
+**The prefix chain is linear.** With `c₁n` for the analysis and `c₂n` for
+the merge, `T(n) ≤ (c₁ + c₂)n + T(n − k)` with `n − k ≤ n/2`, so
+`T(n) ≤ 2(c₁ + c₂)n + T_engine(n_last)` with `n_last ≤ n`: `O(n)`, and at
+most `log₂ n` nested calls. **The merge is safe in place**: with `i`
+prefix and `j` tail elements unplaced, the next write goes to `i + j − 1`;
+writing a tail element there leaves `[0, i)` intact because `j ≥ 1`. On
+equal keys the tail element is placed first — later in the output — so
+the merge is stable, and the path is stable whenever the tail sort is.
+
+**It opens no new attack.** Every branch is linear or hands the input to
+the general engine, whose bound is §8.9. A prefix that breaks early costs
+`O(k)` extra comparisons inside the one pass; a prefix that breaks late
+and is shorter than `n/2` costs the same single pass as 0.10.0's analysis.
+What the front end does *not* detect — a sorted input with a few outliers
+at the front, a descending prefix followed by noise — goes to the engine,
+where it is ordinary input.
+
+### 13.5 The stable variant
+
+Only three steps of the whole algorithm can reorder equal keys:
+
+1. `quickSort` / `introSort` / `heapSort` on a leaf above
+   `L₁ = 64` elements;
+2. reversing a leaf `detectRun` found non-increasing, when it contains
+   equal keys;
+3. reversing a non-increasing input (13.4), likewise.
+
+Everything else is order-preserving: distribution is stable (13.1), the
+span-0 certificate moves nothing, the prefix merge takes the prefix first
+on ties, and counting fill (13.6) only runs where equal keys mean
+identical elements. `stable_sort` replaces exactly those three: insertion
+sort (stable, strict `less`) up to 64 elements, a bottom-up merge sort
+above it, and a reversal that re-reverses each run of equal keys.
+
+**The merge sort's buffer is free by construction.** A leaf occupies
+`[start, start + m)` of one buffer. The same offsets of the *other* buffer
+hold only data already consumed: the parent's copies, which the parent's
+place pass read to the end before any child was visited, or — at depth 0
+— the input copy the top-level place pass consumed. No other node owns
+those offsets, because nodes at one depth are disjoint (F1b) and each
+node's elements live in exactly one buffer. The only leaf without a parent
+is the `n ≤ λ` single leaf; for it the stable variant allocates `n ≤ Λ`
+elements when `n > 64`.
+
+**Linearity.** Runs of 32 by insertion sort, then `⌈log₂(m/32)⌉` merge
+passes: at most `16m + m⌈log₂ m⌉` comparisons. That is the role of the
+`introSort` row of §8.6, with `m ≤ max(t, M)` from §8.4; the aggregation
+argument is identical. The two reversals are `Θ(m)`.
+
+`tests/stability.cpp` checks the variant against `std::stable_sort` with an
+identifying payload on every record: thousands of duplicates per key,
+adversarial inputs that force leaves into the merge sort, 1- to 64-bit
+keys, floats with `±0`, enums and 128-byte records (3694 checks).
+
+### 13.6 Counting instead of moving — Lemma 2, finished another way
+
+When a grid has width 1 — the cap binds, `s = σ + 1` — bucket `b` holds
+exactly the elements with key `origin + b` (Lemma 2). If `key` is a
+**bijection** onto its image with exact inverse `fromKey` (`SelfKeyTraits`:
+integral, `char` types, enums, `float`, `double`), the node's sorted output
+is determined by its histogram: write `fromKey(origin + b)` `count[b]`
+times, in bucket order, straight into the caller's array.
+
+- **Correct:** the output is the sorted multiset, and since
+  `fromKey(key(e)) = e` bit for bit (`±0`, NaN payloads and negative enum
+  values included — `tests/api_contract.cpp` §13), it is the same array
+  bytes the scatter would produce.
+- **Linear:** `O(m + s)` with `s = σ + 1 ≤ ⌈m/λ⌉ ≤ m`, inside the per-node
+  budget of §8.5; its `s` counters are the ones the split would have taken,
+  so the arena invariant of 13.3 is untouched.
+- **Cheaper in memory:** at the top level (`σ_g < ⌈n/λ⌉`, Case B of
+  Lemma 4) it needs only the `s_top` counters and no element buffer:
+  `uint8_t` keys and few-distinct-values inputs sort with a few hundred
+  bytes of scratch.
+- **Not applicable** to `sort_by_key` / `sorted_indices`: records with
+  equal keys are distinguishable, so they are placed, not counted.
+
+### 13.7 Automatic parameters and the residual bound
+
+`B(n)` and `M` of §8.4 at the new parameters (`w = 64`, `D = 6`):
+
+| `λ` | `M = λ·2^(w/(D+1))` | `log₂ M` | `B(10⁶)` | `B(2²²)` | `B(10⁷)` |
+|---|---|---|---|---|---|
+| 16 | 9 044.7 | 13.14 | 4 128.5 | 3 251.0 | 2 812.7 |
+| 32 | 18 089.4 | 14.14 | 9 268.2 | 7 298.2 | 6 314.3 |
+
+Under the automatic rule, `λ = 16` for `n ≤ 2²²`, where `B₁₆(n) ≤ M₁₆`;
+and `λ = 32` only for `n > 2²² > M₃₂`, where `B₃₂` is decreasing and so
+`B₃₂(n) < B₃₂(2²²) ≈ 7 298`. **Every expensive leaf of an automatic sort
+has at most 9 045 elements** — half of 0.10.0's 18 090 — and §8.6's
+constant becomes `c·log₂ 9 045 ≈ 13.14c`.
+
+**Why these values.** §3.1's cache argument was measured on 0.10.0, whose
+per-bin overhead (a tree node and two histograms, ~64 bytes) no longer
+exists. Re-measured on 0.11.0, alternating λ inside one process, on four
+environments (Xeon/GCC, GitHub's Linux x86_64 runner, Apple M1/AppleClang,
+AMD EPYC/MSVC on Windows), worst slowdown against the best λ of each row:
+
+| | `n ≤ 10⁶`, λ = 16 | λ = 32 | `n = 10⁷`, λ = 16 | λ = 32 |
+|---|---|---|---|---|
+| Xeon, Linux, GCC | 1.10 | 1.29 | 1.12 | 1.00 |
+| runner x86_64, Linux, GCC | 1.09 | 1.39 | 1.09 | 1.17 |
+| Apple M1, AppleClang | 1.17 | 1.40 | 1.17 | 1.10 |
+| EPYC, Windows, MSVC | 1.05 | 1.15 | 1.27 | 1.04 |
+
+The crossover on the Xeon lies between `2²²` (16 best) and `2²³` (24–32
+best); at `5·10⁷` and `10⁸` the curve is flat within ±10% for every λ from
+8 to 512 — main memory dominates. `t = 2λ` was re-measured against
+`t/λ ∈ {1, 1.5, 3, 4, 8}`: optimal or within 4% on every non-adversarial
+shape.
+
+**Why the rule reads `n` and not the cache.** It must be deterministic. An
+unstable sort's order of equal keys depends on `(λ, t)`; if those came from
+the machine's cache size, `sort_by_key` would order ties differently on
+different hardware, and so would a debugging session and its production
+run. A function of `n` alone keeps every result reproducible, and
+`effectiveParameters(n)` reports what a call will use.
+
+### 13.8 Exception safety and concurrency
+
+**Strong guarantee, every path.** Every allocation precedes the first write
+to the caller's array: the general path reserves buffer and arena before
+the top-level place pass; the counting path reserves its counters before
+writing; the prefix chain reserves the tail buffer before recursing, the
+recursion allocates before *its* first write, and the merge allocates
+nothing. After that the engine calls only non-throwing operations: copies
+of trivially copyable elements (a `static_assert` of `Workspace`), integer
+arithmetic, and `key`/`less`. For `sort_by_key` the key function is user
+code and is required not to throw (`KeyTraits.hpp`); the guarantee is
+conditional on that, and says so.
+
+**No shared mutable state.** `sort(data, workspace) const` reads only the
+sorter's immutable parameters; everything a sort writes lives in the
+caller's array and the workspace. Any number of threads may share one
+`const StratumSort<T>` with one workspace each, and the free functions
+build a private workspace per call. `tests/concurrency.cpp` runs both under
+ThreadSanitizer. `sort(data)` without a workspace keeps 0.10.0's contract:
+it uses the sorter's own workspace and is not safe to call concurrently on
+one instance.
+
+### 13.9 Additions to the checklist of §12
+
+11. Compute `⌊x/width⌋` exactly — a reciprocal is fine, an approximation
+    is not: Property 2 needs the exact quotient.
+12. Two buffers at the same offsets, one of them the caller's array;
+    `2⌈n/λ⌉ + 2` counters shared as a stack; keep a node's ends only if
+    `⌈largest/λ⌉` counters remain, else gallop.
+13. Resume the min/max scan where the sorted prefix breaks; never scan
+    twice.
+14. Count instead of scattering only when the element **is** its key.
+15. For stability, replace exactly the three reordering steps of 13.5 and
+    nothing else.
