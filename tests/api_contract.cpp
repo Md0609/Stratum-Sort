@@ -1042,6 +1042,27 @@ void testPresortedInputs() {
     check(correct, "sorted, reversed, reversed-with-ties and constant inputs sort correctly");
     check(noAlloc, "already ordered inputs allocate no scratch at all");
 
+    // At most lambda elements: one leaf, sorted in place, whatever the
+    // order - in particular not the sorted-prefix path, whose tail buffer
+    // would be the sort's only allocation ({9, 9, 2, 8, 2} did that).
+    {
+        bool small = true;
+        for (std::size_t n = 2; n <= 16; ++n) {
+            for (int trial = 0; trial < 50; ++trial) {
+                std::vector<int64_t> v(n);
+                const std::size_t prefix = (trial % 2 == 0) ? n / 2 + rng() % (n - n / 2) : 0;
+                for (auto& x : v) x = static_cast<int64_t>(rng() % 10);
+                std::sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(prefix));
+                std::vector<int64_t> want = v;
+                std::sort(want.begin(), want.end());
+                StratumSort<int64_t> s; // automatic: lambda = 16 at this n
+                s.sort(v);
+                small = small && v == want && s.scratchBytes() == 0;
+            }
+        }
+        check(small, "inputs of at most lambda elements sort correctly and allocate nothing");
+    }
+
     // Long ascending prefix + tail, on both sides of the n/2 decision and
     // with every tail shape, for three key widths.
     bool merged = true;

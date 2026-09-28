@@ -1,7 +1,7 @@
-# Stratum Sort 0.10.0
+# Stratum Sort 0.11.0
 
-A linear-time sorting algorithm for integral keys up to 64 bits.
-Header-only, C++17, no dependencies.
+A linear-time sorting algorithm for integer, enum and floating-point
+keys, and for records sorted by one. Header-only, C++17, no dependencies.
 
 This is the distributed package. It is self-contained: everything needed
 to build, test and use the library is in this archive, and nothing here
@@ -11,15 +11,22 @@ refers to a file that is not.
 #include <stratum/StratumSort.hpp>
 
 std::vector<int64_t> data = /* ... */;
-stratum::StratumSort<int64_t> sorter;
-sorter.sort(data);              // in place, ascending
+stratum::sort(data);                        // in place, ascending
+
+std::vector<double> prices = /* ... */;
+stratum::sort(prices);                      // IEEE-754 totalOrder
+
+stratum::stable_sort_by_key(rows, [](const Row& r) { return r.id; });
+
+stratum::StratumSort<int64_t> sorter;       // the 0.10.0 interface,
+sorter.sort(data);                          // unchanged
 ```
 
 ---
 
 ## Install
 
-The library is four headers under `include/stratum/`. Copy that directory
+The library is the headers under `include/stratum/`. Copy that directory
 into your project and add it to your include path — there is nothing to
 compile or link.
 
@@ -32,7 +39,9 @@ target_link_libraries(your_target PRIVATE StratumSort::stratumsort)
 
 ## Minimal working example
 
-This is the opening of `examples/basic.cpp`, built by `make examples`:
+`examples/basic.cpp`, built by `make examples`, shows integers, doubles,
+records sorted stably by a key, and the class with named parameters and a
+workspace. Its first lines:
 
 ```cpp
 #include <stratum/StratumSort.hpp>
@@ -42,10 +51,7 @@ This is the opening of `examples/basic.cpp`, built by `make examples`:
 
 int main() {
     std::vector<int64_t> data{5, 3, 9, 1, 7, 3};
-
-    stratum::StratumSort<int64_t> sorter;
-    sorter.sort(data);
-
+    stratum::sort(data);
     for (auto x : data) std::cout << x << ' ';   // 1 3 3 5 7 9
     std::cout << '\n';
 }
@@ -57,47 +63,56 @@ Build it by hand with nothing but a compiler:
 c++ -std=c++17 -O2 -Iinclude examples/basic.cpp -o basic && ./basic
 ```
 
+`docs/usage.md` is the API reference: which function to call, the
+stability contract, threads, memory and tuning.
+
 ## What it does
 
-Look at the data once to find its minimum and maximum. Cut that range into
-equal-width intervals sized so a typical interval receives about λ
-elements, and drop every element into its interval in one pass. Intervals
-are ordered by construction, so no merge is ever needed.
+Look at the data once to find its minimum and maximum — and, in the same
+pass, whether it is already sorted, in which case the work is done. Cut
+the observed range into equal-width intervals sized so a typical interval
+receives about λ elements, and drop every element into its interval in one
+pass. Intervals are ordered by construction, so no merge is ever needed.
 
 Any interval that came out too crowded is split again — **using its own
 minimum and maximum, not the global ones.** A tight cluster hidden inside
 a wide interval gets resolved at *its* scale. Each refinement level is a
 *stratum*, hence the name. When an interval is small enough, an ordinary
-comparison sort finishes it, and the pieces are concatenated.
+comparison sort finishes it, and the pieces are already in place.
+
+Floating-point keys and records go through the same engine: the key is
+mapped to a 64-bit unsigned integer that preserves its order — for
+`float` and `double`, IEEE 754's `totalOrder` — and the record moves with
+it.
 
 ## The complexity guarantee, and what it rests on
 
-**Stratum Sort is Θ(n) in the worst case, for every input and every constructor argument, under the four hypotheses below.**
+**Stratum Sort is Θ(n) in the worst case, for every input and every
+argument, under the four hypotheses below.**
 
 The recursion depth is bounded by the key width, not by `n`: every
 refinement level consumes at least one bit of the interval's observed
 span. A leaf that still needs a comparison sort therefore has size at most
 
 ```
-λ · 2^(w/(D+1))  ≈  18 000        for the shipped λ = 32, w = 64, D = 6
+λ · 2^(w/(D+1))  ≈  9 045        λ = 16, w = 64, D = 6
 ```
 
-— a constant independent of `n`. What that leaf costs depends on which
-local sort it reaches, and only the largest band is `O(m log m)`:
+— a constant independent of `n`. The automatic parameters use λ = 32 only
+above `2²²` elements, where the bound at that `n` is below 7 300, so no
+sort with automatic parameters hands a comparison sort more than 9 045
+elements. What a leaf costs depends on which local sort it reaches:
 
-| leaf size `m` | local sort | worst case |
+| leaf size `m` | local sort (stable variant) | worst case |
 |---|---|---|
-| `m ≤ 64` | insertion sort | `O(m²)`, with `m ≤ 64` |
-| `64 < m ≤ 384` | quicksort, no depth limit | `O(m²)`, with `m ≤ 384` |
-| `m > 384` | introsort, heapsort fallback | `O(m log m)` guaranteed |
+| `m ≤ 64` | insertion sort (same) | `O(m²)`, with `m ≤ 64` |
+| `64 < m ≤ 384` | quicksort, no depth limit (merge sort) | `O(m²)`, with `m ≤ 384` |
+| `m > 384` | introsort, heapsort fallback (merge sort) | `O(m log m)` guaranteed |
 
-The quadratic bands do not break linearity, and the reason is not that 384
-is a small number: when `m ≤ C` for a fixed `C`, `m² ≤ C·m`, so the cost is
-linear in the leaf with constant `C/2 = 192`. Leaves tile `[0, n)` without
-overlap, so `Σ m ≤ n` and the total across all leaves is `O(n)`.
-
-The lower bound is immediate: the initial min/max scan reads every element
-unconditionally.
+The quadratic bands do not break linearity: when `m ≤ C` for a fixed `C`,
+`m² ≤ C·m`, so the cost is linear in the leaf. Leaves tile `[0, n)`
+without overlap, so the total across all leaves is `O(n)`. The lower bound
+is immediate: the initial scan reads every element.
 
 This is linear in the same sense radix sort is linear. It does not
 contradict the `Ω(n log n)` comparison lower bound, because the algorithm
@@ -107,119 +122,113 @@ does arithmetic on keys rather than only comparing them.
 
 | | |
 |---|---|
-| **H1** | `T` is integral with `w = 8·sizeof(T) ≤ 64` bits. Enforced by `static_assert`. |
-| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are constants independent of `n`. Enforced: the constructor clamps `λ` and `t` to at most 10 000, so passing `data.size()` cannot make them grow with `n`; `D = 6` is a compile-time constant. |
+| **H1** | The key maps to `w ≤ 64` bits preserving its order: integral types but `bool`, enums, `float`, `double`. Enforced by `static_assert`. |
+| **H2** | `λ ≥ 1`, `t ≥ λ` and **`D ≥ 1`** are bounded independently of `n`. Enforced: explicit arguments are clamped to at most 10 000, the automatic choice takes one of two fixed values, and `D = 6` is a compile-time constant. |
 | **H3** | Unit-cost RAM: arithmetic and one array access are `O(1)`, allocating or releasing `k` words costs `O(k)`, and `n + λ` fits in `size_t`. |
 | **H4** | `memcpy` of `k` elements costs `Θ(k)`. |
 
 `D ≥ 1` is load-bearing: at `D = 0` there is no refinement at all and a
 single bin can hold `Θ(n)` elements, making the worst case `Θ(n log n)`.
 
-**On small `D`.** The bound above is a supremum over all `n`; at a given
-`n` the real bound is `min(n, (λ^(D+1)·2^w/n)^(1/D))`, which is *vacuous*
-until `n` exceeds `λ · 2^(w/(D+1))`. That threshold is about `1.8·10⁴` at
-`D = 6` — below any realistic input — but about `8.5·10⁷` at `D = 2` and
-`1.4·10¹¹` at `D = 1`. So a small `D` is still asymptotically linear and
-still practically useless: over any input size you would actually sort,
-the algorithm can hand most of the array to a comparison sort. **`D = 6`
-is the studied and shipped configuration**; the others are not
-recommended.
-
 The full proof — five lemmas, a phase-by-phase cost table, the adversary
-families that saturate the bound, and an adversarial review of the proof
-by itself — is in the project repository, not in this package.
+families that saturate the bound, an adversarial review of the proof by
+itself, and the re-derivation for the 0.11.0 engine — is in the project
+repository, not in this package.
 
 ## Complexity, space, guarantees
 
 | | |
 |---|---|
-| **Time, best / average / worst** | `Θ(n)` under H1–H4, for every constructor argument |
-| **Auxiliary space** | `2n·sizeof(T) + n·sizeof(size_t) + O(n/λ)` bytes — measured 3.28× the input for an 8-byte key at the default `λ = 32` (4.46× on refinement-heavy input, 16.56× at `λ = t = 1` on uniform input, not an upper bound for `λ = 1`), and about 10× for a 1-byte key above `n ≈ 10⁵`, since the index array is one `size_t` per element regardless of `T` |
-| **Recursion depth** | `min(w, 6)`; stack use is `O(1)` in practice |
-| **Deterministic** | yes — no randomness anywhere |
-| **Stable** | no |
-| **Thread-safe** | per instance, no; distinct instances are independent |
+| **Time, best / average / worst** | `Θ(n)` under H1–H4; one read-only pass on already-sorted input |
+| **Auxiliary space** | `n·sizeof(E) + (2⌈n/λ⌉ + 2)·4` bytes: 1.06× the input for an 8-byte key (0.10.0: 3.28×), 2.0× at `λ = t = 1`. Nothing on sorted or reversed input; only the counters when the key span is below `n/λ` (8-bit keys, few distinct values) |
+| **Recursion depth** | at most 7 refinement levels |
+| **Deterministic** | yes — no randomness anywhere, and parameters depend on `n` only |
+| **Stable** | `stable_sort`, `stable_sort_by_key`, `sorted_indices`: yes. `sort`, `sort_by_key`, `StratumSort<T>`: no |
+| **Thread-safe** | the free functions, yes; one `const StratumSort<T>` shared by many threads, yes, with one `Workspace` per thread; `sorter.sort(v)` on one instance from two threads, no |
 | **Exception safety** | strong in a release build: every allocation happens before the first write to your array |
 | **Instrumentation** | `STRATUM_ENABLE_METRICS` is a whole-program switch. It changes the class layout, so the class is tagged with an inline namespace: a translation unit that disagrees fails to link rather than misbehaving silently |
 
 ## Limitations
 
-- **Integral keys up to 64 bits only.** Floating point, strings and
-  key/value pairs are out of scope, and rejected at compile time.
-- **Not stable**, and not extensible to key/value pairs as written.
-- **`Θ(n)` auxiliary memory** where `std::sort` uses `O(log n)`.
-- **Loses to `std::sort` on already-sorted input**, by about 6×: libc++
-  resolves that case in essentially one pass, this algorithm always makes
-  at least three.
-- **The default λ is tuned to a cache size** — roughly `n·64/λ ≲ L2`. The
-  default suits `n ≈ 10⁶` with a 4 MiB L2; raise it for much larger
-  inputs. See `docs/usage.md`.
+- **Keys: at most 64 bits, and numeric.** Strings, `__int128`,
+  `long double` and multi-field keys are rejected at compile time.
+- **`Θ(n)` auxiliary memory** — one buffer of `n` elements and `O(n/λ)`
+  counters — where `std::sort` uses `O(log n)`. An in-place distribution
+  was measured 3.5–14× slower at this fan-out.
+- **Records** must be trivially copyable for `sort_by_key`; for other
+  types, or records much larger than 64 bytes, use `sorted_indices`.
+- **It loses to `std::sort` on some inputs**: ones built against its own
+  partition (1.2–1.7× on macOS arm64 and Windows), low-entropy keys on
+  Apple M1 (1.7×), nearly-sorted input under MSVC (1.2×), and
+  nearly-sorted floating point (1.1–2.9×). The table below has the
+  numbers.
 
 ## Performance
 
-Two different kinds of number, which should not be conflated.
+Measured on GitHub's runners by `benchmarks/stratum_bench.cpp`, which is in
+this package: Stratum and `std::sort` alternated on identical copies of
+each input, median of 9 repetitions, a fresh sorter per call, release
+build. Time relative to `std::sort`, `n = 10⁶` (below 1 is faster):
 
-**Comparison counts.** Exact and immune to cache behaviour and machine
-load, but **not** evidence for the complexity of the algorithm as a whole.
-The counter is incremented only inside the local sorts: `analyze` and
-`scanRange` each perform two comparisons per element and count none, which
-leaves at least 18% of the comparison work outside the metric, and the
-distribution and refinement phases are invisible to it. The `Θ(n)` result
-rests on the structure instead — `D ≤ 6` constant, bin count `⌈m/λ⌉ ≤ m`,
-`O(n)` per level, leaves tiling the array, quicksort confined to `m ≤ 384`,
-introsort `O(m log m)`. What the table shows is that the local-sort phase
-does not grow with `n`:
-
-| dataset | `n = 10⁴` | `10⁶` | `10⁷` | fitted exponent |
-|---|---|---|---|---|
-| Uniform, constant density | 9.05 | 9.01 | 9.01 | 0.9997 |
-| Whole-universe span | 9.01 | 9.02 | 9.03 | 0.9998 |
-| Adversarial (depth-exhausting) | 14.06 | 14.91 | 15.52 | 1.0137 |
-
-**Comparative performance — wall clock.** Median of nine repetitions,
-alternating Stratum Sort and `std::sort` on identical copies of the same
-input. `n = 10⁶`, `int64_t`, Apple M4, macOS 26.6, Apple clang 21
-(libc++), `-std=c++17 -O3 -DNDEBUG`.
-
-| Dataset | Stratum (ms) | `std::sort` (ms) | ratio |
+| input | Linux x86_64 (Xeon), GCC 13 | macOS arm64 (M1), AppleClang 21 | Windows x86_64 (EPYC), MSVC 19.51 |
 |---|---|---|---|
-| Small range, many elements | 1.94 | 5.48 | **0.36** |
-| Huge range, sparse | 10.84 | 16.08 | **0.67** |
-| Whole-universe span | 10.91 | 16.18 | **0.67** |
-| Random uniform | 10.99 | 16.12 | **0.68** |
-| Normal (Gaussian) | 12.43 | 15.42 | **0.80** |
-| Concentrated cluster | 5.28 | 5.85 | **0.90** |
-| Many repeated values | 2.39 | 2.54 | 0.94 |
-| Adversarial (depth-exhausting) | 27.08 | 16.29 | 1.66 |
-| Reverse sorted | 4.96 | 1.27 | 3.86 |
-| Already sorted | 4.48 | 0.75 | 5.95 |
+| random `int64_t` | 0.33× | 0.57× | 0.37× |
+| already sorted | 0.05× | 0.39× | 0.05× |
+| reversed | 0.13× | 0.39× | 0.05× |
+| nearly sorted | 0.70× | 0.76× | 1.23× |
+| sorted + random tail | 0.04× | 0.05× | 0.07× |
+| many duplicates | 0.13× | 0.25× | 0.17× |
+| normal (Gaussian) | 0.34× | 0.62× | 0.49× |
+| low entropy | 0.55× | 1.66× | 1.00× |
+| adversarial (depth-exhausting) | 0.73× | 1.67× | 1.23× |
+| McIlroy quicksort killer | 0.13× | 0.08× | 0.15× |
+| random `uint8_t` | 0.04× | 0.08× | 0.04× |
+| random `double` | 0.34× | 0.63× | 0.50× |
+| 16-byte records, stable, vs `std::stable_sort` | 0.26× | 0.25× | 0.41× |
 
-Median of three sessions; the sessions agreed to within 2%. Reproduce with
-`make timings`. **Ratios travel better than absolute milliseconds** — they
-are measured on the same machine in the same second, which is the point of
-alternating the two sorts.
+**Ratios travel better than absolute milliseconds** — they are measured on
+the same machine in the same second — but these are shared virtual
+machines. Run the benchmark on your own hardware:
+
+```bash
+make bench SUITE=quick      # or: ci, types, lambda, full
+```
+
+It prints the compiler, standard, flags, CPU, caches and core count with
+every table, and reports medians with the p10–p90 spread, ns/element,
+elements/s, `std::stable_sort`, and the peak auxiliary memory measured at
+the allocator.
 
 ## Building and testing
 
 ```bash
 make            # library check, tests, timings and the example
-make test       # three suites: edge cases, and 132 + 148 contract checks
-make timings    # release timings against std::sort
+make test       # every suite below, assertions active
 make examples   # run the minimal example
+make bench      # the benchmark against std::sort
 ```
 
-Two more suites need a linkable AddressSanitizer, so they are **not** part
-of `make all` — on macOS they require Clang:
+`make test` runs the edge cases and a dataset sweep; the exact-division
+suite (the reciprocal that replaces the divide instruction is checked to
+be exact, 12.2 million checks); the float-key suite, exhaustive over all
+2³² `float` bit patterns; the stability suite (3 694 checks against
+`std::stable_sort` with identifying payloads); the concurrency suite; and
+the API contract — 155 checks in the release configuration and 171 in the
+research one.
+
+Three more need a sanitizer runtime, so they are **not** part of
+`make all` — on macOS they require Clang:
 
 ```bash
-make sanitizers        # range-arithmetic limits under ASan/UBSan
-make fuzz N=200000     # randomised differential test against std::sort
+make sanitizers        # ASan/UBSan
+make tsan              # ThreadSanitizer: one shared sorter, several threads
+make fuzz N=200000     # randomised differential test against the standard library
 ```
 
-`make fuzz` draws element type, size, both tuning parameters and the value
-distribution at random and requires exact agreement with `std::sort`.
-Three oracles run at once: that agreement, the library's internal
-assertions, and the sanitizers. It is seeded, so a failure reproduces.
+`make fuzz` draws element type (integers, floats, records), size, both
+tuning parameters, the value distribution and the presortedness at random
+and requires exact agreement with `std::sort` or `std::stable_sort`. It
+is seeded, so a failure reproduces.
 
 With CMake:
 
@@ -231,13 +240,12 @@ ctest --test-dir build
 
 ## Verified platforms
 
-`0.10.0` is a release candidate. The version is not `1.0.0` because the API
-has no field history: nobody has used it yet.
+`0.11.0` is not `1.0.0`: the API is new and has no field history yet.
 
 | | |
 |---|---|
-| **Verified** | **Linux x86_64** (Ubuntu 24.04) — GCC 13.3.0 and Clang 18.1.3, both with libstdc++: C++17/20/23 Release and C++17 Debug under CMake, and the ASan/UBSan suites and differential fuzz under Make.<br>**macOS arm64** (macOS 26) — AppleClang 21.0.0 (libc++): C++17 Release and Debug under CMake.<br>**Windows x86_64** (Windows Server 2025) — MSVC 19.51.36257: C++17 Release and Debug and C++20 Release under CMake, full test suite and the ODR link guard. |
-| **Not verified** | 32-bit targets, big-endian machines, and any other compiler or compiler version. On macOS: C++20/23, the Make build, and ASan/UBSan were not exercised. On Windows: C++23, the Make build, and ASan/UBSan were not exercised. |
+| **Verified by CI** | **Linux x86_64** (Ubuntu 24.04) — GCC 13 and Clang 18: C++17/20/23 Release and C++17 Debug under CMake; ASan/UBSan, ThreadSanitizer and the differential fuzz under Make; the benchmark.<br>**macOS arm64** (macOS 26) — AppleClang 21: C++17 Release and Debug under CMake; the benchmark.<br>**Windows x86_64** (Windows Server 2025) — MSVC 19.51: C++17 Release and Debug and C++20 Release under CMake, full test suite and the ODR link guard; the benchmark. |
+| **Not verified** | 32-bit targets, big-endian machines, and any other compiler or compiler version. On macOS and Windows: sanitizers and the Make build. On Windows: C++23. |
 
 Nothing in the implementation is platform-specific, but "should work" is
 not "was tested", and this table says which is which.
@@ -246,14 +254,17 @@ not "was tested", and this table says which is which.
 
 ```
 include/stratum/    the library — this is the deliverable
-  StratumSort.hpp     public interface and documented guarantees
-  StratumSort.tpp     implementation
-  Config.hpp          tuning constants, each with its justification
-  Metrics.hpp         optional instrumentation; compiled in only when
-                      STRATUM_ENABLE_METRICS is defined
-tests/              four suites
+  StratumSort.hpp     the class, its documented guarantees; includes everything
+  StratumSort.tpp     the class's implementation
+  Sort.hpp            the free functions: sort, stable_sort, sort_by_key, ...
+  KeyTraits.hpp       how each key type maps to an ordered 64-bit key
+  Workspace.hpp       the scratch memory of a sort, reusable, one per thread
+  Config.hpp          tuning constants and the automatic parameters
+  Metrics.hpp         optional instrumentation (STRATUM_ENABLE_METRICS)
+  detail/             the engine and the exact reciprocal division
+tests/              the suites above
 datasets/           input generators used by the tests and the benchmark
-benchmarks/         timings.cpp — the only binary whose clock may be quoted
+benchmarks/         stratum_bench.cpp (multi-shape, multi-type) and timings.cpp
 examples/basic.cpp  minimal working example
 docs/usage.md       API reference and tuning guide
 BUILDINFO.txt       platform packages only: the runner, compiler and test

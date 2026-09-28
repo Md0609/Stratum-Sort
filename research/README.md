@@ -31,11 +31,15 @@ language, without reading the C++. Section 8 is the complexity proof:
   the explicit counterexample that refutes it
 - **§8.8** what each of `w`, `λ`, `t` and `D` actually contributes
 - **§8.10** an adversarial review of the proof by itself
+- **§13** the 0.11.0 engine: why the partition is the same partition,
+  the hypotheses revisited, the memory accounting and the arena bound,
+  the presorted paths, the stable variant, the counting fill, the
+  automatic parameters
 
 **[`BENCHMARKS.md`](BENCHMARKS.md)** — measurement methodology: the three
 build configurations, why only one of them may be quoted, the alternating
-protocol, the 6% significance threshold, and the known traps in this
-codebase.
+protocol, the 6% significance threshold, the known traps in this
+codebase, and the cross-platform benchmark of 0.11.0.
 
 **[`DESIGN_HISTORY.md`](DESIGN_HISTORY.md)** — what was tried, what was
 measured, what was rejected. Including the ideas that failed, which are
@@ -52,6 +56,9 @@ been retro-edited to look better than it was.
 
 Highlights, if you only read a few:
 
+- `V11_informe.md` — the 0.11.0 audit and report: the diagnosis of every
+  0.10.0 limitation, its classification, each change with its before and
+  after, what was rejected, and what remains
 - `SPEC_v9.md` — the specification whose headline objective was refuted
   mid-plan
 - `O8_resolucion_y_reversion_paso3.md` — a change implemented, measured
@@ -76,4 +83,26 @@ and a result nobody can re-run is not evidence.**
 
 ```bash
 make research     # builds all of them; runs none
+```
+
+### `perf/` and `baselines/` — the 0.11.0 instruments
+
+Release-build programs, each answering one before/after question of
+0.11.0, most of them against the frozen 0.10.0 headers in
+`baselines/v0_10_0/` so that the old and new versions run alternated in
+one process:
+
+| program | question |
+|---|---|
+| `perf/MemoryProfile.cpp` | peak auxiliary bytes at the allocator, per version, key width, λ and shape |
+| `perf/BucketIndexStrategies.cpp` | store the bucket index, or recompute it (hardware division, reciprocal) |
+| `perf/InPlaceDistribution.cpp` | out-of-place against in-place (American flag) distribution |
+| `perf/PresortedDetection.cpp` | three ways of detecting presorted input, and what each costs on the rest |
+| `perf/LambdaSweep.cpp` | the best λ per `n`, key width and shape; `--t-sweep` for `t/λ` |
+| `perf/RecordStrategies.cpp` | move records, or sort (key, index) pairs, by record size |
+| `perf/VersionTimings.cpp` | 0.10.0 against the current header against `std::sort`, each version against its own adversary |
+
+```bash
+make research-perf
+./build/perf_VersionTimings 1000000
 ```

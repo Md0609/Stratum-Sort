@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(StratumSort VERSION 0.10.0 LANGUAGES CXX)
+project(StratumSort VERSION 0.11.0 LANGUAGES CXX)
 
 # ---- The library -----------------------------------------------------------
 # Header-only. Consumers need nothing but the include path.

@@ -1020,8 +1020,11 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     // and it is reserved BEFORE the tail is sorted, so every allocation
     // still precedes every write. The merge takes the prefix first on
     // equal keys, so the path is stable whenever the tail sort is.
+    // Only when n > lambda: an input of at most lambda elements is one leaf,
+    // sorted where it is without any scratch, and the tail buffer would
+    // be the only allocation of the whole sort.
     if constexpr (!Sink::kRecord) {
-        if (range.ascendingPrefix >= n / 2) {
+        if (range.ascendingPrefix >= n / 2 && n > lambda) {
             const std::size_t k = range.ascendingPrefix;
             WorkspaceAccess::elements(workspace, n - k);
             sortWith<Stable>(tr, data + k, n - k, lambda, leafThreshold, workspace, probe, sink);

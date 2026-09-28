@@ -248,8 +248,9 @@ according to λ, and a machine-dependent λ would make that order change
 between your laptop and your server. The rule was chosen by measuring
 every λ from 8 to 1024 on four environments (Linux/GCC on two x86_64
 machines, Apple M1/AppleClang, Windows/MSVC on AMD EPYC): on every
-measured row the automatic choice is within 1.2× of that row's best λ, and
-usually within 1.1×, where 0.10.0's fixed λ = 32 reached 1.40×.
+measured row the automatic choice costs at most about 1.2× the time of
+that row's best λ, usually within 1.1×, where 0.10.0's fixed λ = 32
+reached 1.40×.
 `effectiveParameters(n)` tells you what a sort of `n` elements will use.
 
 **Explicit.** Name the fields, so they cannot be swapped:
@@ -301,17 +302,18 @@ faster). Full tables per platform are in the README.
 
 | input | Linux x86_64, GCC | macOS arm64, AppleClang | Windows x86_64, MSVC |
 |---|---|---|---|
-| random `int64_t` | 0.23× | 0.60× | 0.37× |
-| already sorted / reversed | 0.03× / 0.12× | 0.42× / 0.36× | 0.04× / 0.05× |
-| nearly sorted (1% swaps) | 0.52× | 0.76× | 1.06× |
-| few distinct values | 0.08× | 0.24× | 0.18× |
-| random `uint8_t` | 0.03× | 0.08× | 0.04× |
-| 16-byte records, stable vs `std::stable_sort` | 0.23× | 0.24× | 0.40× |
+| random `int64_t` | 0.33× | 0.57× | 0.37× |
+| already sorted / reversed | 0.05× / 0.13× | 0.39× / 0.39× | 0.05× / 0.05× |
+| nearly sorted (1% swaps) | 0.70× | 0.76× | 1.23× |
+| few distinct values | 0.13× | 0.25× | 0.17× |
+| random `uint8_t` | 0.04× | 0.08× | 0.04× |
+| random `double` | 0.34× | 0.63× | 0.50× |
+| 16-byte records, stable vs `std::stable_sort` | 0.26× | 0.25× | 0.41× |
 
 Where it loses: inputs built against its own partition (1.2–1.7× on
-macOS and Windows), low-entropy keys on Apple M1 (1.5×), nearly sorted
-input under MSVC, and nearly sorted floating point on every platform.
-The README lists every loss with its cause.
+macOS and Windows), low-entropy keys on Apple M1 (1.7×), nearly sorted
+input under MSVC (1.2×), and nearly sorted floating point on every
+platform (1.1–2.9×). The README lists every loss with its cause.
 
 ## Guarantees
 

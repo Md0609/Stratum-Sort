@@ -40,7 +40,7 @@
 # further consistent gain and cost portability, so neither is default.
 # See research/BENCHMARKS.md to re-check on your own hardware.
 
-VERSION := 0.10.0
+VERSION := 0.11.0
 PKGNAME := stratumsort-v$(VERSION)
 
 CXX := g++
@@ -353,6 +353,8 @@ package: $(PACKAGE_FILES) packaging/README.md
 # Proves the package cannot leak. Plants decoys in every directory that
 # must never ship, rebuilds the archive, and fails if any survives. Also
 # checks the shipped README has no link to a path the archive lacks.
+# Fenced code blocks are skipped: a C++ lambda, [](const Row& r), is not a
+# link.
 package-verify: package
 	@echo "--- planting decoys ---"
 	@mkdir -p research/experiments build
@@ -372,7 +374,8 @@ package-verify: package
 	else echo "  no research/, build/ or scratch path in the archive"; fi
 	@echo "--- checking the shipped README is self-contained ---"
 	@cd $(PKGDIR) && miss=0; \
-	  for l in $$(grep -o "](\([^)]*\))" README.md | tr -d '])(' | grep -v "^http" | grep -v "^#"); do \
+	  for l in $$(awk '/^```/ { code = !code; next } !code' README.md | \
+	              grep -o "](\([^)]*\))" | tr -d '])(' | grep -v "^http" | grep -v "^#"); do \
 	    [ -e "$$l" ] || { echo "  DEAD LINK: $$l"; miss=1; }; \
 	  done; \
 	  [ $$miss -eq 0 ] && echo "  every link in the shipped README resolves inside the archive" || exit 1
@@ -382,6 +385,6 @@ clean:
 	rm -rf build dist
 
 help:
-	@echo "Product:  make all | test | sanitizers | fuzz | timings | bench [SUITE=quick|ci|lambda|full] | examples"
+	@echo "Product:  make all | test | sanitizers | fuzz | timings | bench [SUITE=quick|ci|types|lambda|full] | tsan | examples"
 	@echo "Package:  make package | package-verify   -> dist/$(PKGNAME).zip"
 	@echo "Research: make research       (built, never shipped)"

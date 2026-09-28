@@ -1371,8 +1371,12 @@ case, `≤ 2n` key evaluations.
 |---|---|---|
 | `k = n` (includes all keys equal) | nothing | `Θ(n)`, zero writes, zero allocations |
 | whole input non-increasing | reversal (stable variant: reverse, then reverse each run of equal keys back) | `Θ(n)`, zero allocations |
-| `k ≥ n/2` | sort `[k, n)` recursively, then one backward merge buffering only the tail | see below |
+| `k ≥ n/2` and `n > λ` | sort `[k, n)` recursively, then one backward merge buffering only the tail | see below |
 | otherwise | the general engine, §8 | §8.9 |
+
+(With `n ≤ λ` the whole input is one leaf, sorted where it is without any
+scratch; taking the prefix path there would make the tail buffer the
+sort's only allocation.)
 
 **The prefix chain is linear.** With `c₁n` for the analysis and `c₂n` for
 the merge, `T(n) ≤ (c₁ + c₂)n + T(n − k)` with `n − k ≤ n/2`, so

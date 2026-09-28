@@ -26,14 +26,17 @@ sorts as before.
   `(λ, t) = (16, 32)` for `n ≤ 2²²` and `(32, 64)` above, per call.
   0.10.0's fixed `λ = 32` was tuned to one cache; re-measured on four
   environments, it was up to 1.40× slower than the best λ, the automatic
-  rule is within 1.2×. Deterministic: a function of `n` only, never of the
+  rule costs at most about 1.2×. Deterministic: a function of `n` only, never of the
   machine. Explicit `(λ, t)` keep 0.10.0's fixed, clamped contract.
   Effect on the bound: the largest leaf a comparison sort can receive under
   automatic parameters drops from 18 090 to 9 045.
 - `DEFAULT_TARGET_ELEMENTS_PER_BIN` is now 16 and `DEFAULT_LEAF_THRESHOLD`
   32: the values an explicit `StratumSort<T>(λ)` falls back to.
-- `float`/`double` key encoding is branch-free, so MSVC no longer compiles
-  it to an unpredictable branch on the sign bit.
+- `float`/`double` key encoding is branch-free. MSVC compiled the old
+  conditional on the sign bit to a branch — unpredictable on real data —
+  where GCC and Clang used `cmov`: under MSVC, few-distinct floats went
+  from 1.79× to 1.36× `std::sort` and random floats from 0.54× to 0.49×;
+  GCC and Clang are 0–15% faster.
 
 ### Added
 - **Presorted input in one pass.** The min/max analysis now also measures
@@ -41,7 +44,7 @@ sorts as before.
   Ascending input returns after that pass (0 bytes, 0 writes);
   non-increasing input is reversed; a sorted prefix of at least half the
   input is kept, the tail sorted and one backward merge buffers only the
-  tail. `std::sort` ratio on sorted input: 5.95× slower → 0.03–0.42×.
+  tail. `std::sort` ratio on sorted input: 5.95× slower → 0.05–0.39×.
 - **Counting fill.** A width-1 grid over keys that are their own element
   (Lemma 2's case) is finished by counting and writing, without moving
   elements: `uint8_t`, few distinct values and similar inputs need only
@@ -70,8 +73,9 @@ sorts as before.
   identifying payloads), `tests/concurrency.cpp` (also under
   ThreadSanitizer, `make tsan`); API contract sections 10–13 (presorted
   paths, exception safety on the prefix path, automatic parameters,
-  counting fill); floats and records in the differential fuzz. Contract
-  checks: 132 → 154 (release), 148 → 170 (research).
+  counting fill, and that inputs of at most λ elements allocate nothing);
+  floats and records in the differential fuzz. Contract checks: 132 → 155
+  (release), 148 → 171 (research).
 - **Cross-platform benchmark:** `benchmarks/stratum_bench.cpp` and the
   `Benchmarks` workflow on Linux x86_64, macOS arm64 and Windows x86_64.
   18 input shapes including a McIlroy adversary against the platform's own

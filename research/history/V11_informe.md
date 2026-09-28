@@ -355,18 +355,77 @@ n = 10⁶: int64 duplicates 5.6 → **2.85 ms (0.15× `std::sort`)**, binary
 
 ---
 
+## 6b. Dos hallazgos del cierre
+
+**Floats en MSVC: una rama donde GCC y Clang ponen `cmov`.** El benchmark
+de Windows mostraba `float` 1.9× más caro que `int64` y perdiendo frente a
+`std::sort` con pocos valores distintos (1.79×). `FloatKey::encode` era un
+ternario sobre el bit de signo; MSVC lo compila como salto, y el signo de
+datos reales es imprevisible. Ahora encode/decode son un XOR con una
+máscara derivada del bit de signo. Equivalencia bit a bit comprobada en los
+2³² patrones. Efecto medido: MSVC, pocos valores distintos 1.79× → 1.36×,
+aleatorios 0.54× → 0.49×; GCC −7…+2% (ruido), Clang −1…−15%. **Arreglo
+parcial**: la pérdida restante en floats casi ordenados (2.8× con MSVC) no
+era la rama sino la distribución de las claves (los floats uniformes son
+exponencialmente más densos en la parte alta del espacio de claves y
+necesitan un nivel más de refinamiento).
+
+**Una garantía documentada que el código no cumplía.** La documentación
+decía que una entrada de a lo sumo λ elementos no reserva nada; el ejemplo
+imprimió 24 bytes para `{9, 9, 2, 8, 2}`: prefijo ordenado de longitud
+n/2 → ruta de prefijo + fusión → reserva de la cola. Correcto pero contra
+lo prometido. La ruta de prefijo exige ahora `n > λ`, y un check de
+contrato nuevo (que falla sin el arreglo, comprobado) lo fija: 155/155 y
+171/171.
+
+## 6c. Cifras finales
+
+**Frente a 0.10.0** (Xeon, GCC, misma sesión, alternado, cada versión
+contra su propio adversario; `perf/VersionTimings.cpp`): las 18 formas son
+más rápidas. n = 10⁶: random −39%, sorted −96%, reversed −95%, nearly
+sorted −62%, few outliers −62%, duplicates −85%, binary −83%, clustered
+−53%, normal −33%, low entropy −28%, whole universe −26%, adversarial
+−12%, worst case −26%, qsort killer −49%. n = 10⁷: random −29%, sorted
+−95%, nearly sorted −29%, duplicates −71%, adversarial −41%.
+
+**Frente a `std::sort`** (un único run de CI, commit `f90ac4b`, n = 10⁶,
+int64):
+
+| | Linux (Xeon 6973P-C, GCC 13.3) | macOS (M1 VM, AppleClang 21) | Windows (EPYC 7763, MSVC 19.51) |
+|---|---|---|---|
+| random | 0.33× | 0.57× | 0.37× |
+| sorted / reversed | 0.05× / 0.13× | 0.39× / 0.39× | 0.05× / 0.05× |
+| nearly sorted | 0.70× | 0.76× | **1.23×** |
+| duplicates | 0.13× | 0.25× | 0.17× |
+| low entropy | 0.55× | **1.66×** | 1.00× |
+| adversarial | 0.73× | **1.67×** | **1.23×** |
+| uint8 random | 0.04× | 0.08× | 0.04× |
+| double random / nearly sorted | 0.34× / **1.33×** | 0.63× / **1.42×** | 0.50× / **2.84×** |
+| registros 16 B, estable vs `std::stable_sort` | 0.26× | 0.25× | 0.41× |
+
+Aviso: entre dos runs de CI con el mismo código de enteros, `int64` random
+en el runner de Linux pasó de 0.23× a 0.33× — GitHub no garantiza el mismo
+hardware. Los ratios alternados son robustos al ruido dentro de un run, no
+al cambio de máquina.
+
+---
+
 ## 7. Lo que sigue existiendo, y por qué
 
 - **`n·sizeof(T)` de memoria** para cualquier entrada que necesite
   distribución: el buffer compañero. In-place es 3.5–14× más lento (§3.3).
 - **`O(n/λ)` contadores**: estructural.
-- **Pierde frente a `std::sort` en algunas formas y plataformas**:
-  - con libc++ en Apple M1: adversarial 1.3–1.6×, low_entropy 1.5–1.8× (el
+- **Pierde frente a `std::sort` en algunas formas y plataformas** (cifras
+  de §6c):
+  - con libc++ en Apple M1: adversarial 1.67×, low_entropy 1.66× (el
     `std::sort` de libc++ tiene particionado sin ramas);
-  - con MSVC: casi ordenada con intercambios dispersos (1.25× a 10⁶) y
-    floats casi ordenados (1.6–1.9×).
-  Stratum hace ahí el pipeline completo; la fusión de runs o la extracción
-  de elementos fuera de sitio podrían ayudar y quedan como trabajo futuro.
+  - con MSVC: casi ordenada 1.23× (1.63× a 10⁵), pocos outliers 1.09×
+    (1.55× a 10⁵), adversarial 1.23×;
+  - floats casi ordenados en todas las plataformas (1.07–2.86×) y floats
+    con pocos valores distintos con MSVC (1.36–1.38×).
+  Stratum hace ahí el pipeline completo; la fusión de runs naturales o la
+  extracción de elementos fuera de sitio podrían ayudar y quedan como
+  trabajo futuro.
 - **Claves > 64 bits y cadenas**: H1.
 - **Registros no trivialmente copiables**: solo vía `sorted_indices`.
 - **Los tiempos de CI** son de máquinas virtuales compartidas: los ratios
