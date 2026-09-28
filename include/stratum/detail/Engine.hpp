@@ -715,24 +715,102 @@ private:
 // ============================================================
 // Driver
 // ============================================================
-struct KeyRange {
+// Phase 1: the observed key range, and how much of the input is already
+// in order.
+//
+// Every later formula is relative to the observed range, so this pass must
+// complete before anything else. It also answers, at no extra pass, the
+// question 0.10.0 never asked: is the input already sorted?
+//
+// HOW, AND WHY THIS WAY. research/perf/PresortedDetection.cpp measured
+// three ways of finding out, per million int64 keys:
+//
+//                  random   sorted   sorted + 1% random tail
+//     no check      0.70     0.72     0.81
+//     fused         0.89     1.00     1.03    count descents in the min/max
+//                                            pass: +27% on EVERY input
+//     prefix        0.75     0.53     1.33    stop at the first break, then
+//                                            the min/max pass: a whole extra
+//                                            pass when the break comes late
+//
+// Neither is free everywhere. This is the third form: scan the monotone
+// prefix, and if it breaks at position k, the prefix's extremes are its two
+// ends - so the min/max pass RESUMES at k instead of restarting. One pass
+// over the input in every case, stopping as early as random input allows,
+// and never paying twice for a long prefix. It also leaves k behind, which
+// the tail strategy in sortWith() uses.
+struct Analysis {
     uint64_t minKey;
     uint64_t maxKey;
+    std::size_t ascendingPrefix; // length of the longest non-decreasing prefix
+    bool nonIncreasing;          // the whole input is non-increasing
 };
 
-// Phase 1: one pass for the minimum and maximum key. Every later formula is
-// relative to the observed range, so this pass must complete first.
 template <typename Traits>
-KeyRange analyze(const typename Traits::Element* data, std::size_t n) {
+Analysis analyze(const typename Traits::Element* data, std::size_t n) {
     assert(n > 0);
-    uint64_t lo = Traits::key(data[0]);
-    uint64_t hi = lo;
-    for (std::size_t i = 1; i < n; ++i) {
+    const uint64_t first = Traits::key(data[0]);
+    std::size_t i = 1;
+    while (i < n && Traits::key(data[i]) == first) ++i;
+    if (i == n) return {first, first, n, true}; // every key equal
+
+    uint64_t lo, hi;
+    std::size_t ascendingPrefix;
+    if (Traits::key(data[i]) > first) {
+        uint64_t prev = Traits::key(data[i]);
+        for (++i; i < n; ++i) {
+            const uint64_t k = Traits::key(data[i]);
+            if (k < prev) break;
+            prev = k;
+        }
+        if (i == n) return {first, prev, n, false}; // sorted
+        lo = first;
+        hi = prev;
+        ascendingPrefix = i;
+    } else {
+        const std::size_t equalRun = i;
+        uint64_t prev = Traits::key(data[i]);
+        for (++i; i < n; ++i) {
+            const uint64_t k = Traits::key(data[i]);
+            if (k > prev) break;
+            prev = k;
+        }
+        if (i == n) return {prev, first, equalRun, true}; // non-increasing
+        lo = prev;
+        hi = first;
+        ascendingPrefix = equalRun;
+    }
+    for (; i < n; ++i) {
         const uint64_t k = Traits::key(data[i]);
         if (k < lo) lo = k;
         if (k > hi) hi = k;
     }
-    return {lo, hi};
+    return {lo, hi, ascendingPrefix, false};
+}
+
+// Merges data[0, k) and data[k, n), both sorted, using aux[0, n - k) - only
+// the trailing run is buffered. Backwards, so that the write position never
+// overtakes the unread part of the prefix. On equal keys the buffered TAIL
+// element is placed first (i.e. later in the output), which keeps the
+// merge stable.
+template <typename Traits>
+void mergeSortedTail(typename Traits::Element* data, std::size_t k, std::size_t n,
+                     typename Traits::Element* aux) {
+    using E = typename Traits::Element;
+    const std::size_t m = n - k;
+    std::memcpy(static_cast<void*>(aux), static_cast<const void*>(data + k), m * sizeof(E));
+    std::size_t i = k; // prefix elements not yet placed: data[0, i)
+    std::size_t j = m; // tail elements not yet placed:   aux[0, j)
+    std::size_t w = n; // next write goes to data[w - 1]
+    while (j > 0) {
+        if (i > 0 && Traits::key(aux[j - 1]) < Traits::key(data[i - 1])) {
+            data[--w] = data[--i];
+        } else {
+            data[--w] = aux[--j];
+        }
+    }
+    // Whatever is left of the prefix is already in place.
+    assert(w == i);
 }
 
 // Sorts data[0, n) with the given (already clamped) parameters, using
@@ -748,16 +826,48 @@ void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
     }
 
     probe.begin("analyze");
-    const KeyRange range = analyze<Traits>(data, n);
+    const Analysis range = analyze<Traits>(data, n);
     probe.end("analyze");
 
-    if (range.minKey == range.maxKey) {
-        // Every key equal: sorted as it stands (0.10.0 reached the same
-        // conclusion one scan later, through the span-0 certificate).
+    // ---- Presorted input ------------------------------------------------
+    // Already ascending (this includes every key equal): nothing to do.
+    if (range.ascendingPrefix == n) {
         probe.leaf(n, false);
-        probe.localAlgorithm("AlreadySorted");
-        if (Sink::kRecord) sink.record(true, 0, n);
+        probe.localAlgorithm("PresortedInput");
+        if constexpr (Sink::kRecord) sink.record(true, 0, n);
         return;
+    }
+    // Non-increasing: one reversal. Not stable - equal keys come out in
+    // reverse order - which is unobservable for keys that are their own
+    // value.
+    if (range.nonIncreasing) {
+        if constexpr (Sink::kRecord) {
+            sink.record(true, 0, n);
+        } else {
+            std::reverse(data, data + n);
+            probe.localAlgorithm("ReversedInput");
+        }
+        return;
+    }
+    // A long sorted prefix: sort only the tail, then merge. Two sorted
+    // runs (a sorted file with a sorted batch appended) cost one merge;
+    // a sorted file with random records appended costs a sort of the
+    // records and one merge. Taken once the prefix is at least half of the
+    // input (research/perf/PresortedDetection.cpp). Linear: the tail sort
+    // is Theta(n - k), the merge Theta(n). The buffer holds only the tail,
+    // and it is reserved BEFORE the tail is sorted, so every allocation
+    // still precedes every write.
+    if constexpr (!Sink::kRecord) {
+        if (range.ascendingPrefix >= n / 2) {
+            const std::size_t k = range.ascendingPrefix;
+            WorkspaceAccess::elements(workspace, n - k);
+            sortWith<Traits>(data + k, n - k, lambda, leafThreshold, workspace, probe, sink);
+            probe.begin("join");
+            mergeSortedTail<Traits>(data, k, n, WorkspaceAccess::elements(workspace, n - k));
+            probe.end("join");
+            probe.localAlgorithm("SortedPrefixMerge");
+            return;
+        }
     }
 
     const Grid top = planTop(range.minKey, range.maxKey, n, lambda);

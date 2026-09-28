@@ -964,6 +964,135 @@ void testParameterCeilings() {
 #endif
 }
 
+// ------------------------------------------------------------------
+// 10. Presorted inputs (0.11.0)
+// ------------------------------------------------------------------
+// The analysis pass recognises an input that is already ascending, one
+// that is non-increasing, and one with a long ascending prefix; the first
+// two finish without allocating anything, the third sorts only the tail and
+// merges. These are new paths, so they get their own checks: correctness
+// on the boundaries of each decision, no allocation where none is claimed,
+// and the strong exception guarantee on the one path that allocates.
+template <typename T>
+static std::vector<T> prefixThenTail(std::size_t n, std::size_t prefix, int tailShape,
+                                     std::mt19937_64& rng) {
+    std::vector<T> v(n);
+    for (auto& x : v) x = static_cast<T>(rng());
+    std::sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(prefix));
+    auto tb = v.begin() + static_cast<std::ptrdiff_t>(prefix);
+    switch (tailShape) {
+        case 0: break;                                       // random tail
+        case 1: std::sort(tb, v.end()); break;               // two sorted runs
+        case 2: std::sort(tb, v.end()); std::reverse(tb, v.end()); break;
+        case 3: // tail made of the keys at the prefix's end: ties across the merge
+            for (auto it = tb; it != v.end(); ++it)
+                *it = prefix > 0 ? v[prefix - 1 - (rng() % std::min<std::size_t>(prefix, 3))] : T{};
+            break;
+        case 4: for (auto it = tb; it != v.end(); ++it) *it = static_cast<T>(rng() % 3); break;
+    }
+    return v;
+}
+
+void testPresortedInputs() {
+    section("10. Presorted inputs");
+    std::mt19937_64 rng(20260928);
+
+    // Already ordered: correct, and nothing allocated - not even the
+    // workspace a fresh instance would otherwise create.
+    bool noAlloc = true;
+    bool correct = true;
+    for (std::size_t n : {2u, 3u, 64u, 65u, 1000u, 100000u}) {
+        std::vector<int64_t> asc(n), desc(n), descTies(n), equal(n, -7);
+        for (std::size_t i = 0; i < n; ++i) {
+            asc[i] = static_cast<int64_t>(i) - 500;
+            desc[i] = static_cast<int64_t>(n - i);
+            descTies[i] = static_cast<int64_t>((n - i) / 3);
+        }
+        for (const auto* in : {&asc, &desc, &descTies, &equal}) {
+            std::vector<int64_t> v = *in;
+            StratumSort<int64_t> s;
+            s.sort(v);
+            std::vector<int64_t> want = *in;
+            std::sort(want.begin(), want.end());
+            correct = correct && v == want;
+            noAlloc = noAlloc && s.scratchBytes() == 0;
+        }
+    }
+    check(correct, "sorted, reversed, reversed-with-ties and constant inputs sort correctly");
+    check(noAlloc, "already ordered inputs allocate no scratch at all");
+
+    // Long ascending prefix + tail, on both sides of the n/2 decision and
+    // with every tail shape, for three key widths.
+    bool merged = true;
+    for (std::size_t n : {2u, 3u, 5u, 64u, 100u, 1001u, 20000u}) {
+        for (std::size_t prefix : {n / 2 - (n / 2 > 0 ? 1 : 0), n / 2, n / 2 + 1, (3 * n) / 4, n - 1}) {
+            if (prefix == 0 || prefix >= n) continue;
+            for (int tail = 0; tail < 5; ++tail) {
+                const auto a = prefixThenTail<int64_t>(n, prefix, tail, rng);
+                const auto b = prefixThenTail<uint8_t>(n, prefix, tail, rng);
+                const auto c = prefixThenTail<int16_t>(n, prefix, tail, rng);
+                if (!sortsCorrectly(a, 32, 64) || !sortsCorrectly(b, 32, 64) ||
+                    !sortsCorrectly(c, 32, 64)) {
+                    merged = false;
+                    std::cout << "  failed: n=" << n << " prefix=" << prefix << " tail=" << tail
+                              << "\n";
+                }
+            }
+        }
+    }
+    check(merged, "sorted prefix + tail sorts correctly for every tail shape and key width");
+
+    // A chain of prefixes: each tail again has a sorted half, so the tail
+    // path recurses. Runs of 1/2, 1/4, 1/8, ... of the input.
+    {
+        const std::size_t n = 1 << 16;
+        std::vector<int64_t> v;
+        for (std::size_t len = n / 2; len >= 1; len /= 2) {
+            std::vector<int64_t> run(len);
+            for (auto& x : run) x = static_cast<int64_t>(rng() % 100000);
+            std::sort(run.begin(), run.end());
+            v.insert(v.end(), run.begin(), run.end());
+        }
+        check(sortsCorrectly(v, 32, 64), "geometric chain of sorted runs (recursive tail path)");
+    }
+}
+
+// The one presorted path that allocates must keep the strong guarantee: the
+// buffer for the tail is reserved before the tail is sorted.
+void testPresortedExceptionGuarantee() {
+    section("11. Strong exception guarantee on the sorted-prefix path");
+    std::mt19937_64 rng(777);
+    const std::vector<int64_t> original = prefixThenTail<int64_t>(5000, 4000, 0, rng);
+    bool everThrew = false, everCompleted = false, intact = true;
+    // Walk the budget up until a run completes: the research build
+    // allocates for its bookkeeping too, so no fixed bound fits both.
+    for (std::size_t budget = 0; budget < 4000 && !everCompleted; ++budget) {
+        std::vector<int64_t> v = original;
+        StratumSort<int64_t> sorter;
+        bool threw = false;
+        g_allocSeen = 0;
+        g_allocSkipped = 0;
+        g_allocBudget = budget;
+        g_allocLimiterOn = true;
+        try {
+            sorter.sort(v);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        g_allocLimiterOn = false;
+        everThrew = everThrew || threw;
+        everCompleted = everCompleted || !threw;
+        if (threw && v != original) intact = false;
+    }
+    check(everThrew, "the limiter fired on the sorted-prefix path");
+    check(everCompleted, "the sweep reached a run that allocates freely");
+#ifndef STRATUM_ENABLE_METRICS
+    check(intact, "on bad_alloc in the sorted-prefix path the input is left exactly as it was");
+#else
+    (void)intact; // the research build does not promise it (see section 5)
+#endif
+}
+
 } // namespace
 
 // Allocation limiter for the exception-safety test. Defined at namespace
@@ -1082,6 +1211,8 @@ int main() {
     testDispatchDecoupling();
 #endif
     testParameterCeilings();
+    testPresortedInputs();
+    testPresortedExceptionGuarantee();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

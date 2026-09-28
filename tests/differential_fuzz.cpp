@@ -48,7 +48,7 @@ void oneCase() {
     const std::size_t t = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
 
     // Random distribution shape, biased towards the nasty ones.
-    const int shape = std::uniform_int_distribution<int>(0, 5)(rng);
+    const int shape = std::uniform_int_distribution<int>(0, 9)(rng);
     const T lo = std::numeric_limits<T>::min();
     const T hi = std::numeric_limits<T>::max();
     std::vector<T> v(n);
@@ -62,10 +62,24 @@ void oneCase() {
             case 3: x = (rng() & 1) ? lo : hi; break;                           // both extremes only
             case 4: x = static_cast<T>(full(rng) / 2); break;
             case 5: x = static_cast<T>(std::uniform_int_distribution<int>(-2, 2)(rng)); break;
+            default: x = static_cast<T>(full(rng)); break;
+        }
+    }
+    // Shapes 6-9 exercise the presorted paths of 0.11.0: an ascending
+    // prefix of random length with a random tail, two sorted runs, a
+    // non-increasing input, and an ascending one.
+    if (n > 1 && shape >= 6) {
+        const std::size_t k = std::uniform_int_distribution<std::size_t>(1, n)(rng);
+        switch (shape) {
+            case 6: std::sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k)); break;
+            case 7: std::sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k));
+                    std::sort(v.begin() + static_cast<std::ptrdiff_t>(k), v.end()); break;
+            case 8: std::sort(v.begin(), v.end()); std::reverse(v.begin(), v.end()); break;
+            case 9: std::sort(v.begin(), v.end()); break;
         }
     }
     // Plant the extremes sometimes, so the maximal span is actually hit.
-    if (n > 1 && (rng() & 1)) { v[0] = lo; v[n - 1] = hi; }
+    if (n > 1 && shape < 6 && (rng() & 1)) { v[0] = lo; v[n - 1] = hi; }
 
     std::vector<T> expected = v;
     std::sort(expected.begin(), expected.end());
