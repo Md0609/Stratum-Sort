@@ -19,6 +19,22 @@ else()
 endif()
 option(STRATUMSORT_BUILD_TESTS    "Build the test suites" ${STRATUMSORT_IS_TOP_LEVEL})
 option(STRATUMSORT_BUILD_EXAMPLES "Build the examples"    ${STRATUMSORT_IS_TOP_LEVEL})
+option(STRATUMSORT_BUILD_BENCHMARKS "Build the cross-platform benchmark" OFF)
+
+if(STRATUMSORT_BUILD_BENCHMARKS)
+    # benchmarks/stratum_bench.cpp: the benchmark CI runs on every platform.
+    # It reports the flags it was built with; for a multi-config generator
+    # the Release flags are the ones it is meant to be built with.
+    add_executable(stratum_bench benchmarks/stratum_bench.cpp)
+    target_link_libraries(stratum_bench PRIVATE stratumsort)
+    target_include_directories(stratum_bench PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks ${CMAKE_CURRENT_SOURCE_DIR}/datasets)
+    set(_stratum_bench_flags "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE}")
+    string(STRIP "${_stratum_bench_flags}" _stratum_bench_flags)
+    target_compile_definitions(stratum_bench PRIVATE
+        "STRATUM_CXXFLAGS=\"${_stratum_bench_flags} (CMake, ${CMAKE_CXX_COMPILER_ID})\""
+        "STRATUM_BUILD_CONFIG=\"$<CONFIG>\"")
+endif()
 
 if(STRATUMSORT_BUILD_EXAMPLES)
     add_executable(stratum_example examples/basic.cpp)

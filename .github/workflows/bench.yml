@@ -1,0 +1,66 @@
+# Cross-platform benchmarks for Stratum Sort.
+#
+# 0.10.0 published timings from one machine, and this project has seen
+# timing conclusions invert between machines more than once. This workflow
+# runs benchmarks/stratum_bench.cpp on the three platforms CI already
+# verifies for correctness - Linux x86_64, macOS arm64, Windows x86_64 -
+# and keeps the full report (Markdown + CSV) as an artifact and in the job
+# log.
+#
+# GitHub-hosted runners are shared virtual machines: absolute milliseconds
+# from them are noisy and are NOT quotable as the speed of a machine. What
+# the benchmark reports that DOES travel is the ratio to std::sort, because
+# both sorts run alternately on identical copies of the same input in the
+# same process, and the dispersion (p10-p90) says how much to trust it.
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "quick | ci | lambda | full"
+        required: false
+        default: "ci"
+  push:
+    branches: [v11-dev, 'claude/**']
+    paths:
+      - 'include/**'
+      - 'benchmarks/**'
+      - 'datasets/**'
+      - '.github/workflows/bench.yml'
+
+jobs:
+  bench:
+    name: bench / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Release)
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          -DSTRATUMSORT_BUILD_TESTS=OFF -DSTRATUMSORT_BUILD_EXAMPLES=OFF
+          -DSTRATUMSORT_BUILD_BENCHMARKS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --target stratum_bench --parallel
+
+      - name: Run
+        shell: bash
+        run: |
+          exe="$(find build -name 'stratum_bench' -o -name 'stratum_bench.exe' | head -1)"
+          suite="${{ github.event.inputs.suite || 'ci' }}"
+          "$exe" --suite "$suite" --md "bench-${{ runner.os }}-${{ runner.arch }}.md" \
+                 --csv "bench-${{ runner.os }}-${{ runner.arch }}.csv"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            bench-*.md
+            bench-*.csv

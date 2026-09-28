@@ -57,7 +57,7 @@ RESEARCH_INC := $(PROD_INC) -Iresearch/tools -Iresearch/analysis -Iresearch/expe
 
 # Embedded into every binary so SystemInfo can report the exact flags used
 # to build it, instead of guessing.
-DEF_PROD     := -DSTRATUM_CXXFLAGS='"$(PROD_CXXFLAGS) $(PROD_INC)"'
+DEF_PROD     := -DSTRATUM_CXXFLAGS='"$(PROD_CXXFLAGS) $(PROD_INC)"' -DSTRATUM_BUILD_CONFIG='"release (Makefile)"'
 DEF_TEST     := -DSTRATUM_CXXFLAGS='"$(TEST_CXXFLAGS) $(PROD_INC)"'
 DEF_RESEARCH := -DSTRATUM_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(RESEARCH_INC)"'
 
@@ -66,7 +66,7 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
                 include/stratum/KeyTraits.hpp include/stratum/Workspace.hpp \
                 include/stratum/detail/Engine.hpp include/stratum/detail/FastDivision.hpp
 
-.PHONY: all test contract sanitizers fuzz timings examples \
+.PHONY: all test contract sanitizers fuzz timings bench examples \
         research research-perf studies package package-verify clean help
 
 # ============================================================
@@ -77,7 +77,7 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
 # target that fails because an optional tool is missing is a broken build
 # target. Run them explicitly with `make sanitizers` / `make fuzz`.
 all: build/tests build/contract build/contract_research build/fast_division \
-     build/timings build/example_basic
+     build/timings build/stratum_bench build/example_basic
 
 # ---- Correctness: TEST configuration, assertions ACTIVE --------------------
 build/tests: tests/main.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
@@ -121,6 +121,16 @@ build/fuzz: tests/differential_fuzz.cpp $(ALGO_HEADERS)
 build/timings: benchmarks/timings.cpp $(ALGO_HEADERS) benchmarks/SystemInfo.hpp datasets/DatasetGenerator.hpp
 	@mkdir -p build
 	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) $(DEF_PROD) $< -o $@
+
+# The cross-platform benchmark (CI runs it on Linux, macOS and Windows).
+BENCH_HEADERS := benchmarks/SystemInfo.hpp benchmarks/AllocationTracker.hpp \
+                 benchmarks/BenchDatasets.hpp datasets/DatasetGenerator.hpp
+build/stratum_bench: benchmarks/stratum_bench.cpp $(ALGO_HEADERS) $(BENCH_HEADERS)
+	@mkdir -p build
+	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) $(DEF_PROD) $< -o $@
+
+bench: build/stratum_bench
+	./build/stratum_bench --suite $(or $(SUITE),quick)
 
 build/example_basic: examples/basic.cpp $(ALGO_HEADERS)
 	@mkdir -p build
@@ -231,7 +241,10 @@ PACKAGE_FILES := \
 	tests/odr_guard_main.cpp \
 	datasets/DatasetGenerator.hpp \
 	benchmarks/timings.cpp \
+	benchmarks/stratum_bench.cpp \
 	benchmarks/SystemInfo.hpp \
+	benchmarks/AllocationTracker.hpp \
+	benchmarks/BenchDatasets.hpp \
 	examples/basic.cpp \
 	docs/usage.md \
 	CHANGELOG.md \
@@ -311,6 +324,6 @@ clean:
 	rm -rf build dist
 
 help:
-	@echo "Product:  make all | test | sanitizers | fuzz | timings | examples"
+	@echo "Product:  make all | test | sanitizers | fuzz | timings | bench [SUITE=quick|ci|lambda|full] | examples"
 	@echo "Package:  make package | package-verify   -> dist/$(PKGNAME).zip"
 	@echo "Research: make research       (built, never shipped)"

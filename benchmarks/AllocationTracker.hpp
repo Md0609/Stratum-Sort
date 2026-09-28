@@ -30,6 +30,7 @@
 // ============================================================
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 
@@ -90,7 +91,10 @@ inline void* trackedAllocate(std::size_t sz) {
 
 inline void trackedRelease(void* p) noexcept {
     if (!p) return;
-    char* raw = static_cast<char*>(p) - kHeader;
+    // Through uintptr_t, not char*: once GCC inlines this into a delete of a
+    // T[] it "sees" a negative subscript of that array and warns, although
+    // the block really starts kHeader bytes earlier - it was allocated so.
+    char* raw = reinterpret_cast<char*>(reinterpret_cast<std::uintptr_t>(p) - kHeader);
     allocationCounters().live -= *reinterpret_cast<std::size_t*>(raw);
     std::free(raw);
 }
