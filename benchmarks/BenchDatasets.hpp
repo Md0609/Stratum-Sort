@@ -229,6 +229,41 @@ std::vector<T> makeShape(const std::string& shape, std::size_t n, uint64_t seed 
     return {};
 }
 
+// Floating-point inputs. No NaN: the comparison baseline is std::sort with
+// operator<, which a NaN would make undefined. Signed zeros and infinities
+// are included, since those are where a bit-level key map could go wrong.
+inline const std::vector<std::string>& floatShapes() {
+    static const std::vector<std::string> shapes = {"random", "normal", "sorted", "reversed",
+                                                    "nearly_sorted", "duplicates", "specials"};
+    return shapes;
+}
+
+template <typename F>
+std::vector<F> makeFloatShape(const std::string& shape, std::size_t n, uint64_t seed = 42) {
+    std::mt19937_64 rng(seed);
+    std::vector<F> v(n);
+    std::uniform_real_distribution<double> uni(-1e6, 1e6);
+    std::normal_distribution<double> gauss(0.0, 1.0);
+    if (shape == "normal") {
+        for (auto& x : v) x = static_cast<F>(gauss(rng));
+    } else if (shape == "duplicates") {
+        for (auto& x : v) x = static_cast<F>(static_cast<int>(rng() % 5) - 2) * F(0.25);
+    } else if (shape == "specials") {
+        const F pool[] = {F(0), -F(0), std::numeric_limits<F>::infinity(), -std::numeric_limits<F>::infinity(),
+                          std::numeric_limits<F>::denorm_min(), std::numeric_limits<F>::max(), F(1), F(-1)};
+        for (auto& x : v) x = (rng() % 4 == 0) ? pool[rng() % 8] : static_cast<F>(uni(rng));
+    } else {
+        for (auto& x : v) x = static_cast<F>(uni(rng));
+        if (shape == "sorted" || shape == "reversed" || shape == "nearly_sorted") {
+            std::sort(v.begin(), v.end());
+            if (shape == "reversed") std::reverse(v.begin(), v.end());
+            if (shape == "nearly_sorted" && n > 1)
+                for (std::size_t s = 0; s < std::max<std::size_t>(1, n / 100); ++s) std::swap(v[rng() % n], v[rng() % n]);
+        }
+    }
+    return v;
+}
+
 // The adversarial constructions spend the 64-bit span budget; on a
 // narrower key they degenerate into ordinary inputs and are skipped.
 template <typename T>

@@ -30,6 +30,7 @@
 //   --suite quick    int64, n = 1e6, every shape                (~1 min)
 //   --suite ci       int64/uint32/uint8, n = 1e5 and 1e6, every shape,
 //                    n = 1e7 on four shapes, plus the lambda sweep (~10 min)
+//   --suite types    float, double and key/value records alone
 //   --suite lambda   the lambda sweep alone
 //   --suite full     the ci suite at more sizes and repetitions
 // Options: --md FILE --csv FILE --reps K --sizes a,b --types a,b
@@ -272,6 +273,113 @@ void runTable(Report& rep, const std::vector<std::string>& shapes, std::size_t n
     }
 }
 
+// ---- Floating point ---------------------------------------------------------------
+template <typename F>
+void runFloatTable(Report& rep, std::size_t n, int reps) {
+    rep.line("");
+    rep.line(std::string("### ") + (sizeof(F) == 4 ? "float" : "double") + ", n = " + std::to_string(n) +
+             " (stratum::sort, IEEE totalOrder; no NaN, so std::sort is well defined)");
+    rep.line("");
+    rep.line("| shape | stratum::sort ms (p10-p90) | ns/elem | vs std::sort | std::sort ms | aux B/elem | ok |");
+    rep.line("|---|---|---|---|---|---|---|");
+    for (const std::string& shape : stratum::bench::floatShapes()) {
+        const std::vector<F> input = stratum::bench::makeFloatShape<F>(shape, n);
+        std::vector<F> expected = input;
+        std::sort(expected.begin(), expected.end());
+        std::vector<double> ts, tsd;
+        bool ok = true;
+        for (int r = 0; r < reps; ++r) {
+            for (int k = 0; k < 2; ++k) {
+                std::vector<F> d = input;
+                if ((k + r) % 2 == 0) {
+                    ts.push_back(timeMs([&] { stratum::sort(d); }));
+                    ok = ok && d == expected; // -0 == +0 under ==, both orders are valid
+                } else {
+                    tsd.push_back(timeMs([&] { std::sort(d.begin(), d.end()); }));
+                }
+            }
+        }
+        std::size_t peak = 0;
+        {
+            std::vector<F> d = input;
+            stratum::bench::AllocationScope scope;
+            stratum::sort(d);
+            peak = scope.peakBytes();
+        }
+        const Stats a = summarise(ts), b = summarise(tsd);
+        rep.line("| " + shape + " | " + fmt("%.3f", a.median) + " (" + fmt("%.3f", a.p10) + "-" + fmt("%.3f", a.p90) +
+                 ") | " + fmt("%.2f", a.median * 1e6 / static_cast<double>(n)) + " | " +
+                 fmt("%.2fx", a.median / b.median) + " | " + fmt("%.3f", b.median) + " | " +
+                 fmt("%.2f", static_cast<double>(peak) / static_cast<double>(n)) + " | " + (ok ? "yes" : "**NO**") + " |");
+        if (rep.csv.is_open())
+            rep.csv << (sizeof(F) == 4 ? "float" : "double") << ',' << n << ',' << shape << ",stratum::sort," << a.min
+                    << ',' << a.p10 << ',' << a.median << ',' << a.p90 << ',' << a.max << ','
+                    << a.median * 1e6 / static_cast<double>(n) << ',' << a.median / b.median << ',' << peak << ",,"
+                    << (ok ? 1 : 0) << '\n';
+    }
+}
+
+// ---- Key/value records -----------------------------------------------------------
+template <std::size_t Bytes>
+struct BenchRecord {
+    uint64_t key;
+    unsigned char payload[Bytes - sizeof(uint64_t)];
+};
+
+template <std::size_t Bytes>
+void runRecordTable(Report& rep, std::size_t n, int reps) {
+    using R = BenchRecord<Bytes>;
+    rep.line("");
+    rep.line("### " + std::to_string(Bytes) + "-byte records sorted by a uint64 key, n = " + std::to_string(n));
+    rep.line("");
+    rep.line("| keys | sort_by_key ms | vs std::sort | stable_sort_by_key ms | vs std::stable_sort | "
+             "std::sort ms | std::stable_sort ms | stable aux B/elem | stable ok |");
+    rep.line("|---|---|---|---|---|---|---|---|---|");
+    for (const uint64_t distinct : {uint64_t{0}, uint64_t{1000}}) {
+        std::mt19937_64 rng(Bytes + distinct);
+        std::vector<R> input(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            input[i].key = distinct ? rng() % distinct : rng();
+            std::memset(input[i].payload, static_cast<int>(i & 0xFF), sizeof input[i].payload);
+            std::memcpy(input[i].payload, &i, sizeof i < sizeof input[i].payload ? sizeof i : sizeof input[i].payload);
+        }
+        auto key = [](const R& r) { return r.key; };
+        auto less = [](const R& a, const R& b) { return a.key < b.key; };
+        std::vector<R> expected = input;
+        std::stable_sort(expected.begin(), expected.end(), less);
+        std::vector<double> t[4];
+        bool ok = true;
+        for (int r = 0; r < reps; ++r) {
+            for (int k = 0; k < 4; ++k) {
+                const int i = (k + r) % 4;
+                std::vector<R> d = input;
+                switch (i) {
+                    case 0: t[0].push_back(timeMs([&] { stratum::sort_by_key(d, key); })); break;
+                    case 1:
+                        t[1].push_back(timeMs([&] { stratum::stable_sort_by_key(d, key); }));
+                        ok = ok && std::memcmp(d.data(), expected.data(), n * sizeof(R)) == 0;
+                        break;
+                    case 2: t[2].push_back(timeMs([&] { std::sort(d.begin(), d.end(), less); })); break;
+                    case 3: t[3].push_back(timeMs([&] { std::stable_sort(d.begin(), d.end(), less); })); break;
+                }
+            }
+        }
+        std::size_t peak = 0;
+        {
+            std::vector<R> d = input;
+            stratum::bench::AllocationScope scope;
+            stratum::stable_sort_by_key(d, key);
+            peak = scope.peakBytes();
+        }
+        const double a = summarise(t[0]).median, b = summarise(t[1]).median, c = summarise(t[2]).median,
+                     d = summarise(t[3]).median;
+        rep.line(std::string("| ") + (distinct ? "1000 distinct" : "random 64-bit") + " | " + fmt("%.3f", a) + " | " +
+                 fmt("%.2fx", a / c) + " | " + fmt("%.3f", b) + " | " + fmt("%.2fx", b / d) + " | " + fmt("%.3f", c) +
+                 " | " + fmt("%.3f", d) + " | " + fmt("%.2f", static_cast<double>(peak) / static_cast<double>(n)) +
+                 " | " + (ok ? "yes" : "**NO**") + " |");
+    }
+}
+
 // ---- Lambda sweep --------------------------------------------------------------
 // Which lambda is fastest, per (key, n, shape), normalised to the best
 // lambda of the row. Feeds the automatic default (Config.hpp).
@@ -394,6 +502,14 @@ int main(int argc, char** argv) {
     if (o.suite == "quick") {
         runTypes(rep, o, o.types.empty() ? std::vector<std::string>{"int64"} : o.types,
                  o.sizes.empty() ? std::vector<std::size_t>{1000000} : o.sizes, shapes);
+    } else if (o.suite == "types") {
+        for (std::size_t n : o.sizes.empty() ? std::vector<std::size_t>{100000, 1000000} : o.sizes) {
+            const int reps = n <= 100000 ? 15 : 7;
+            runFloatTable<float>(rep, n, reps);
+            runFloatTable<double>(rep, n, reps);
+            runRecordTable<16>(rep, n, reps);
+            runRecordTable<64>(rep, n, reps);
+        }
     } else if (o.suite == "lambda") {
         lambdaSuite(rep, true);
     } else if (o.suite == "ci" || o.suite == "full") {
@@ -403,6 +519,13 @@ int main(int argc, char** argv) {
                                          : std::vector<std::size_t>{100000, 1000000})
                                  : o.sizes,
                  shapes);
+        for (std::size_t n : {std::size_t{100000}, std::size_t{1000000}}) {
+            const int reps = n <= 100000 ? 15 : 7;
+            runFloatTable<float>(rep, n, reps);
+            runFloatTable<double>(rep, n, reps);
+            runRecordTable<16>(rep, n, reps);
+            runRecordTable<64>(rep, n, reps);
+        }
         Options big = o;
         big.reps = full ? 7 : 3;
         runTypes(rep, big, {"int64"}, {10000000},

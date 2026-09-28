@@ -519,22 +519,32 @@ static bool sortsLikeStdSort(std::vector<T> v, std::size_t& heapSorts) {
 // is stable, so the leaf sees the core exactly as given. The core must
 // contain 0, and its size must give the same fan-out at every level;
 // otherwise this returns an empty vector.
-static std::vector<int64_t> peeledAtDefaults(const std::vector<int64_t>& core) {
-    const uint64_t L = stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN;
+static std::vector<int64_t> peeledFor(const std::vector<int64_t>& core, uint64_t L) {
     const uint64_t D = stratum::MAX_SUBDIVISION_DEPTH;
     const uint64_t s = (core.size() + D + L - 1) / L;
     if (core.empty() || (core.size() + 1 + L - 1) / L != s ||
         *std::min_element(core.begin(), core.end()) != 0)
         return {};
+    // Every value must fit in int64_t. Unchecked, a construction that runs
+    // out of bits wraps around and silently builds some OTHER input - which
+    // is exactly what happened when 0.11.0 halved the default lambda: the
+    // 4096-element core needs ~67 bits at L = 16.
+    const uint64_t limit = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
     uint64_t p = static_cast<uint64_t>(*std::max_element(core.begin(), core.end())) + 1;
     std::vector<int64_t> v(core);
     for (uint64_t k = 1; k <= D; ++k) {
+        if (p > limit / s) return {};
         p *= s;
         v.push_back(static_cast<int64_t>(p));
     }
     const uint64_t sTop = (v.size() + 1 + L - 1) / L;
+    if (p + 1 > limit / sTop) return {};
     v.push_back(static_cast<int64_t>(sTop * (p + 1) - 1));
     return v;
+}
+
+static std::vector<int64_t> peeledAtDefaults(const std::vector<int64_t>& core) {
+    return peeledFor(core, stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN);
 }
 
 // McIlroy's adversary ("A Killer Adversary for Quicksort", 1999) run against
@@ -895,8 +905,10 @@ void testParameterCeilings() {
     inputs.push_back({"permuted cluster + 2 outliers", permutedCluster(n)});
     inputs.push_back({"quickSort worst order in a depth-exhausted leaf",
                       peeledAtDefaults(quickSortKillerOrder(384))});
+    inputs.push_back({"introsort-exhausting sawtooth in a depth-exhausted leaf (0.10.0 defaults)",
+                      peeledFor(sawtooth(4096, 1523), 32)});
     inputs.push_back({"introsort-exhausting sawtooth in a depth-exhausted leaf",
-                      peeledAtDefaults(sawtooth(4096, 1523))});
+                      peeledAtDefaults(sawtooth(2048, 837))});
     inputs.push_back({"n = 392 default-parameter counterexample", peeledAtDefaults(sawtooth(385, 190))});
 
     const std::vector<std::pair<std::size_t, std::size_t>> configs = {
@@ -956,11 +968,19 @@ void testParameterCeilings() {
     check(q.metrics().algorithmUsage().count("QuickSort") == 1 &&
               q.metrics().comparisons() >= 384u * 384u / 8u,
           "the quickSort worst order drives quickSort quadratic inside a depth-exhausted leaf");
-    StratumSort<int64_t> h;
-    std::vector<int64_t> hv = peeledAtDefaults(sawtooth(4096, 1523));
+    // The 4096-element sawtooth pinned where it was built, at 0.10.0's
+    // defaults (32, 64): it needs ~67 bits of key at lambda = 16.
+    StratumSort<int64_t> h(32, 64);
+    std::vector<int64_t> hv = peeledFor(sawtooth(4096, 1523), 32);
     h.sort(hv);
-    check(h.metrics().algorithmUsage().count("HeapSort") == 1,
-          "the 4096-element sawtooth reaches heapSort inside a depth-exhausted leaf");
+    check(!hv.empty() && h.metrics().algorithmUsage().count("HeapSort") == 1,
+          "the 4096-element sawtooth reaches heapSort inside a depth-exhausted leaf at (32, 64)");
+    // And the same property at the CURRENT defaults, with a core that fits.
+    StratumSort<int64_t> h2;
+    std::vector<int64_t> hv2 = peeledAtDefaults(sawtooth(2048, 837));
+    h2.sort(hv2);
+    check(!hv2.empty() && h2.metrics().algorithmUsage().count("HeapSort") == 1,
+          "a 2048-element sawtooth reaches heapSort inside a depth-exhausted leaf at the defaults");
 #endif
 }
 

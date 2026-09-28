@@ -63,9 +63,42 @@ void sweep(const std::string& shape, std::size_t n, const std::vector<std::size_
     std::fflush(stdout);
 }
 
+// The same question for t at a fixed lambda: t/lambda in {1, 1.5, 2, 3, 4, 8}.
+template <typename T>
+void tSweep(const std::string& shape, std::size_t n, std::size_t lambda) {
+    const std::vector<std::size_t> ratiosTimes2 = {2, 3, 4, 6, 8, 16};
+    const std::vector<T> input = stratum::bench::makeShape<T>(shape, n);
+    std::vector<std::vector<double>> times(ratiosTimes2.size());
+    const int reps = n <= 100000 ? 41 : n <= 1000000 ? 15 : 7;
+    stratum::Workspace<T> ws;
+    for (int r = 0; r < reps; ++r) {
+        for (std::size_t k = 0; k < ratiosTimes2.size(); ++k) {
+            const std::size_t i = (k + static_cast<std::size_t>(r)) % ratiosTimes2.size();
+            const stratum::StratumSort<T> s(lambda, lambda * ratiosTimes2[i] / 2);
+            std::vector<T> d = input;
+            const auto t0 = Clock::now();
+            s.sort(d, ws);
+            times[i].push_back(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+        }
+    }
+    std::vector<double> med(ratiosTimes2.size());
+    for (std::size_t i = 0; i < med.size(); ++i) med[i] = medianOf(times[i]);
+    const double best = *std::min_element(med.begin(), med.end());
+    std::printf("t-sweep l=%-4zu %-14s %9zu |", lambda, shape.c_str(), n);
+    for (std::size_t i = 0; i < med.size(); ++i) std::printf(" t/l=%-4.1f %5.2f", ratiosTimes2[i] / 2.0, med[i] / best);
+    std::printf("\n");
+    std::fflush(stdout);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--t-sweep") == 0) {
+        for (std::size_t lambda : {std::size_t{16}, std::size_t{32}})
+            for (const char* shape : {"random", "normal", "nearly_sorted", "adversarial", "clustered"})
+                for (std::size_t n : {std::size_t{100000}, std::size_t{1000000}}) tSweep<int64_t>(shape, n, lambda);
+        return 0;
+    }
     std::string type = "int64", shape = "random";
     std::vector<std::size_t> sizes;
     for (int i = 1; i < argc; ++i) {

@@ -67,26 +67,43 @@ namespace stratum {
 //     E[k^2] / (4 E[k]); for Poisson(lambda) occupancy that is
 //     (lambda + 1) / 4.
 //
-//   - Scatter cost grows as lambda shrinks. The distribution pass writes
-//     into n/lambda simultaneous output streams, each holding one cache
-//     line live, so the write working set is (n / lambda) * 64 bytes.
-//     Once that approaches the L2 capacity, throughput collapses.
+//   - Scatter cost grows as lambda shrinks: the distribution pass keeps
+//     n/lambda counters and writes into n/lambda output streams.
 //
-// THE USEFUL LOWER BOUND THEREFORE DEPENDS ON n AND ON THE CACHE, NOT ON
-// THE ALGORITHM: the condition is roughly
+// WHY 16, AND WHY NOT A FUNCTION OF n OR OF THE CACHE (0.11.0).
+// Up to 0.10.0 the default was 32 with the caveat that it was tuned to one
+// cache - "n * 64 / lambda <~ L2", "much larger inputs want a larger
+// lambda". The 64 was the bytes each bin cost: a 48-byte tree node plus
+// its histogram entries. 0.11.0 keeps no tree and one 4-byte counter per
+// bucket (detail/Engine.hpp), which moved the point where the fan-out
+// saturates the cache by more than an order of magnitude - and with it the
+// optimum. It was re-measured, lambdas alternated in one process
+// (research/perf/LambdaSweep.cpp, benchmarks/stratum_bench.cpp --suite
+// lambda), on three machines: a Xeon (Linux, GCC), a GitHub Linux x86_64
+// runner and an Apple M1 (AppleClang), n from 1e4 to 1e8, shapes random,
+// normal, nearly sorted, whole-universe, duplicates, 64- and 32-bit keys.
+// Worst slowdown against each row's own best lambda:
 //
-//     n * 64 / lambda  <~  L2 capacity
+//                      Xeon    Linux runner    Apple M1
+//     lambda = 32      1.34        1.39          1.40      (0.10.0 default)
+//     lambda = 16      1.13        1.09          1.17
+//     lambda = 8       1.18        1.00          1.61
 //
-// The default below was measured as a practical optimum for n ~ 1e6 on a
-// machine with a 4 MiB L2. It is NOT universal: for n ~ 1e7 the same
-// condition would put the lower bound near 160. A caller sorting much
-// larger inputs should raise it, up to MAX_TARGET_ELEMENTS_PER_BIN below.
+// 16 is the minimax choice on every machine, and it holds from 1e4 to 1e8
+// (at 5e7 and 1e8 the curve is flat within 10% for every lambda from 8 to
+// 512: the sort is bound by main memory, not by the fan-out). An
+// n-dependent rule was considered and rejected on that evidence: no region
+// was found where it would gain measurably, and it would make the
+// partition - and so the order of equal keys in the unstable sorts -
+// depend on n in a way callers would have to learn. A cache-size query was
+// rejected for a stronger reason: the output of an unstable sort_by_key
+// would then differ between machines.
 //
-// Upper bound: see MAX_SUBDIVISION_DEPTH. Raising lambda does not change
-// the complexity class, but it raises the input size above which the
-// linear regime applies - roughly lambda * 2^(w/(D+1)), which is ~1.8e4
-// at lambda = 32 and ~5.8e5 at lambda = 1024.
-constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 32;
+// Upper bound: see MAX_SUBDIVISION_DEPTH. lambda enters the worst-case
+// leaf bound as M = lambda * 2^(w/(D+1)): 9045 at lambda = 16 (18090 at
+// 0.10.0's 32), so the smaller default also halves the largest leaf an
+// adversary can force.
+constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 16;
 
 // t - leaf threshold. A bin holding at most t elements stops being
 // refined and is handed to the local sort.
@@ -97,16 +114,18 @@ constexpr std::size_t DEFAULT_TARGET_ELEMENTS_PER_BIN = 32;
 // t is NOT a tuned value, it is a safe lower bound. Its only job is to
 // sit above the upper tail of the occupancy distribution so that a bin
 // of typical size is not refined merely because it landed slightly above
-// average. Once t clears that tail, raising it further changes nothing:
-// with lambda = 32, P(Poisson(32) > 64) ~ 2e-7, and t = 64, 96 and 128
-// were measured to produce byte-identical counters on every dataset.
+// average: with lambda = 16, P(Poisson(16) > 32) ~ 1e-4. t = 2 * lambda
+// was re-measured in 0.11.0 against t/lambda in {1, 1.5, 3, 4, 8}
+// (research/perf/LambdaSweep.cpp --t-sweep): on every non-adversarial
+// shape it is at the optimum or within 4% of it, at lambda 16 and 32.
 //
 // Setting t = lambda is legal - it fuses the two parameters back into
 // one, which is how the algorithm was originally written - at the
 // cost of sending roughly half of all elements into refinement purely
 // because P(X > lambda) ~ 0.5 for Poisson(lambda) - by arithmetic, not
-// because the data needs it.
-constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
+// because the data needs it. Measured at lambda = 16: 20-22% slower on
+// random input, 75-85% on nearly sorted input.
+constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 32;
 
 // Ceilings on lambda and t. They are what makes hypothesis H2 a property
 // of the code instead of an assumption about the caller: the constructor
@@ -120,8 +139,8 @@ constexpr std::size_t DEFAULT_LEAF_THRESHOLD = 64;
 // A larger ceiling could not lower the worst-case constant, which is a
 // maximum over every admissible (lambda, t) - a larger ceiling only adds
 // configurations - and it raises the leaf bound ceiling * 2^(w/(D+1)).
-// Its only gain would be letting the cache rule above be followed past
-// ~6.5e8 elements.
+// Its only gain would be for callers who want leaves much larger than the
+// defaults, which no measurement here supports.
 constexpr std::size_t MAX_TARGET_ELEMENTS_PER_BIN = 10000;
 constexpr std::size_t MAX_LEAF_THRESHOLD = 10000;
 static_assert(MAX_LEAF_THRESHOLD >= MAX_TARGET_ELEMENTS_PER_BIN,
@@ -146,8 +165,9 @@ static_assert(DEFAULT_TARGET_ELEMENTS_PER_BIN <= MAX_TARGET_ELEMENTS_PER_BIN &&
 // would be just t. Uncapped costs O((w+1)*n); capped costs O((D+1)*n) but
 // enlarges the residual. D trades passes for residual size:
 //
-//     uncapped   65 passes over the data, largest residual t = 64
-//     D = 6       7 passes over the data, largest residual ~18000
+//     uncapped   65 passes over the data, largest residual t = 32
+//     D = 6       7 passes over the data, largest residual ~9000
+//                 (~18000 at 0.10.0's lambda = 32)
 //
 // D = 6 was chosen by measurement, not by analysis: over a range of
 // adversarial inputs the uncapped variant was never faster and cost up to
@@ -163,9 +183,10 @@ static_assert(DEFAULT_TARGET_ELEMENTS_PER_BIN <= MAX_TARGET_ELEMENTS_PER_BIN &&
 //   B(n) is the bound AT A GIVEN n. It depends on n and, above
 //        n = lambda*2^(w/(D+1)), it DECREASES like n^(-1/D), because the
 //        top-level split spends log2(n/lambda) of the w-bit budget before
-//        refinement starts. B(1e6) = 9268.2, B(1e7) = 6314.3.
+//        refinement starts. At the default lambda = 16:
+//        B(1e6) = 4128.5, B(1e7) = 2812.7 (9268.2 and 6314.3 at 32).
 //
-//   M = sup over n of B(n) = lambda * 2^(w/(D+1)) = 18089.4 is the GLOBAL
+//   M = sup over n of B(n) = lambda * 2^(w/(D+1)) = 9044.7 is the GLOBAL
 //        SUPREMUM: a single constant, free of n, attained near n = M
 //        itself. It is NOT the tightest bound at any particular size -
 //        for realistic n it is 2-3x looser than B(n).
@@ -188,10 +209,11 @@ static_assert(DEFAULT_TARGET_ELEMENTS_PER_BIN <= MAX_TARGET_ELEMENTS_PER_BIN &&
 // m <= n always - and in that range the whole array can end up in one
 // comparison sort. So the threshold to watch is
 //
-//     n* = lambda * 2^(w/(D+1))       lambda = 32   -> n* ~ 1.8e4
+//     n* = lambda * 2^(w/(D+1))       lambda = 16   -> n* ~ 9.0e3
+//                                     lambda = 32   -> n* ~ 1.8e4
 //                                     lambda = 1024 -> n* ~ 5.8e5
 //
-// At lambda = 32 that is far below any realistic input, so the linear
+// At lambda = 16 that is far below any realistic input, so the linear
 // regime always applies. At lambda = 1024 it lands inside the range
 // people actually sort, and inputs near it can degrade to Introsort over
 // a large fraction of the array. Asymptotically still linear; practically
