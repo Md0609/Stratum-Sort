@@ -190,7 +190,12 @@ std::vector<T> makeShape(const std::string& shape, std::size_t n, uint64_t seed 
         std::vector<T> v(n);
         for (auto& x : v) {
             long double y = mid + static_cast<long double>(dist(rng)) * range / 16;
-            y = std::min<long double>(std::max<long double>(y, lo), hi);
+            // Clamp strictly inside the type: converting the result back
+            // must not overflow, and the extremes of a 64-bit type are not
+            // exactly representable where long double is a double.
+            const long double lower = static_cast<long double>(lo) + range / 1024;
+            const long double upper = static_cast<long double>(hi) - range / 1024;
+            y = std::min(std::max(y, lower), upper);
             x = static_cast<T>(y);
         }
         return v;

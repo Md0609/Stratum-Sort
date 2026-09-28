@@ -249,4 +249,23 @@ constexpr std::size_t LOCAL_PARTITION_CUTOFF = 12;
 // expressed as a multiple of log2(range size). The classic value is 2.
 constexpr std::size_t INTROSORT_DEPTH_FACTOR = 2;
 
+// ------------------------------------------------------------------
+// RUN-TIME PARAMETERS, NAMED
+// ------------------------------------------------------------------
+// lambda and t as one aggregate with named fields, accepted by
+// StratumSort's constructor and by every free function (Sort.hpp):
+//
+//     stratum::Parameters p;
+//     p.targetElementsPerBin = 64;
+//     p.leafThreshold = 128;
+//
+// StratumSort(64, 32) compiles and means (64, 64); with named fields the
+// two cannot be swapped by accident. Clamped exactly like the positional
+// constructor: lambda into [1, MAX_TARGET_ELEMENTS_PER_BIN] (0 means the
+// default), t into [lambda, MAX_LEAF_THRESHOLD].
+struct Parameters {
+    std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN; // lambda
+    std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD;                 // t
+};
+
 } // namespace stratum

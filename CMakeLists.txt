@@ -107,6 +107,18 @@ if(STRATUMSORT_BUILD_TESTS)
     stratum_add_test(stratum_tests        tests/main.cpp)
     stratum_add_test(stratum_contract     tests/api_contract.cpp)
     stratum_add_test(stratum_fast_division tests/fast_division.cpp)
+    stratum_add_test(stratum_stability    tests/stability.cpp)
+
+    # Exhaustive over all 2^32 floats in optimised configurations (~11 s);
+    # every 7th pattern in Debug, where the same walk takes minutes.
+    add_executable(stratum_float_keys tests/float_keys.cpp)
+    target_link_libraries(stratum_float_keys PRIVATE stratumsort)
+    add_test(NAME stratum_float_keys
+             COMMAND stratum_float_keys $<IF:$<CONFIG:Debug>,7,1>)
+
+    find_package(Threads REQUIRED)
+    stratum_add_test(stratum_concurrency  tests/concurrency.cpp)
+    target_link_libraries(stratum_concurrency PRIVATE Threads::Threads)
 
     # Same source, instrumented: pins the documented differences between the
     # release and research configurations.

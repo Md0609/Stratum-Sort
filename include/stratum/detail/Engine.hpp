@@ -157,29 +157,41 @@ inline std::size_t floorLog2(std::size_t v) {
 // Local sorts
 // ============================================================
 // The comparison sorts that finish a leaf, and the run detection in front
-// of them. Unchanged from 0.10.0 except that they work on a pointer range
-// and compare through Traits::less, so they sort any element type; for an
-// integral type less(a, b) is a < b and the code is the code 0.10.0 ran,
-// comparison for comparison.
+// of them. The unstable set is 0.10.0's, unchanged except that it works on
+// a pointer range and compares through the traits, so it sorts any element
+// type; for an integral type less(a, b) is a < b and the code is the code
+// 0.10.0 ran, comparison for comparison.
+//
+// WHERE STABILITY WAS LOST, EXACTLY. Of everything the algorithm does, only
+// three steps can reorder equal keys, and they are all here or at the top
+// level:
+//   1. quickSort / introSort / heapSort on a leaf larger than 64 elements;
+//   2. reversing a descending leaf, when it contains equal keys;
+//   3. reversing a non-increasing input (sortWith's fast path), likewise.
+// The distribution is stable (its write cursors advance in input order),
+// the span-0 certificate moves nothing, and the sorted-prefix merge takes
+// the prefix first on ties. So the stable variant replaces exactly those
+// three: insertion sort (stable) up to 64, a merge sort above - whose
+// buffer is the leaf's own range in the OTHER buffer, free by construction
+// - and a reversal that puts runs of equal keys back in order.
 template <typename Traits>
-struct LocalSort {
+class LocalSort {
+public:
     using E = typename Traits::Element;
     using Index = std::ptrdiff_t;
 
-    static bool less(const E& a, const E& b) { return Traits::less(a, b); }
+    LocalSort(const Traits& traits, const Probe& probe) : tr_(traits), probe_(probe) {}
 
     enum class RunShape { Ascending, Descending, Unsorted };
 
     // One O(k) scan recognising a range that is already ascending or
-    // descending. NOT STABLE: reversing a descending run swaps elements
-    // with equal keys. Unobservable for integral keys; the stable variant
-    // uses stableRun() instead.
-    static RunShape detectRun(const E* buf, std::size_t count, const Probe& probe) {
+    // non-increasing ("Descending").
+    RunShape detectRun(const E* buf, std::size_t count) const {
         if (count < 2) return RunShape::Ascending;
         bool ascending = true;
         bool descending = true;
         for (std::size_t i = 1; i < count; ++i) {
-            probe.comparisons(2);
+            probe_.comparisons(2);
             if (less(buf[i], buf[i - 1])) ascending = false;
             if (less(buf[i - 1], buf[i])) descending = false;
             if (!ascending && !descending) return RunShape::Unsorted;
@@ -187,12 +199,12 @@ struct LocalSort {
         return ascending ? RunShape::Ascending : RunShape::Descending;
     }
 
-    static void insertionSort(E* arr, Index left, Index right, const Probe& probe) {
+    void insertionSort(E* arr, Index left, Index right) const {
         for (Index i = left + 1; i <= right; ++i) {
             const E key = arr[i];
             Index j = i - 1;
             while (j >= left) {
-                probe.comparisons(1);
+                probe_.comparisons(1);
                 if (!less(key, arr[j])) break; // arr[j] <= key: stable
                 arr[j + 1] = arr[j];
                 --j;
@@ -204,10 +216,10 @@ struct LocalSort {
     // Median-of-three Hoare partition. The median-of-three step leaves
     // arr[left] <= pivot <= arr[right] and parks the pivot at right-1; those
     // two act as sentinels, which is why neither scan tests its bound.
-    static Index partition(E* arr, Index left, Index right, const Probe& probe) {
+    Index partition(E* arr, Index left, Index right) const {
         assert(right - left >= 2 && "partition needs at least three elements for the sentinels");
         const Index mid = left + (right - left) / 2;
-        probe.comparisons(3);
+        probe_.comparisons(3);
         if (less(arr[mid], arr[left])) std::swap(arr[mid], arr[left]);
         if (less(arr[right], arr[left])) std::swap(arr[right], arr[left]);
         if (less(arr[right], arr[mid])) std::swap(arr[right], arr[mid]);
@@ -220,11 +232,11 @@ struct LocalSort {
         while (true) {
             do {
                 ++i;
-                probe.comparisons(1);
+                probe_.comparisons(1);
             } while (less(arr[i], pivot));
             do {
                 --j;
-                probe.comparisons(1);
+                probe_.comparisons(1);
             } while (less(pivot, arr[j]));
             if (i >= j) break;
             std::swap(arr[i], arr[j]);
@@ -237,60 +249,59 @@ struct LocalSort {
     // No depth budget, so its worst case is quadratic; it only ever sees
     // leaves of at most LOCAL_QUICKSORT_MAX_ELEMENTS, which is what keeps
     // that bounded (research/ALGORITHM.md, section 8.6).
-    static void quickSort(E* arr, Index left, Index right, const Probe& probe) {
+    void quickSort(E* arr, Index left, Index right) const {
         while (right - left > static_cast<Index>(LOCAL_PARTITION_CUTOFF)) {
-            const Index p = partition(arr, left, right, probe);
+            const Index p = partition(arr, left, right);
             if (p - left < right - p) {
-                quickSort(arr, left, p - 1, probe);
+                quickSort(arr, left, p - 1);
                 left = p + 1;
             } else {
-                quickSort(arr, p + 1, right, probe);
+                quickSort(arr, p + 1, right);
                 right = p - 1;
             }
         }
-        insertionSort(arr, left, right, probe);
+        insertionSort(arr, left, right);
     }
 
-    static void introSort(E* arr, Index left, Index right, const Probe& probe) {
+    void introSort(E* arr, Index left, Index right) const {
         if (right <= left) return;
         const std::size_t n = static_cast<std::size_t>(right - left + 1);
-        introSortImpl(arr, left, right, INTROSORT_DEPTH_FACTOR * floorLog2(n), probe);
+        introSortImpl(arr, left, right, INTROSORT_DEPTH_FACTOR * floorLog2(n));
     }
 
-    static void introSortImpl(E* arr, Index left, Index right, std::size_t depthLimit,
-                              const Probe& probe) {
+    void introSortImpl(E* arr, Index left, Index right, std::size_t depthLimit) const {
         while (right - left > static_cast<Index>(LOCAL_PARTITION_CUTOFF)) {
             if (depthLimit == 0) {
-                heapSort(arr, left, right, probe);
+                heapSort(arr, left, right);
                 return;
             }
             --depthLimit;
-            const Index p = partition(arr, left, right, probe);
+            const Index p = partition(arr, left, right);
             if (p - left < right - p) {
-                introSortImpl(arr, left, p - 1, depthLimit, probe);
+                introSortImpl(arr, left, p - 1, depthLimit);
                 left = p + 1;
             } else {
-                introSortImpl(arr, p + 1, right, depthLimit, probe);
+                introSortImpl(arr, p + 1, right, depthLimit);
                 right = p - 1;
             }
         }
-        insertionSort(arr, left, right, probe);
+        insertionSort(arr, left, right);
     }
 
     // Max-heap repair at 'root' within the heap [base, end]. The children
     // of heap node k are 2k+1 and 2k+2 counted from 'base' - the heap's
     // first slot - not from the node: folding the two together is the
     // defect that shipped in 0.9.0 (see the 0.10.0 changelog).
-    static void siftDown(E* arr, Index base, Index root, Index end, const Probe& probe) {
+    void siftDown(E* arr, Index base, Index root, Index end) const {
         const Index last = end - base;
         if (last < 1) return;
         while (root - base <= (last - 1) / 2) {
             const Index child = base + 2 * (root - base) + 1;
             Index swapIdx = root;
-            probe.comparisons(1);
+            probe_.comparisons(1);
             if (less(arr[swapIdx], arr[child])) swapIdx = child;
             if (child + 1 <= end) {
-                probe.comparisons(1);
+                probe_.comparisons(1);
                 if (less(arr[swapIdx], arr[child + 1])) swapIdx = child + 1;
             }
             if (swapIdx == root) return;
@@ -299,46 +310,124 @@ struct LocalSort {
         }
     }
 
-    static void heapSort(E* arr, Index left, Index right, const Probe& probe) {
+    void heapSort(E* arr, Index left, Index right) const {
         const Index n = right - left + 1;
         if (n < 2) return;
-        probe.localAlgorithm("HeapSort");
+        probe_.localAlgorithm("HeapSort");
         for (Index start = left + (n - 2) / 2; start >= left; --start)
-            siftDown(arr, left, start, right, probe);
+            siftDown(arr, left, start, right);
         for (Index end = right; end > left; --end) {
             std::swap(arr[left], arr[end]);
-            siftDown(arr, left, left, end - 1, probe);
+            siftDown(arr, left, left, end - 1);
         }
     }
 
     // The unstable leaf sort: 0.10.0's sortLeaf. The dispatch thresholds
     // describe the local sorts and nothing else - they are independent of
     // the leaf threshold t, on purpose.
-    static void sortLeaf(E* buf, std::size_t count, const Probe& probe) {
+    void sortLeaf(E* buf, std::size_t count) const {
         if (count < 2) return;
-        switch (detectRun(buf, count, probe)) {
+        switch (detectRun(buf, count)) {
             case RunShape::Ascending:
-                probe.localAlgorithm("AlreadySorted");
+                probe_.localAlgorithm("AlreadySorted");
                 return;
             case RunShape::Descending:
                 std::reverse(buf, buf + count);
-                probe.localAlgorithm("ReversedRun");
+                probe_.localAlgorithm("ReversedRun");
                 return;
             case RunShape::Unsorted:
                 break;
         }
         const Index right = static_cast<Index>(count - 1);
         if (count <= LOCAL_INSERTION_MAX_ELEMENTS) {
-            insertionSort(buf, 0, right, probe);
-            probe.localAlgorithm("InsertionSort");
+            insertionSort(buf, 0, right);
+            probe_.localAlgorithm("InsertionSort");
         } else if (count <= LOCAL_QUICKSORT_MAX_ELEMENTS) {
-            quickSort(buf, 0, right, probe);
-            probe.localAlgorithm("QuickSort");
+            quickSort(buf, 0, right);
+            probe_.localAlgorithm("QuickSort");
         } else {
-            introSort(buf, 0, right, probe);
-            probe.localAlgorithm("Introsort");
+            introSort(buf, 0, right);
+            probe_.localAlgorithm("Introsort");
         }
     }
+
+    // ---- The stable set ------------------------------------------------
+
+    // Reverses a non-increasing range into a non-decreasing one WITHOUT
+    // reordering equal keys: reverse everything, then reverse each run of
+    // equal keys back. O(count), count - 1 comparisons for the second pass.
+    void stableReverse(E* buf, std::size_t count) const {
+        std::reverse(buf, buf + count);
+        std::size_t runStart = 0;
+        for (std::size_t i = 1; i <= count; ++i) {
+            if (i < count) probe_.comparisons(1);
+            if (i == count || less(buf[runStart], buf[i])) {
+                std::reverse(buf + runStart, buf + i);
+                runStart = i;
+            }
+        }
+    }
+
+    // Bottom-up merge sort: insertion sort on runs of kRun, then merge
+    // passes alternating between the range and 'scratch' (same length).
+    // Stable: a merge takes the left run on ties. O(m log m) comparisons -
+    // the role introsort plays in the unstable set, and inside the same
+    // bound: research/ALGORITHM.md section 8.6 needs only O(m log m) for
+    // leaves above L2 and m <= max(t, M), which this satisfies.
+    void mergeSort(E* buf, E* scratch, std::size_t count) const {
+        constexpr std::size_t kRun = 32;
+        for (std::size_t lo = 0; lo < count; lo += kRun) {
+            const std::size_t hi = std::min(lo + kRun, count);
+            insertionSort(buf, static_cast<Index>(lo), static_cast<Index>(hi - 1));
+        }
+        E* src = buf;
+        E* dst = scratch;
+        for (std::size_t width = kRun; width < count; width *= 2) {
+            for (std::size_t lo = 0; lo < count; lo += 2 * width) {
+                const std::size_t mid = std::min(lo + width, count);
+                const std::size_t hi = std::min(lo + 2 * width, count);
+                std::size_t i = lo, j = mid, w = lo;
+                while (i < mid && j < hi) {
+                    probe_.comparisons(1);
+                    dst[w++] = less(src[j], src[i]) ? src[j++] : src[i++];
+                }
+                while (i < mid) dst[w++] = src[i++];
+                while (j < hi) dst[w++] = src[j++];
+            }
+            std::swap(src, dst);
+        }
+        if (src != buf)
+            std::memcpy(static_cast<void*>(buf), static_cast<const void*>(src), count * sizeof(E));
+    }
+
+    // The stable leaf sort. 'scratch' must hold 'count' elements.
+    void sortLeafStable(E* buf, E* scratch, std::size_t count) const {
+        if (count < 2) return;
+        switch (detectRun(buf, count)) {
+            case RunShape::Ascending:
+                probe_.localAlgorithm("AlreadySorted");
+                return;
+            case RunShape::Descending:
+                stableReverse(buf, count);
+                probe_.localAlgorithm("StableReversedRun");
+                return;
+            case RunShape::Unsorted:
+                break;
+        }
+        if (count <= LOCAL_INSERTION_MAX_ELEMENTS) {
+            insertionSort(buf, 0, static_cast<Index>(count - 1));
+            probe_.localAlgorithm("InsertionSort");
+        } else {
+            mergeSort(buf, scratch, count);
+            probe_.localAlgorithm("MergeSort");
+        }
+    }
+
+private:
+    bool less(const E& a, const E& b) const { return tr_.less(a, b); }
+
+    const Traits& tr_;
+    const Probe& probe_;
 };
 
 // ============================================================
@@ -422,7 +511,7 @@ struct RecordLeaves {
 // ============================================================
 // Engine
 // ============================================================
-template <typename Traits, typename Count, typename Sink>
+template <typename Traits, typename Count, typename Sink, bool Stable>
 class Engine {
 public:
     using E = typename Traits::Element;
@@ -431,9 +520,10 @@ public:
     // topBins buckets: see visitChildren().
     static std::size_t arenaFor(std::size_t topBins) { return 2 * topBins + 2; }
 
-    Engine(E* data, E* aux, Count* arena, std::size_t arenaCapacity, std::size_t lambda,
-           std::size_t leafThreshold, const Probe& probe, Sink& sink)
-        : data_(data),
+    Engine(const Traits& traits, E* data, E* aux, Count* arena, std::size_t arenaCapacity,
+           std::size_t lambda, std::size_t leafThreshold, const Probe& probe, Sink& sink)
+        : tr_(traits),
+          data_(data),
           aux_(aux),
           arena_(arena),
           arenaCapacity_(arenaCapacity),
@@ -465,7 +555,7 @@ public:
             for (std::size_t i = 0; i < n; ++i) {
                 const E e = in[i];
                 out[i] = e;
-                const uint64_t b = bucketOf(Traits::key(e) - origin);
+                const uint64_t b = bucketOf(tr_.key(e) - origin);
                 assert(b < s); // Property 2
                 ++ends[b];
             }
@@ -474,7 +564,7 @@ public:
         divider.dispatch([&](const auto& bucketOf) {
             for (std::size_t i = 0; i < n; ++i) {
                 const E e = out[i];
-                in[ends[bucketOf(Traits::key(e) - origin)]++] = e;
+                in[ends[bucketOf(tr_.key(e) - origin)]++] = e;
             }
         });
         probe_.end("distribute");
@@ -531,10 +621,10 @@ private:
         }
 
         const E* const src = buffer(inData) + start;
-        uint64_t lo = Traits::key(src[0]);
+        uint64_t lo = tr_.key(src[0]);
         uint64_t hi = lo;
         for (std::size_t i = 1; i < count; ++i) {
-            const uint64_t k = Traits::key(src[i]);
+            const uint64_t k = tr_.key(src[i]);
             if (k < lo) lo = k;
             if (k > hi) hi = k;
         }
@@ -556,7 +646,7 @@ private:
         const FastDivider64 divider(g.width);
         divider.dispatch([&](const auto& bucketOf) {
             for (std::size_t i = 0; i < count; ++i) {
-                const uint64_t b = bucketOf(Traits::key(src[i]) - origin);
+                const uint64_t b = bucketOf(tr_.key(src[i]) - origin);
                 assert(b < s); // Property 2
                 ++ends[b];
             }
@@ -565,7 +655,7 @@ private:
         divider.dispatch([&](const auto& bucketOf) {
             for (std::size_t i = 0; i < count; ++i) {
                 const E e = src[i];
-                dst[ends[bucketOf(Traits::key(e) - origin)]++] = e;
+                dst[ends[bucketOf(tr_.key(e) - origin)]++] = e;
             }
         });
 
@@ -645,15 +735,15 @@ private:
 
     // End of the run of equal buckets starting at 'pos', in [pos + 1, end].
     template <typename BucketOf>
-    static std::size_t runEnd(const E* buf, std::size_t pos, std::size_t end, uint64_t origin,
-                              const BucketOf& bucketOf) {
-        const uint64_t b = bucketOf(Traits::key(buf[pos]) - origin);
+    std::size_t runEnd(const E* buf, std::size_t pos, std::size_t end, uint64_t origin,
+                       const BucketOf& bucketOf) const {
+        const uint64_t b = bucketOf(tr_.key(buf[pos]) - origin);
         std::size_t lo = pos; // bucket(buf[lo]) == b
         std::size_t hi = end; // exclusive; bucket(buf[hi]) != b if hi < end
         std::size_t step = 1;
         while (end - lo > step) {
             const std::size_t probe = lo + step;
-            if (bucketOf(Traits::key(buf[probe]) - origin) != b) {
+            if (bucketOf(tr_.key(buf[probe]) - origin) != b) {
                 hi = probe;
                 break;
             }
@@ -662,7 +752,7 @@ private:
         }
         while (hi - lo > 1) {
             const std::size_t mid = lo + (hi - lo) / 2;
-            if (bucketOf(Traits::key(buf[mid]) - origin) == b)
+            if (bucketOf(tr_.key(buf[mid]) - origin) == b)
                 lo = mid;
             else
                 hi = mid;
@@ -680,7 +770,11 @@ private:
             return;
         }
         probe_.begin("localSort");
-        LocalSort<Traits>::sortLeaf(buffer(inData) + start, count, probe_);
+        const LocalSort<Traits> local(tr_, probe_);
+        if (Stable)
+            local.sortLeafStable(buffer(inData) + start, buffer(!inData) + start, count);
+        else
+            local.sortLeaf(buffer(inData) + start, count);
         probe_.end("localSort");
         if (!inData) copyHome(start, count);
     }
@@ -701,6 +795,7 @@ private:
         probe_.end("join");
     }
 
+    const Traits& tr_;
     E* const data_;
     E* const aux_;
     Count* const arena_;
@@ -747,19 +842,19 @@ struct Analysis {
 };
 
 template <typename Traits>
-Analysis analyze(const typename Traits::Element* data, std::size_t n) {
+Analysis analyze(const Traits& tr, const typename Traits::Element* data, std::size_t n) {
     assert(n > 0);
-    const uint64_t first = Traits::key(data[0]);
+    const uint64_t first = tr.key(data[0]);
     std::size_t i = 1;
-    while (i < n && Traits::key(data[i]) == first) ++i;
+    while (i < n && tr.key(data[i]) == first) ++i;
     if (i == n) return {first, first, n, true}; // every key equal
 
     uint64_t lo, hi;
     std::size_t ascendingPrefix;
-    if (Traits::key(data[i]) > first) {
-        uint64_t prev = Traits::key(data[i]);
+    if (tr.key(data[i]) > first) {
+        uint64_t prev = tr.key(data[i]);
         for (++i; i < n; ++i) {
-            const uint64_t k = Traits::key(data[i]);
+            const uint64_t k = tr.key(data[i]);
             if (k < prev) break;
             prev = k;
         }
@@ -769,9 +864,9 @@ Analysis analyze(const typename Traits::Element* data, std::size_t n) {
         ascendingPrefix = i;
     } else {
         const std::size_t equalRun = i;
-        uint64_t prev = Traits::key(data[i]);
+        uint64_t prev = tr.key(data[i]);
         for (++i; i < n; ++i) {
-            const uint64_t k = Traits::key(data[i]);
+            const uint64_t k = tr.key(data[i]);
             if (k > prev) break;
             prev = k;
         }
@@ -781,7 +876,7 @@ Analysis analyze(const typename Traits::Element* data, std::size_t n) {
         ascendingPrefix = equalRun;
     }
     for (; i < n; ++i) {
-        const uint64_t k = Traits::key(data[i]);
+        const uint64_t k = tr.key(data[i]);
         if (k < lo) lo = k;
         if (k > hi) hi = k;
     }
@@ -794,7 +889,7 @@ Analysis analyze(const typename Traits::Element* data, std::size_t n) {
 // element is placed first (i.e. later in the output), which keeps the
 // merge stable.
 template <typename Traits>
-void mergeSortedTail(typename Traits::Element* data, std::size_t k, std::size_t n,
+void mergeSortedTail(const Traits& tr, typename Traits::Element* data, std::size_t k, std::size_t n,
                      typename Traits::Element* aux) {
     using E = typename Traits::Element;
     const std::size_t m = n - k;
@@ -803,7 +898,7 @@ void mergeSortedTail(typename Traits::Element* data, std::size_t k, std::size_t 
     std::size_t j = m; // tail elements not yet placed:   aux[0, j)
     std::size_t w = n; // next write goes to data[w - 1]
     while (j > 0) {
-        if (i > 0 && Traits::key(aux[j - 1]) < Traits::key(data[i - 1])) {
+        if (i > 0 && tr.key(aux[j - 1]) < tr.key(data[i - 1])) {
             data[--w] = data[--i];
         } else {
             data[--w] = aux[--j];
@@ -815,8 +910,8 @@ void mergeSortedTail(typename Traits::Element* data, std::size_t k, std::size_t 
 
 // Sorts data[0, n) with the given (already clamped) parameters, using
 // 'workspace' for every byte of scratch.
-template <typename Traits, typename Sink>
-void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
+template <bool Stable, typename Traits, typename Sink>
+void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, std::size_t lambda,
               std::size_t leafThreshold, Workspace<typename Traits::Element>& workspace,
               const Probe& probe, Sink& sink) {
     using E = typename Traits::Element;
@@ -826,7 +921,7 @@ void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
     }
 
     probe.begin("analyze");
-    const Analysis range = analyze<Traits>(data, n);
+    const Analysis range = analyze(tr, data, n);
     probe.end("analyze");
 
     // ---- Presorted input ------------------------------------------------
@@ -837,14 +932,18 @@ void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
         if constexpr (Sink::kRecord) sink.record(true, 0, n);
         return;
     }
-    // Non-increasing: one reversal. Not stable - equal keys come out in
-    // reverse order - which is unobservable for keys that are their own
-    // value.
+    // Non-increasing: one reversal. The plain reversal is not stable -
+    // equal keys come out in reverse order, unobservable when the element
+    // is its own key - so the stable variant reverses each run of equal
+    // keys back.
     if (range.nonIncreasing) {
         if constexpr (Sink::kRecord) {
             sink.record(true, 0, n);
         } else {
-            std::reverse(data, data + n);
+            if (Stable)
+                LocalSort<Traits>(tr, probe).stableReverse(data, n);
+            else
+                std::reverse(data, data + n);
             probe.localAlgorithm("ReversedInput");
         }
         return;
@@ -853,17 +952,19 @@ void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
     // runs (a sorted file with a sorted batch appended) cost one merge;
     // a sorted file with random records appended costs a sort of the
     // records and one merge. Taken once the prefix is at least half of the
-    // input (research/perf/PresortedDetection.cpp). Linear: the tail sort
-    // is Theta(n - k), the merge Theta(n). The buffer holds only the tail,
+    // input. Linear: the tail sort is Theta(n - k), the merge Theta(n), and
+    // a tail that again has a sorted half recurses on at most half the
+    // elements, so the chain sums to O(n). The buffer holds only the tail,
     // and it is reserved BEFORE the tail is sorted, so every allocation
-    // still precedes every write.
+    // still precedes every write. The merge takes the prefix first on
+    // equal keys, so the path is stable whenever the tail sort is.
     if constexpr (!Sink::kRecord) {
         if (range.ascendingPrefix >= n / 2) {
             const std::size_t k = range.ascendingPrefix;
             WorkspaceAccess::elements(workspace, n - k);
-            sortWith<Traits>(data + k, n - k, lambda, leafThreshold, workspace, probe, sink);
+            sortWith<Stable>(tr, data + k, n - k, lambda, leafThreshold, workspace, probe, sink);
             probe.begin("join");
-            mergeSortedTail<Traits>(data, k, n, WorkspaceAccess::elements(workspace, n - k));
+            mergeSortedTail(tr, data, k, n, WorkspaceAccess::elements(workspace, n - k));
             probe.end("join");
             probe.localAlgorithm("SortedPrefixMerge");
             return;
@@ -874,9 +975,13 @@ void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
 
     if (top.binCount == 1) {
         // n <= lambda (Case A1 of Lemma 4): one leaf, sorted where it is.
-        // Nothing is split, so nothing is allocated.
-        Engine<Traits, uint32_t, Sink> engine(data, nullptr, nullptr, 0, lambda, leafThreshold,
-                                              probe, sink);
+        // Nothing is split. The unstable leaf sort needs no buffer; the
+        // stable one needs one for a leaf too large for insertion sort.
+        E* const scratch = (Stable && n > LOCAL_INSERTION_MAX_ELEMENTS)
+                               ? WorkspaceAccess::elements(workspace, n)
+                               : nullptr;
+        Engine<Traits, uint32_t, Sink, Stable> engine(tr, data, scratch, nullptr, 0, lambda,
+                                                      leafThreshold, probe, sink);
         engine.runSingleLeaf(n);
         return;
     }
@@ -885,15 +990,17 @@ void sortWith(typename Traits::Element* data, std::size_t n, std::size_t lambda,
     E* const aux = WorkspaceAccess::elements(workspace, n);
     if (n <= std::numeric_limits<uint32_t>::max()) {
         using Count = uint32_t;
-        const std::size_t cap = Engine<Traits, Count, Sink>::arenaFor(top.binCount);
+        const std::size_t cap = Engine<Traits, Count, Sink, Stable>::arenaFor(top.binCount);
         Count* const arena = WorkspaceAccess::counts<E, Count>(workspace, cap);
-        Engine<Traits, Count, Sink>(data, aux, arena, cap, lambda, leafThreshold, probe, sink)
+        Engine<Traits, Count, Sink, Stable>(tr, data, aux, arena, cap, lambda, leafThreshold, probe,
+                                            sink)
             .run(n, top);
     } else {
         using Count = uint64_t;
-        const std::size_t cap = Engine<Traits, Count, Sink>::arenaFor(top.binCount);
+        const std::size_t cap = Engine<Traits, Count, Sink, Stable>::arenaFor(top.binCount);
         Count* const arena = WorkspaceAccess::counts<E, Count>(workspace, cap);
-        Engine<Traits, Count, Sink>(data, aux, arena, cap, lambda, leafThreshold, probe, sink)
+        Engine<Traits, Count, Sink, Stable>(tr, data, aux, arena, cap, lambda, leafThreshold, probe,
+                                            sink)
             .run(n, top);
     }
 }

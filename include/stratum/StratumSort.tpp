@@ -38,8 +38,8 @@ void StratumSort<T>::sortRange(T* first, std::size_t n, Workspace<T>& workspace)
     const detail::Probe probe;
 #endif
     detail::SortLeaves sink;
-    detail::sortWith<Traits>(first, n, targetElementsPerBin_, leafThreshold_, workspace, probe,
-                             sink);
+    detail::sortWith</*Stable=*/false>(Traits{}, first, n, targetElementsPerBin_, leafThreshold_,
+                                       workspace, probe, sink);
 }
 
 template <typename T>
@@ -81,8 +81,9 @@ std::vector<typename StratumSort<T>::LeafView> StratumSort<T>::debugPartitionOnl
     debugA_ = data;
     std::vector<detail::LeafRecord> records;
     detail::RecordLeaves sink{&records};
-    detail::sortWith<Traits>(debugA_.data(), debugA_.size(), targetElementsPerBin_,
-                             leafThreshold_, workspace_, probe, sink);
+    detail::sortWith</*Stable=*/false>(Traits{}, debugA_.data(), debugA_.size(),
+                                       targetElementsPerBin_, leafThreshold_, workspace_, probe,
+                                       sink);
 
     debugB_.assign(data.size(), T{});
     for (const detail::LeafRecord& r : records) {

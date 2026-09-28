@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Config.hpp"
+
 // ============================================================
 // Exact division by a run-time invariant 64-bit divisor
 // ============================================================
@@ -43,6 +45,7 @@
 #endif
 
 namespace stratum {
+inline namespace STRATUM_ABI_NAMESPACE {
 namespace detail {
 
 #if defined(__SIZEOF_INT128__)
@@ -203,4 +206,5 @@ private:
 };
 
 } // namespace detail
+} // inline namespace STRATUM_ABI_NAMESPACE
 } // namespace stratum

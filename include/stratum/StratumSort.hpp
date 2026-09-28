@@ -187,9 +187,15 @@ public:
     //
     // KNOWN HAZARD: both parameters are std::size_t and adjacent, so
     // swapping them at a call site compiles. StratumSort(64, 32) is
-    // read as (64, 64), not (32, 64).
+    // read as (64, 64), not (32, 64). The Parameters overload below names
+    // them and removes the hazard; this one stays for compatibility.
     explicit StratumSort(std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN,
                          std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
+
+    // The same, with the two parameters named (Config.hpp, Parameters), so
+    // they cannot be swapped by accident. Clamped identically.
+    explicit StratumSort(const Parameters& parameters)
+        : StratumSort(parameters.targetElementsPerBin, parameters.leafThreshold) {}
 
     // Sorts 'data' in place into ascending order, using the workspace this
     // instance owns. Not safe to call concurrently on one instance.
@@ -250,3 +256,4 @@ private:
 } // namespace stratum
 
 #include "StratumSort.tpp"
+#include "Sort.hpp"

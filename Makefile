@@ -64,9 +64,10 @@ DEF_RESEARCH := -DSTRATUM_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(RESEARCH_INC)"'
 ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
                 include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp \
                 include/stratum/KeyTraits.hpp include/stratum/Workspace.hpp \
+                include/stratum/Sort.hpp \
                 include/stratum/detail/Engine.hpp include/stratum/detail/FastDivision.hpp
 
-.PHONY: all test contract sanitizers fuzz timings bench examples \
+.PHONY: all test contract sanitizers tsan fuzz timings bench examples \
         research research-perf studies package package-verify clean help
 
 # ============================================================
@@ -77,6 +78,7 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
 # target that fails because an optional tool is missing is a broken build
 # target. Run them explicitly with `make sanitizers` / `make fuzz`.
 all: build/tests build/contract build/contract_research build/fast_division \
+     build/stability build/float_keys build/concurrency \
      build/timings build/stratum_bench build/example_basic
 
 # ---- Correctness: TEST configuration, assertions ACTIVE --------------------
@@ -101,6 +103,38 @@ build/fast_division: tests/fast_division.cpp include/stratum/detail/FastDivision
 	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
 build/fast_division_san: tests/fast_division.cpp include/stratum/detail/FastDivision.hpp
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
+
+# Stability with identifiable payloads, key/value records, enums, chars.
+build/stability: tests/stability.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
+	@mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
+
+# The float/double key map: exhaustive over all 2^32 floats.
+build/float_keys: tests/float_keys.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
+
+# One sorter, many threads, one workspace each.
+build/concurrency: tests/concurrency.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@ -pthread
+
+# The same under ThreadSanitizer: no output was wrong is not the same claim
+# as no access raced.
+build/concurrency_tsan: tests/concurrency.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=thread $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@ -pthread
+
+tsan: build/concurrency_tsan
+	./build/concurrency_tsan
+
+build/stability_san: tests/stability.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
+
+build/float_keys_san: tests/float_keys.cpp $(ALGO_HEADERS)
 	@mkdir -p build
 	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
@@ -136,10 +170,17 @@ build/example_basic: examples/basic.cpp $(ALGO_HEADERS)
 	@mkdir -p build
 	$(CXX) $(PROD_CXXFLAGS) -Iinclude $(DEF_PROD) $< -o $@
 
-test: build/tests build/contract build/contract_research build/fast_division
+test: build/tests build/contract build/contract_research build/fast_division \
+      build/stability build/float_keys build/concurrency
 	./build/tests
 	@echo
 	./build/fast_division
+	@echo
+	./build/float_keys
+	@echo
+	./build/stability
+	@echo
+	./build/concurrency
 	@echo
 	./build/contract
 	@echo
@@ -149,9 +190,14 @@ contract: build/contract build/contract_research
 	./build/contract
 	./build/contract_research
 
-sanitizers: build/sanitizers build/fast_division_san
+# float_keys under the sanitizers walks every 101st float pattern: the
+# exhaustive walk is `make test`'s job, the sanitizers are here for the
+# sorting code around it.
+sanitizers: build/sanitizers build/fast_division_san build/stability_san build/float_keys_san
 	./build/sanitizers
 	./build/fast_division_san
+	./build/stability_san
+	./build/float_keys_san 101
 
 # 20000 random cases by default; pass N=... for a longer soak.
 fuzz: build/fuzz
@@ -230,6 +276,7 @@ PACKAGE_FILES := \
 	include/stratum/Metrics.hpp \
 	include/stratum/KeyTraits.hpp \
 	include/stratum/Workspace.hpp \
+	include/stratum/Sort.hpp \
 	include/stratum/detail/Engine.hpp \
 	include/stratum/detail/FastDivision.hpp \
 	tests/main.cpp \
@@ -237,6 +284,9 @@ PACKAGE_FILES := \
 	tests/edge_sanitizers.cpp \
 	tests/differential_fuzz.cpp \
 	tests/fast_division.cpp \
+	tests/float_keys.cpp \
+	tests/stability.cpp \
+	tests/concurrency.cpp \
 	tests/odr_guard_lib.cpp \
 	tests/odr_guard_main.cpp \
 	datasets/DatasetGenerator.hpp \

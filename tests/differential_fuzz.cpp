@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <vector>
@@ -94,10 +95,66 @@ void oneCase() {
     }
 }
 
+// Floating point: compared with std::sort under IEEE totalOrder, BIT FOR
+// BIT. The comparator uses the library's key map, which tests/float_keys.cpp
+// proves equal to totalOrder exhaustively; what this checks is the sorting
+// machinery around it, under the sanitizers.
+template <typename F, typename Bits>
+void oneFloatCase() {
+    const std::size_t n = std::uniform_int_distribution<std::size_t>(0, 3000)(rng);
+    std::vector<F> v(n);
+    const int shape = std::uniform_int_distribution<int>(0, 3)(rng);
+    for (auto& x : v) {
+        Bits b = static_cast<Bits>(rng());
+        if (shape == 1) b &= static_cast<Bits>(0x8000000000000007ull); // signed zeros, denormals
+        if (shape == 2) b |= static_cast<Bits>(~Bits{0} >> 1) & ~static_cast<Bits>(0xF); // NaNs, infinities
+        std::memcpy(&x, &b, sizeof x);
+    }
+    if (shape == 3) std::sort(v.begin(), v.end(), [](F a, F b) {
+        return stratum::OrderedKey<F>::key(a) < stratum::OrderedKey<F>::key(b); });
+    std::vector<F> expected = v;
+    std::sort(expected.begin(), expected.end(), [](F a, F b) {
+        return stratum::OrderedKey<F>::key(a) < stratum::OrderedKey<F>::key(b); });
+    if (rng() & 1) stratum::sort(v);
+    else stratum::stable_sort(v);
+    ++cases;
+    if (n != 0 && std::memcmp(v.data(), expected.data(), n * sizeof(F)) != 0) {
+        std::printf("MISMATCH  float%zu n=%zu shape=%d\n", sizeof(F) * 8, n, shape);
+        std::exit(1);
+    }
+}
+
+// Records under stable_sort_by_key, compared with std::stable_sort.
+void oneRecordCase() {
+    struct Row { int32_t key; uint32_t seq; };
+    const std::size_t n = std::uniform_int_distribution<std::size_t>(0, 3000)(rng);
+    const int distinct = std::uniform_int_distribution<int>(1, 64)(rng);
+    std::vector<Row> v(n);
+    for (std::size_t i = 0; i < n; ++i)
+        v[i] = {std::uniform_int_distribution<int>(-distinct, distinct)(rng), static_cast<uint32_t>(i)};
+    std::vector<Row> expected = v;
+    std::stable_sort(expected.begin(), expected.end(), [](const Row& a, const Row& b) { return a.key < b.key; });
+    stratum::Parameters p;
+    p.targetElementsPerBin = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
+    p.leafThreshold = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
+    stratum::Workspace<Row> ws;
+    stratum::stable_sort_by_key(v, [](const Row& r) { return r.key; }, ws, p);
+    ++cases;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (v[i].key != expected[i].key || v[i].seq != expected[i].seq) {
+            std::printf("MISMATCH  record n=%zu lambda=%zu t=%zu\n", n, p.targetElementsPerBin, p.leafThreshold);
+            std::exit(1);
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     const long long iters = argc > 1 ? std::atoll(argv[1]) : 20000;
     for (long long i = 0; i < iters; ++i) {
-        switch (i % 8) {
+        switch (i % 11) {
+            case 8: oneFloatCase<float, uint32_t>(); break;
+            case 9: oneFloatCase<double, uint64_t>(); break;
+            case 10: oneRecordCase(); break;
             case 0: oneCase<int8_t>(); break;
             case 1: oneCase<uint8_t>(); break;
             case 2: oneCase<int16_t>(); break;

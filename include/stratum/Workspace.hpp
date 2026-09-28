@@ -50,8 +50,6 @@ namespace stratum {
 inline namespace STRATUM_ABI_NAMESPACE {
 
 namespace detail {
-template <typename Traits, typename Count, typename Sink>
-class Engine;
 struct WorkspaceAccess;
 } // namespace detail
 
