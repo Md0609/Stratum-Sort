@@ -62,10 +62,12 @@ DEF_TEST     := -DSTRATUM_CXXFLAGS='"$(TEST_CXXFLAGS) $(PROD_INC)"'
 DEF_RESEARCH := -DSTRATUM_CXXFLAGS='"$(RESEARCH_CXXFLAGS) $(RESEARCH_INC)"'
 
 ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
-                include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp
+                include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp \
+                include/stratum/KeyTraits.hpp include/stratum/Workspace.hpp \
+                include/stratum/detail/Engine.hpp include/stratum/detail/FastDivision.hpp
 
 .PHONY: all test contract sanitizers fuzz timings examples \
-        research studies package package-verify clean help
+        research research-perf studies package package-verify clean help
 
 # ============================================================
 # PRODUCT
@@ -74,7 +76,7 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
 # linkable ASan, which Homebrew GCC does not provide on macOS. A build
 # target that fails because an optional tool is missing is a broken build
 # target. Run them explicitly with `make sanitizers` / `make fuzz`.
-all: build/tests build/contract build/contract_research \
+all: build/tests build/contract build/contract_research build/fast_division \
      build/timings build/example_basic
 
 # ---- Correctness: TEST configuration, assertions ACTIVE --------------------
@@ -91,6 +93,16 @@ build/contract: tests/api_contract.cpp $(ALGO_HEADERS)
 build/contract_research: tests/api_contract.cpp $(ALGO_HEADERS)
 	@mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(PROD_INC) $(DEF_RESEARCH) $< -o $@
+
+# The reciprocal division must be EXACTLY the hardware one: every guarantee
+# of the algorithm is a statement about floor(offset / width).
+build/fast_division: tests/fast_division.cpp include/stratum/detail/FastDivision.hpp
+	@mkdir -p build
+	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
+
+build/fast_division_san: tests/fast_division.cpp include/stratum/detail/FastDivision.hpp
+	@mkdir -p build
+	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
 # ---- Range-arithmetic limits under ASan/UBSan ------------------------------
 # Separate from `make test` because the sanitizers make it far slower; it is
@@ -114,8 +126,10 @@ build/example_basic: examples/basic.cpp $(ALGO_HEADERS)
 	@mkdir -p build
 	$(CXX) $(PROD_CXXFLAGS) -Iinclude $(DEF_PROD) $< -o $@
 
-test: build/tests build/contract build/contract_research
+test: build/tests build/contract build/contract_research build/fast_division
 	./build/tests
+	@echo
+	./build/fast_division
 	@echo
 	./build/contract
 	@echo
@@ -125,8 +139,9 @@ contract: build/contract build/contract_research
 	./build/contract
 	./build/contract_research
 
-sanitizers: build/sanitizers
+sanitizers: build/sanitizers build/fast_division_san
 	./build/sanitizers
+	./build/fast_division_san
 
 # 20000 random cases by default; pass N=... for a longer soak.
 fuzz: build/fuzz
@@ -158,7 +173,22 @@ build/research_%: research/experiments/%.cpp
 	@mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(RESEARCH_INC) $(DEF_RESEARCH) $< -o $@
 
-research studies: $(RESEARCH_BINARIES)
+# Release-configuration research programs. Everything above is built with
+# the metrics on; these are not, because what they measure - wall clock and
+# allocator traffic - is exactly what the instrumentation distorts. They may
+# include the frozen 0.10.0 implementation (research/baselines) to compare
+# against it in one process, alternating, which is the only comparison this
+# project accepts.
+PERF_SOURCES  := $(wildcard research/perf/*.cpp)
+PERF_BINARIES := $(patsubst research/perf/%.cpp,build/perf_%,$(PERF_SOURCES))
+
+build/perf_%: research/perf/%.cpp $(ALGO_HEADERS) benchmarks/AllocationTracker.hpp
+	@mkdir -p build
+	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) -Iresearch/baselines $(DEF_PROD) $< -o $@
+
+research-perf: $(PERF_BINARIES)
+
+research studies: $(RESEARCH_BINARIES) $(PERF_BINARIES)
 ifeq ($(strip $(RESEARCH_SOURCES)),)
 	@echo "No research/ directory here - this is the distributed package."
 	@echo "The design record and the proof live in the project repository."
@@ -188,10 +218,15 @@ PACKAGE_FILES := \
 	include/stratum/StratumSort.tpp \
 	include/stratum/Config.hpp \
 	include/stratum/Metrics.hpp \
+	include/stratum/KeyTraits.hpp \
+	include/stratum/Workspace.hpp \
+	include/stratum/detail/Engine.hpp \
+	include/stratum/detail/FastDivision.hpp \
 	tests/main.cpp \
 	tests/api_contract.cpp \
 	tests/edge_sanitizers.cpp \
 	tests/differential_fuzz.cpp \
+	tests/fast_division.cpp \
 	tests/odr_guard_lib.cpp \
 	tests/odr_guard_main.cpp \
 	datasets/DatasetGenerator.hpp \

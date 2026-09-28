@@ -1,6 +1,9 @@
 #pragma once
 
 #include "Config.hpp"
+#include "KeyTraits.hpp"
+#include "Workspace.hpp"
+#include "detail/Engine.hpp"
 
 #ifdef STRATUM_ENABLE_METRICS
 #include "Metrics.hpp"
@@ -60,9 +63,8 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //                                       heapsort fallback
 //
 // Quicksort carries no partitioning budget of its own, so its worst case
-// really is quadratic - it is bounded here only because sortLeaf never
-// hands it more than 384 elements. That does not break linearity, and the
-// reason is not that 384 is a small number: when m <= C for a fixed C,
+// really is quadratic - it is bounded here only because the dispatcher
+// never hands it more than 384 elements. When m <= C for a fixed C,
 // m^2 <= C*m, so the cost is linear in the leaf with constant C/2 = 192.
 // Leaves tile [0, n) without overlap, so sum(m) <= n and the total across
 // all leaves is O(n).
@@ -76,29 +78,35 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //       passes data.size() for either argument gets the ceiling, so the
 //       largest leaf a comparison sort can receive is at most
 //       10000 * 2^(w/(D+1)) ~= 5.7e6 for every configuration, and Theta(n)
-//       holds for every input and every argument. Before the ceilings,
-//       lambda = t = n put the whole array in one leaf: Theta(n log n).
+//       holds for every input and every argument.
 //   H3  Unit-cost RAM; allocating or releasing k words costs O(k);
 //       n + lambda fits in size_t.
 //   H4  memcpy of k elements costs Theta(k).
 //
+// 0.11.0 changed how the memory is used and nothing about the partition:
+// the grids, the buckets, the refinement rule, the leaves and the local
+// sorts are 0.10.0's, element for element. detail/Engine.hpp explains the
+// difference; research/ALGORITHM.md needs none.
+//
 // ---- Guarantees ---------------------------------------------------
 // STABILITY: none. This sorter is NOT stable. For the integral key types
 //   it accepts, equal elements are indistinguishable, so this is
-//   unobservable - but it does mean the implementation must not be
-//   generalised to key/value pairs without revisiting detectRun(), which
-//   reverses runs in place.
+//   unobservable.
 //
-// THREAD SAFETY: a single instance is NOT safe to use from more than one
-//   thread; it owns mutable scratch buffers reused across the whole
-//   recursion. Distinct instances are independent and may be used
-//   concurrently. There is no shared global state.
+// THREAD SAFETY: the SETTINGS of a sorter (lambda, t) are immutable after
+//   construction. Its SCRATCH lives in a Workspace:
+//     - sort(data) uses the workspace the instance owns, so one instance
+//       used from two threads at once is a data race, as in 0.10.0;
+//     - sort(data, workspace) is const and uses only the workspace it is
+//       given, so one instance may serve any number of threads at once,
+//       each with its own workspace. No lock is taken; none is needed.
+//   There is no shared global state.
 //
 // INSTRUMENTATION: STRATUM_ENABLE_METRICS is a whole-program switch, not a
-//   per-file one. Defining it adds a member to this class, so the class has
-//   a different size and layout in the two configurations.
+//   per-file one. Defining it adds members to this class and to Workspace,
+//   so they have a different size and layout in the two configurations.
 //
-//   That mismatch cannot corrupt a program silently. The class lives in an
+//   That mismatch cannot corrupt a program silently. The classes live in an
 //   inline namespace whose name depends on the macro (see Config.hpp), so
 //   the two configurations are distinct types with distinct mangled names.
 //   Callers still write stratum::StratumSort<T> and notice nothing; but if
@@ -108,40 +116,35 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //   target that includes this header, or leave it unset everywhere.
 //
 // EXCEPTIONS: strong guarantee in a release build. The only operations
-//   that can throw are the internal allocations, and all of them happen
-//   before the first write to the caller's array - the output is produced
-//   only in the final join. If sort() throws, the input is unchanged.
-//   This does NOT hold when STRATUM_ENABLE_METRICS is defined: the
-//   instrumentation records the timing of the join phase after the join
-//   has run, and recording it allocates. A research build can therefore
-//   throw with the output already written. That build is a measurement
-//   tool, not a product; tests/api_contract.cpp pins the difference.
+//   that can throw are the allocations of the workspace, and all of them
+//   happen before the first write to the caller's array. If sort() throws,
+//   the input is unchanged. This does NOT hold when STRATUM_ENABLE_METRICS
+//   is defined: the instrumentation records timings and leaf sizes while
+//   the array is being written, and recording allocates. That build is a
+//   measurement tool, not a product; tests/api_contract.cpp pins the
+//   difference.
 //
-// MEMORY: sort() allocates
+// MEMORY: a sort of n elements needs, in its workspace,
 //
-//       2n * sizeof(T)        the two cascading buffers
-//     +  n * sizeof(size_t)   one bucket index per element
-//     +  O(n / lambda)        write cursors and the refinement tree
+//        n * sizeof(T)                        one partner buffer
+//     +  (2 * ceil(n / lambda) + 2) counters  4 bytes each when n < 2^32
 //
-//   NOTE the middle term does not scale with T: it is one size_t per
-//   element whatever the key type, so sorting narrow keys is where this
-//   sorter is least economical with memory. Measured peak, 8-byte key:
-//   3.28x the input at the default lambda = 32, 4.46x on input that
-//   drives refinement, and 16.56x at lambda = t = 1 on uniform input,
-//   where every per-bin structure becomes per-element; that figure is
-//   not an upper bound for lambda = 1. For a 1-byte key it is about 10x
-//   above n ~ 1e5, and 12.25x below n ~ 8192, where the span cap has not
-//   yet bound the bin count.
+//   and nothing else: no per-element index, no refinement tree, and no
+//   term that depends on the shape of the input. Measured peak for an
+//   8-byte key: 1.03x the input at the default lambda = 32 (0.10.0: 3.28x),
+//   and 2.0x at lambda = t = 1 (0.10.0: 16.56x). For a 1-byte key it is
+//   1.0x plus at most 2 KiB (0.10.0: 10x). An input with every key equal,
+//   and an input of at most lambda elements, allocate nothing.
+//   research/perf/MemoryProfile.cpp measures all of it at the allocator.
 //
-//   The scratch is allocated on first use and reused across later calls
-//   on the same instance. It is released when the instance is destroyed,
-//   not between calls: an instance used once on a huge array keeps that
-//   memory alive.
+//   The workspace an instance owns is allocated on first use and reused
+//   across later calls; it grows, never shrinks by itself, and is released
+//   by releaseScratch() or when the instance is destroyed. A workspace
+//   passed to sort(data, workspace) belongs to the caller.
 //
 // ---- Element type -------------------------------------------------
 // Integral types only: every formula (span, interval width, bin index) is
-// defined over exact integer arithmetic, and the range arithmetic relies
-// on unsigned wrap-around being well defined.
+// defined over exact integer arithmetic.
 // ============================================================
 template <typename T>
 class StratumSort {
@@ -149,23 +152,23 @@ class StratumSort {
                   "StratumSort requires an integral element type");
     // std::is_integral<bool> is true, but std::vector<bool> is the packed
     // specialisation: no data(), elements not individually addressable, so
-    // the block copies below cannot work on it. Rejecting it here gives a
+    // the block copies cannot work on it. Rejecting it here gives a
     // readable message instead of a template error deep inside memcpy.
     static_assert(!std::is_same<typename std::remove_cv<T>::type, bool>::value,
                   "StratumSort does not support bool: std::vector<bool> is a packed "
                   "specialisation with no contiguous storage");
     // The span arithmetic is carried in uint64_t throughout, so a key wider
-    // than 64 bits would have its offset truncated in bucketOf() and could
-    // produce an out-of-range bucket index. That is not a wrong answer, it
-    // is a heap overflow: verified with __int128, which some toolchains
-    // report as integral. The proof of linearity also assumes w is bounded.
-    // Rejecting the type is the honest option; widening the arithmetic
-    // would be a different algorithm with a different cost model.
+    // than 64 bits would have its offset truncated and could produce an
+    // out-of-range bucket index. That is not a wrong answer, it is a heap
+    // overflow: verified with __int128, which some toolchains report as
+    // integral. The proof of linearity also assumes w is bounded.
     static_assert(sizeof(T) <= sizeof(uint64_t),
                   "StratumSort supports keys of at most 64 bits: the range arithmetic "
                   "is carried in uint64_t");
 
 public:
+    using Traits = IntegralKeyTraits<T>;
+
     // targetElementsPerBin (lambda) is the target occupancy per bin;
     // leafThreshold (t) is the size at which refinement stops. Config.hpp
     // explains what each controls and how to choose it.
@@ -184,24 +187,40 @@ public:
     //
     // KNOWN HAZARD: both parameters are std::size_t and adjacent, so
     // swapping them at a call site compiles. StratumSort(64, 32) is
-    // read as (64, 64), not (32, 64). A named-parameter struct would
-    // remove the hazard at the cost of breaking source compatibility; it
-    // is deliberately not introduced.
+    // read as (64, 64), not (32, 64).
     explicit StratumSort(std::size_t targetElementsPerBin = DEFAULT_TARGET_ELEMENTS_PER_BIN,
-                              std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
+                         std::size_t leafThreshold = DEFAULT_LEAF_THRESHOLD);
 
-    // Sorts 'data' in place into ascending order.
+    // Sorts 'data' in place into ascending order, using the workspace this
+    // instance owns. Not safe to call concurrently on one instance.
     void sort(std::vector<T>& data);
+
+    // Same, for any contiguous range [first, last).
+    void sort(T* first, T* last);
+
+    // Sorts using the caller's workspace instead of the instance's own.
+    // Const: many threads may call it on ONE sorter at the same time,
+    // provided each passes its own workspace.
+    void sort(std::vector<T>& data, Workspace<T>& workspace) const;
+    void sort(T* first, T* last, Workspace<T>& workspace) const;
 
     std::size_t targetElementsPerBin() const { return targetElementsPerBin_; }
     std::size_t leafThreshold() const { return leafThreshold_; }
 
-#ifdef STRATUM_ENABLE_METRICS
-    // Statistics from the last sort() call. Research build only.
-    const SortMetrics& metrics() const { return metrics_; }
+    // Bytes of scratch this instance currently holds, and a way to give
+    // them back without destroying the instance.
+    std::size_t scratchBytes() const { return workspace_.bytes(); }
+    void releaseScratch() noexcept { workspace_.release(); }
 
-    // Lets analysis code inspect the partition Stratum Sort would produce, without
-    // sorting or joining it. sort() never calls any of this.
+#ifdef STRATUM_ENABLE_METRICS
+    // Statistics from the last sort() call that used the instance's own
+    // workspace. Research build only.
+    const SortMetrics& metrics() const { return workspace_.metrics(); }
+
+    // Lets analysis code inspect the partition Stratum Sort would produce,
+    // without sorting its leaves. 'inBufferA' means the leaf is in the
+    // array being sorted (debugBufferA), otherwise in the workspace
+    // (debugBufferB); both are indexed by the same absolute offsets.
     struct LeafView {
         bool inBufferA;
         std::size_t start;
@@ -210,153 +229,20 @@ public:
 
     std::vector<LeafView> debugPartitionOnly(const std::vector<T>& data);
 
-    const std::vector<T>& debugBufferA() const { return bufferA_; }
-    const std::vector<T>& debugBufferB() const { return bufferB_; }
+    const std::vector<T>& debugBufferA() const { return debugA_; }
+    const std::vector<T>& debugBufferB() const { return debugB_; }
 #endif
 
 private:
-    // Signed index type for the local sorts. std::ptrdiff_t rather than
-    // long, which is 32 bits on Windows and would silently break for
-    // ranges above 2^31.
-    using Index = std::ptrdiff_t;
-
-    // ---- Value-space types ------------------------------------------
-
-    // The observed minimum and maximum of a range of elements.
-    struct ValueRange {
-        T minimum{};
-        T maximum{};
-    };
-
-    // A grid of equal-width value intervals: the description of one
-    // splitting step, shared by the top level and by every refinement.
-    //
-    // 'width' is a magnitude, not a value of T: it is carried as uint64_t
-    // because an interval can be wider than T can represent.
-    struct Partitioning {
-        T origin{};                // value mapped to bucket 0
-        uint64_t width = 1;        // values per bucket
-        std::size_t binCount = 1;  // number of buckets
-    };
-
-    // ---- Element-space types ----------------------------------------
-    // These exist to keep countAndPlace() readable. It used to take ten
-    // loose parameters, five of which were (buffer, offset, length)
-    // triples that only mean anything together.
-
-    struct SourceSlice {
-        const std::vector<T>& buffer;
-        std::size_t start;
-        std::size_t count;
-    };
-
-    struct TargetSlice {
-        std::vector<T>& buffer;
-        std::size_t start;
-    };
-
-    // ---- Phase 1: analysis ------------------------------------------
-    ValueRange analyze(const std::vector<T>& data) const;
-
-    // ---- Interval formulas ------------------------------------------
-    Partitioning planPartition(const ValueRange& range, std::size_t length) const;
-
-    // The value-to-bucket map. Takes the grid fields as scalars rather
-    // than the Partitioning, because the distribution loop calls it per
-    // element and must keep them in registers - see countAndPlace().
-    static std::size_t bucketOf(T value, T origin, uint64_t width);
-
-    // ---- Phases 2 and 3: distribution -------------------------------
-    void distribute(const std::vector<T>& data, const Partitioning& grid,
-                    std::vector<std::size_t>& outBucketStart,
-                    std::vector<std::size_t>& outBucketSize);
-
-    void countAndPlace(SourceSlice src, TargetSlice dst, const Partitioning& grid,
-                       std::vector<std::size_t>& outBucketStart,
-                       std::vector<std::size_t>& outBucketSize);
-
-    // ---- Phase 4: recursive refinement ------------------------------
-    struct RefinedRange {
-        bool inBufferA = true;
-
-        // Set by refine() when it finds the bin's observed span is zero,
-        // i.e. every element is identical. Such a bin is sorted by
-        // definition; the flag lets the local sort skip it instead of
-        // re-scanning to rediscover the same fact.
-        //
-        // Only bins that actually entered refine() carry it: a bin that
-        // returns because it is already small enough never computes its
-        // min and max, so it has nothing to certify.
-        //
-        // Placed next to inBufferA so it lands in existing padding.
-        bool sorted = false;
-
-        std::size_t start = 0;
-        std::size_t count = 0;
-        std::vector<RefinedRange> children;
-
-        bool isLeaf() const { return children.empty(); }
-    };
-
-    RefinedRange refine(bool inBufferA, std::size_t start, std::size_t count, std::size_t depth);
-
-    ValueRange scanRange(const std::vector<T>& buf, std::size_t start, std::size_t count) const;
-    Partitioning planRefinement(const ValueRange& observed, std::size_t count) const;
-
-    // ---- Phase 5: local sorting -------------------------------------
-    enum class RunShape { Ascending, Descending, Unsorted };
-
-    RunShape detectRun(const std::vector<T>& buf, std::size_t start, std::size_t count);
-    void sortLeaf(std::vector<T>& buf, std::size_t start, std::size_t count);
-    void sortRefined(RefinedRange& node);
-
-    void insertionSort(std::vector<T>& arr, Index left, Index right);
-    void quickSort(std::vector<T>& arr, Index left, Index right);
-    void introSort(std::vector<T>& arr, Index left, Index right);
-    void introSortImpl(std::vector<T>& arr, Index left, Index right, std::size_t depthLimit);
-    void heapSort(std::vector<T>& arr, Index left, Index right);
-    void siftDown(std::vector<T>& arr, Index base, Index root, Index end);
-    Index partition(std::vector<T>& arr, Index left, Index right);
-
-    // ---- Phase 6: join ----------------------------------------------
-    void appendLeaves(const RefinedRange& node, std::vector<T>& out) const;
-
-#ifdef STRATUM_ENABLE_METRICS
-    void flattenLeaves(const RefinedRange& node, std::vector<LeafView>& out) const;
-#endif
-
-    // ---- Instrumentation --------------------------------------------
-    // Thin wrappers so the algorithm itself contains no preprocessor
-    // conditionals. In a release build every one of these is an empty
-    // inline function that the compiler removes entirely, exactly as the
-    // #ifdef blocks they replace did - but the algorithm reads as
-    // algorithm rather than as instrumentation.
-    void beginPhase(const char* name);
-    void endPhase(const char* name);
-    void noteComparisons(std::size_t howMany);
-    void noteLeaf(std::size_t count, bool isEmpty);
-    void noteSplit(std::size_t originalSize, std::size_t childCount, std::size_t maxChildSize,
-                   std::size_t depth);
-    void noteLocalAlgorithm(const char* name);
-    void noteMemory(std::size_t bytes);
+    void sortRange(T* first, std::size_t n, Workspace<T>& workspace) const;
 
     std::size_t targetElementsPerBin_;   // lambda: target occupancy
     std::size_t leafThreshold_;          // t: base-case size
-
-    // The two cascading buffers. A bin at even refinement depth lives in
-    // bufferA_, at odd depth in bufferB_; a split reads one and writes the
-    // other at the SAME absolute offsets.
-    std::vector<T> bufferA_;
-    std::vector<T> bufferB_;
-
-    // Reused by every countAndPlace() call. Safe because the recursion is
-    // strictly depth-first and single-threaded: a call is finished with
-    // both before any nested call reuses them.
-    std::vector<std::size_t> bucketOfScratch_;
-    std::vector<std::size_t> writeCursorScratch_;
+    Workspace<T> workspace_;
 
 #ifdef STRATUM_ENABLE_METRICS
-    SortMetrics metrics_;
+    std::vector<T> debugA_;
+    std::vector<T> debugB_;
 #endif
 };
 

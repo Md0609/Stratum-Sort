@@ -90,6 +90,7 @@ if(STRATUMSORT_BUILD_TESTS)
 
     stratum_add_test(stratum_tests        tests/main.cpp)
     stratum_add_test(stratum_contract     tests/api_contract.cpp)
+    stratum_add_test(stratum_fast_division tests/fast_division.cpp)
 
     # Same source, instrumented: pins the documented differences between the
     # release and research configurations.
