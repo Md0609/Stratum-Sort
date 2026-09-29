@@ -103,6 +103,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -1176,7 +1177,15 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
         return m * sizeof(E) + (2 * ceilDiv(m, lambda) + 2) * countBytes;
     };
     constexpr bool kInPlaceAllowed = (!Stable || Traits::kElementIsKey) && !Sink::kRecord;
-    std::size_t budget = WorkspaceAccess::budget(workspace);
+    const std::size_t configured = WorkspaceAccess::budget(workspace);
+    std::size_t budget = configured;
+    // The automatic policy, resolved for this n: the partner buffer while
+    // it needs at most AUTOMATIC_MEMORY_LIMIT bytes, that budget above. The
+    // stable sort of records has no bounded-memory strategy, so the
+    // automatic policy leaves it unbounded.
+    if (configured == Workspace<E>::kAutomatic)
+        budget = (!kInPlaceAllowed || partnerNeed(n) <= AUTOMATIC_MEMORY_LIMIT) ? Workspace<E>::kUnlimited
+                                                                                 : AUTOMATIC_MEMORY_LIMIT;
     // The floor: a budget below the in-place engine's arena is raised to it.
     // Every sort then holds at most max(budget, floor) bytes, and one whose
     // partner buffer fits under the floor (a small n) uses that buffer
@@ -1186,6 +1195,19 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
         const std::size_t floorBytes = inPlaceArenaFor(Traits::kKeyBits) * countBytes;
         if (budget < floorBytes) budget = floorBytes;
     }
+    // The stable sort of records needs its n-record buffer. An explicit
+    // budget that cannot hold it is refused here, before anything is written:
+    // degrading silently to an O(n log n) or quadratic stable algorithm
+    // would break the guarantee the caller relies on.
+    auto requireBuffer = [&](std::size_t bytes) {
+        if constexpr (!kInPlaceAllowed && !Sink::kRecord) {
+            if (bytes > budget)
+                throw std::length_error("stratum: the stable sort of records needs a workspace budget of at "
+                                        "least n records; this one is smaller");
+        }
+        (void)bytes;
+    };
+
     // ---- Presorted input ------------------------------------------------
     // Already ascending (this includes every key equal): nothing to do.
     if (range.ascendingPrefix == n) {
@@ -1236,6 +1258,7 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
             if (merged) return;
         }
         if (k >= n / 2 && n > lambda && (!kInPlaceAllowed || partnerNeed(n - k) <= budget)) {
+            requireBuffer(partnerNeed(n - k));
             WorkspaceAccess::fit<E, uint32_t>(workspace, n - k, 2 * ceilDiv(n - k, lambda) + 2, budget);
             WorkspaceAccess::elements(workspace, n - k);
             sortWith<Stable>(tr, data + k, n - k, lambda, leafThreshold, workspace, probe, sink);
@@ -1253,6 +1276,7 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
         // n <= lambda (Case A1 of Lemma 4): one leaf, sorted where it is.
         // Nothing is split. The unstable leaf sort needs no buffer; the
         // stable one needs one for a leaf too large for insertion sort.
+        if (Stable && n > LOCAL_INSERTION_MAX_ELEMENTS) requireBuffer(n * sizeof(E));
         E* const scratch = (Stable && n > LOCAL_INSERTION_MAX_ELEMENTS)
                                ? WorkspaceAccess::elements(workspace, n)
                                : nullptr;
@@ -1295,6 +1319,7 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     }
 
     // EVERY allocation of the sort happens here, before the first write.
+    requireBuffer(partnerNeed(n));
     if (n <= std::numeric_limits<uint32_t>::max())
         WorkspaceAccess::fit<E, uint32_t>(workspace, n, 2 * top.binCount + 2, budget);
     else

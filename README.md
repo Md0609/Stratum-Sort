@@ -110,7 +110,7 @@ bound for the 0.11.0 engine — is in
 | | |
 |---|---|
 | **Time, best / average / worst** | `Θ(n)` in the worst case, for every input and every argument, under H1–H4 below; one read-only pass on sorted input |
-| **Auxiliary space** | `n·sizeof(E) + (2⌈n/λ⌉ + 2)·4` bytes on the general path: **1.06×** the input for an 8-byte key, 2.0× at `λ = t = 1`. Zero on sorted and reversed input, only the counters when the key span is below `n/λ` (8-bit keys, few distinct values). 0.10.0: 3.28×, 16.57× at `λ = 1` |
+| **Auxiliary space** | **Bounded, whatever `n` is** (pre-release, research/ALGORITHM.md §14): by default `min(n·sizeof(E) + (2⌈n/λ⌉ + 2)·4, 16 MiB)` — 1.06× the input for an 8-byte key up to 16 MiB, then 16 MiB flat; with a `Workspace` budget `M`, at most `max(M, 44 KB)`. Zero on sorted and reversed input. **Exception:** the stable sorts of records (`stable_sort_by_key`, `sorted_indices`) need `n` records / pairs. 0.10.0: 3.28× the input |
 | **Recursion depth** | `≤ D + 1 = 7` refinement levels |
 | **Stable** | `stable_sort`, `stable_sort_by_key`, `sorted_indices`: **yes**. `sort`, `sort_by_key`, `StratumSort<T>`: no |
 | **Threads** | one `const` sorter may serve any number of threads, one `Workspace` each; no locks, no global state |
@@ -138,7 +138,7 @@ holds uniformly. `Θ(n²)` is not reachable — quicksort only sees
 | Integral keys ≤ 64 bits only | **reduced**: + enums, `float`, `double`, records by key | an order-preserving key map; `totalOrder` proved over all 2³² floats |
 | Not stable, no key/value | **eliminated** | `stable_sort`, `stable_sort_by_key`, `sorted_indices` |
 | Not thread-safe per instance | **eliminated** | `Workspace`; `sort(data, ws) const` |
-| `Θ(n)` extra memory, 3.28× | **reduced** to 1.06×; 0 on sorted input | caller's array as a buffer, no index cache, no tree |
+| `Θ(n)` extra memory, 3.28× | **eliminated** except for stable sorts of records: ≤ 16 MiB by default, any budget down to 44 KB, still `Θ(n)` time (pre-release) | the same partition in place, in passes of ≤ 1 024 groups; caller's array as a buffer, no index cache, no tree |
 | ~6× slower than `std::sort` on sorted input | **eliminated**: 0.05–0.39× | detected inside the min/max pass, which it resumes |
 | λ tuned to one cache | **eliminated** | automatic λ from `n`, measured on four environments |
 | Timings from one machine | **eliminated** | CI benchmark on Linux, macOS and Windows |
@@ -155,14 +155,19 @@ What remains, and why:
   bound's constant is exponential in `w/(D+1)` (hypothesis H1): a 128-bit
   key would allow comparison-sorted leaves of ~5·10⁶ elements. Structural
   for this algorithm.
-- **Still `Θ(n)` extra memory** — one buffer of `n` elements plus
-  `O(n/λ)` counters — where `std::sort` needs `O(log n)`. The counters are
-  the fan-out itself. An in-place distribution was implemented and
-  measured 3.5–14× slower at this fan-out (each step of a cycle is a
-  dependent cache miss) and is not stable. Structural.
-- **Records move through two buffers.** `sort_by_key` suits trivially
-  copyable records up to ~64 bytes; beyond that, or for types that are not
-  trivially copyable, use `sorted_indices` and apply the permutation.
+- **Stable sorts of records keep `Θ(n)` memory.** `stable_sort_by_key`
+  needs `n` records of scratch and `sorted_indices` `n` (key, index)
+  pairs; the in-place engine that bounds every other sort is not stable,
+  and no bounded stable strategy with a linear worst case and usable
+  constants is known to us. An explicit budget below that throws
+  `std::length_error` instead of degrading. `stable_sort` of numbers is
+  not affected (equal keys are identical). Structural for this design.
+- **Bounded memory costs time on some inputs.** Under a small budget the
+  sorted-prefix shortcut needs a buffer it may not have (sorted input
+  with a long unsorted tail: +36% at 600 KiB, +1409% at the 44 KB floor,
+  still 0.82× `std::sort`), and the floor's American-flag passes are
+  1.1–2× slower than the partner buffer. The default policy keeps the
+  partner buffer up to 16 MiB, where it is the faster choice.
 - **Where it loses to `std::sort`** (`n = 10⁶`, ratio > 1 means slower):
 
   | input | Linux, GCC | macOS arm64, AppleClang | Windows, MSVC |
@@ -263,18 +268,27 @@ inputs, each against the adversary built for its own λ (Intel Xeon, GCC,
 All 18 shapes are faster. At `n = 10⁷`: random −29%, sorted −95%, nearly
 sorted −29%, duplicates −71%, adversarial −41%.
 
-### Memory — peak auxiliary bytes per element, measured at the allocator
+### Memory — peak auxiliary bytes, measured at the allocator
+
+`int64_t`, random keys (pre-release; research/history/V11_memoria.md has
+every type, shape and size):
+
+| `n` | 0.10.0 | unlimited budget (partner buffer) | **default (automatic)** | 600 KiB budget | budget 0 (floor) | `std::sort` |
+|---|---|---|---|---|---|---|
+| 10⁶ | 26 MB | 8.5 MB | 8.5 MB | 600 KiB | 44 KB | 0 |
+| 10⁷ | 263 MB | 82.5 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
+| 10⁸ | — | 825 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
+
+Other inputs, default policy, bytes per element at `n = 10⁶`:
 
 | input | 0.10.0 | 0.11.0 |
 |---|---|---|
-| `int64_t`, random, default parameters | 26.25 | **8.50** |
-| `int64_t`, `λ = t = 1` | 132.6 | 16.0 |
 | `uint32_t`, random | — | 4.50 |
 | `uint8_t`, random (any shape but organ pipe, 0.5) | ~10 | **< 0.01** |
 | already sorted / reversed | 26.25 | **0** |
 | many duplicates | 26.25 | **0** (counters only) |
 | sorted + random tail | 26.25 | 0.09 |
-| 16-byte records, stable | — | 16.5 |
+| 16-byte records, stable | — | 16.5 (stable sorts of records are not bounded) |
 
 ### Comparison counts
 

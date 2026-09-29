@@ -215,7 +215,7 @@ bool runVariant(const std::string& variant, std::vector<T>& d, std::size_t& wsBy
     const std::string policy = stable ? variant.substr(0, variant.size() - 1) : variant;
     std::size_t budget = 0;
     bool known = true;
-    if (policy == "cur") budget = stratum::Workspace<T>().budget();
+    if (policy == "cur") budget = stratum::Workspace<T>::kAutomatic;
     else if (policy == "unl") budget = stratum::Workspace<T>::kUnlimited;
     else if (policy.size() > 1 && policy[0] == 'b') {
         char* end = nullptr;
@@ -256,7 +256,11 @@ void measure(const Row& r) {
     {
         std::vector<T> w(input.begin(), input.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(r.n, 4096)));
         std::size_t unusedWs = 0;
-        runVariant(r.variant, w, unusedWs);
+        try {
+            runVariant(r.variant, w, unusedWs);
+        } catch (const std::length_error&) {
+            // a stable sort of records refusing its budget: reported below
+        }
     }
 
     // 1. heap, usable, rss and time, on one call.
@@ -359,9 +363,11 @@ int main(int argc, char** argv) {
                     }
                     int status = 0;
                     waitpid(pid, &status, 0);
-                    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+                    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
                         std::printf("%s,%s,%s,%zu,CHILD FAILED status=%d\n", v.c_str(), t.c_str(), sh.c_str(), n,
                                     status);
+                        std::fflush(stdout); // or every later child prints it again
+                    }
                 }
     }
     return 0;

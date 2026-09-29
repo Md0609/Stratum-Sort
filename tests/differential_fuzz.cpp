@@ -96,7 +96,7 @@ void oneCase() {
 
     const stratum::StratumSort<T> sorter(lambda, t);
     const std::size_t budget =
-        bounded ? std::uniform_int_distribution<std::size_t>(0, n * sizeof(T) + 1)(rng) : stratum::Workspace<T>::kUnlimited;
+        bounded ? std::uniform_int_distribution<std::size_t>(0, n * sizeof(T) + 1)(rng) : stratum::Workspace<T>::kAutomatic;
     stratum::Workspace<T> ws(budget);
     sorter.sort(v, ws);
     ++cases;
@@ -129,7 +129,7 @@ void oneFloatCase() {
     std::sort(expected.begin(), expected.end(), [](F a, F b) {
         return stratum::OrderedKey<F>::key(a) < stratum::OrderedKey<F>::key(b); });
     const std::size_t budget = bounded ? std::uniform_int_distribution<std::size_t>(0, n * sizeof(F) + 1)(rng)
-                                       : stratum::Workspace<F>::kUnlimited;
+                                       : stratum::Workspace<F>::kAutomatic;
     stratum::Workspace<F> ws(budget);
     if (rng() & 1) stratum::sort(v, ws);
     else stratum::stable_sort(v, ws);

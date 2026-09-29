@@ -29,9 +29,12 @@
 // SUITES
 //   --suite quick    int64, n = 1e6, every shape                (~1 min)
 //   --suite ci       int64/uint32/uint8, n = 1e5 and 1e6, every shape,
-//                    n = 1e7 on four shapes, plus the lambda sweep (~10 min)
+//                    n = 1e7 on four shapes, plus the lambda sweep and the
+//                    memory policies (~12 min)
 //   --suite types    float, double and key/value records alone
 //   --suite lambda   the lambda sweep alone
+//   --suite memory   the memory policies alone (also part of ci and full):
+//                    unlimited / automatic / 600 KB / floor budgets
 //   --suite full     the ci suite at more sizes and repetitions
 // Options: --md FILE --csv FILE --reps K --sizes a,b --types a,b
 //          --shapes a,b --comparisons
@@ -380,6 +383,96 @@ void runRecordTable(Report& rep, std::size_t n, int reps) {
     }
 }
 
+// ---- Memory policies ---------------------------------------------------------
+// The same inputs under each workspace budget (Workspace.hpp): unlimited
+// (the partner buffer, n elements), automatic (the default: the partner
+// buffer up to 16 MiB, at most 16 MiB above), 600 KB (the in-place engine
+// with its block buffers) and 0 (raised to the floor, the counter arena:
+// every pass an American flag permutation). Time relative to the
+// unlimited strategy and to std::sort; auxiliary bytes per element at the
+// allocator. Pre-release study: research/history/V11_memoria.md.
+template <typename T, typename Make, typename Sort, typename Less>
+void memoryRow(Report& rep, const std::string& label, std::size_t n, int reps, Make make, Sort sortWith, Less less) {
+    const std::vector<T> input = make();
+    std::vector<T> expected = input;
+    std::sort(expected.begin(), expected.end(), less);
+    const std::size_t budgets[4] = {stratum::Workspace<T>::kUnlimited, stratum::Workspace<T>::kAutomatic,
+                                    600 * 1024, 0};
+    std::vector<double> t[5];
+    bool ok = true;
+    for (int r = 0; r < reps; ++r) {
+        for (int k = 0; k < 5; ++k) {
+            const int i = (k + r) % 5;
+            std::vector<T> d = input;
+            if (i == 4) {
+                t[4].push_back(timeMs([&] { std::sort(d.begin(), d.end(), less); }));
+            } else {
+                stratum::Workspace<T> ws(budgets[i]);
+                t[i].push_back(timeMs([&] { sortWith(d, ws); }));
+            }
+            for (std::size_t j = 1; j < n && ok; ++j) ok = !less(d[j], d[j - 1]);
+        }
+    }
+    double peak[4];
+    for (int i = 0; i < 4; ++i) {
+        std::vector<T> d = input;
+        stratum::bench::AllocationScope scope;
+        stratum::Workspace<T> ws(budgets[i]);
+        sortWith(d, ws);
+        peak[i] = static_cast<double>(scope.peakBytes()) / static_cast<double>(n);
+    }
+    double m[5];
+    for (int i = 0; i < 5; ++i) m[i] = summarise(t[i]).median;
+    rep.line("| " + label + " | " + fmt("%.3f", m[0]) + " | " + fmt("%+.0f%%", 100 * (m[1] / m[0] - 1)) + " | " +
+             fmt("%+.0f%%", 100 * (m[2] / m[0] - 1)) + " | " + fmt("%+.0f%%", 100 * (m[3] / m[0] - 1)) + " | " +
+             fmt("%.3f", m[4]) + " | " + fmt("%.2fx", m[0] / m[4]) + " | " + fmt("%.2fx", m[1] / m[4]) + " | " +
+             fmt("%.2fx", m[2] / m[4]) + " | " + fmt("%.2f", peak[0]) + " / " + fmt("%.3f", peak[1]) + " / " +
+             fmt("%.3f", peak[2]) + " / " + fmt("%.3f", peak[3]) + " | " + (ok ? "yes" : "**NO**") + " |");
+}
+
+void memoryHeader(Report& rep, const std::string& title) {
+    rep.line("");
+    rep.line("### Memory policies: " + title);
+    rep.line("");
+    rep.line("| input | unlimited ms | automatic | 600 KB | floor | std::sort ms | unlimited vs std | "
+             "automatic vs std | 600 KB vs std | aux B/elem: unlimited / automatic / 600 KB / floor | ok |");
+    rep.line("|---|---|---|---|---|---|---|---|---|---|---|");
+}
+
+void memorySuite(Report& rep, bool full) {
+    auto less = [](int64_t a, int64_t b) { return a < b; };
+    auto sortI = [](std::vector<int64_t>& d, stratum::Workspace<int64_t>& ws) { stratum::sort(d, ws); };
+    for (std::size_t n : {std::size_t{1000000}, std::size_t{10000000}}) {
+        const int reps = n <= 1000000 ? 7 : 3;
+        memoryHeader(rep, "int64, n = " + std::to_string(n));
+        const std::vector<std::string> shapes =
+            full || n <= 1000000 ? std::vector<std::string>{"random", "nearly_sorted", "sorted_tail", "organ_pipe",
+                                                            "few_outliers", "adversarial", "worst_case"}
+                                 : std::vector<std::string>{"random", "nearly_sorted", "organ_pipe", "adversarial"};
+        for (const auto& sh : shapes)
+            memoryRow<int64_t>(rep, sh, n, reps, [&] { return stratum::bench::makeShape<int64_t>(sh, n); }, sortI,
+                               less);
+    }
+    using R = BenchRecord<72>;
+    const std::size_t n = 10000000;
+    memoryHeader(rep, "72-byte records by a uint64 key (sort_by_key), n = " + std::to_string(n));
+    auto lessR = [](const R& a, const R& b) { return a.key < b.key; };
+    auto sortR = [](std::vector<R>& d, stratum::Workspace<R>& ws) {
+        stratum::sort_by_key(d, [](const R& r) { return r.key; }, ws);
+    };
+    memoryRow<R>(rep, "random 64-bit", n, 3,
+                 [&] {
+                     std::mt19937_64 rng(72);
+                     std::vector<R> v(n);
+                     for (std::size_t i = 0; i < n; ++i) {
+                         v[i].key = rng();
+                         std::memset(v[i].payload, static_cast<int>(i & 0xFF), sizeof v[i].payload);
+                     }
+                     return v;
+                 },
+                 sortR, lessR);
+}
+
 // ---- Lambda sweep --------------------------------------------------------------
 // Which lambda is fastest, per (key, n, shape), normalised to the best
 // lambda of the row. Feeds the automatic default (Config.hpp).
@@ -523,6 +616,8 @@ int main(int argc, char** argv) {
         }
     } else if (o.suite == "lambda") {
         lambdaSuite(rep, true);
+    } else if (o.suite == "memory") {
+        memorySuite(rep, true);
     } else if (o.suite == "ci" || o.suite == "full") {
         const bool full = o.suite == "full";
         runTypes(rep, o, o.types.empty() ? std::vector<std::string>{"int64", "uint32", "uint8"} : o.types,
@@ -542,6 +637,7 @@ int main(int argc, char** argv) {
         runTypes(rep, big, {"int64"}, {10000000},
                  o.shapes.empty() ? std::vector<std::string>{"random", "sorted", "normal", "adversarial"} : o.shapes);
         lambdaSuite(rep, true);
+        memorySuite(rep, full);
     } else {
         std::cerr << "unknown suite " << o.suite << "\n";
         return 2;

@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: "quick | ci | lambda | full"
+        description: "quick | ci | types | lambda | memory | full"
         required: false
         default: "ci"
   push:

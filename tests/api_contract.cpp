@@ -48,6 +48,7 @@
 #include <utility>
 #include <new>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -1419,6 +1420,39 @@ void testMemoryBudgets() {
         check(v == want && ws.bytes() <= kBudgetFloorBound, "stable_sort of int32 within the floor");
     }
 
+    // The stable sort of records has no bounded strategy: an explicit budget
+    // below its buffer is refused before the input is touched, and one that
+    // holds it works.
+    {
+        std::vector<Rec72> r(20000);
+        for (std::size_t i = 0; i < r.size(); ++i) {
+            r[i].key = rng() % 50;
+            r[i].id = i;
+        }
+        const std::vector<Rec72> original = r;
+        auto key = [](const Rec72& x) { return x.key; };
+        stratum::Workspace<Rec72> small(100000);
+        bool threw = false;
+        try {
+            stratum::stable_sort_by_key(r, key, small);
+        } catch (const std::length_error&) {
+            threw = true;
+        }
+        check(threw && std::memcmp(r.data(), original.data(), r.size() * sizeof(Rec72)) == 0,
+              "stable_sort_by_key with a budget below n records throws length_error, input untouched");
+        stratum::Workspace<Rec72> enough(r.size() * sizeof(Rec72) + 64 * 1024);
+        stratum::stable_sort_by_key(r, key, enough);
+        bool stable = true;
+        for (std::size_t i = 1; i < r.size(); ++i)
+            if (r[i].key < r[i - 1].key || (r[i].key == r[i - 1].key && r[i].id < r[i - 1].id)) stable = false;
+        check(stable, "stable_sort_by_key with a budget that holds n records is stable");
+        std::vector<Rec72> tiny(original.begin(), original.begin() + 10);
+        stratum::Workspace<Rec72> none(0);
+        stratum::stable_sort_by_key(tiny, key, none);
+        check(std::is_sorted(tiny.begin(), tiny.end(), [](const Rec72& a, const Rec72& b) { return a.key < b.key; }),
+              "a stable sort whose buffer fits under the floor is not refused");
+    }
+
     // Sorted prefix + a tail the budget cannot buffer: the tail is sorted
     // within the budget and merged through the buffer the budget holds, in
     // up to INPLACE_MERGE_MAX_CHUNKS chunks (the budgets below give 1, 2, 3
@@ -1460,6 +1494,37 @@ void testMemoryBudgets() {
         stratum::sort(v, ws);
         check(std::is_sorted(v.begin(), v.end()) && ws.bytes() < 10000,
               "budget 0, n = 1000: the partner buffer (8.5 KB) is used, not the 44 KB arena");
+    }
+
+    // The automatic policy: the partner buffer up to AUTOMATIC_MEMORY_LIMIT,
+    // bounded above it; and the class's own workspace follows its budget.
+    {
+        const std::size_t limit = stratum::AUTOMATIC_MEMORY_LIMIT;
+        std::vector<int64_t> small(1000000), big(3000000);
+        for (auto& x : small) x = static_cast<int64_t>(rng());
+        for (auto& x : big) x = static_cast<int64_t>(rng());
+        StratumSort<int64_t> s;
+        check(s.memoryBudget() == stratum::Workspace<int64_t>::kAutomatic, "a sorter's budget is automatic by default");
+        s.sort(small);
+        const std::size_t smallBytes = s.scratchBytes();
+        s.releaseScratch();
+        s.sort(big);
+        check(std::is_sorted(small.begin(), small.end()) && std::is_sorted(big.begin(), big.end()) &&
+                  smallBytes >= small.size() * sizeof(int64_t) && s.scratchBytes() <= limit,
+              "automatic: partner buffer at 10^6 (" + std::to_string(smallBytes) + " B), at most 16 MiB at 3 * 10^6 (" +
+                  std::to_string(s.scratchBytes()) + " B)");
+        StratumSort<int64_t> u;
+        u.setMemoryBudget(stratum::Workspace<int64_t>::kUnlimited);
+        std::shuffle(big.begin(), big.end(), rng);
+        u.sort(big);
+        check(std::is_sorted(big.begin(), big.end()) && u.scratchBytes() >= big.size() * sizeof(int64_t),
+              "kUnlimited keeps the partner buffer at any size");
+        u.setMemoryBudget(500000);
+        check(u.scratchBytes() == 0, "lowering the budget below what the workspace holds releases it");
+        std::shuffle(big.begin(), big.end(), rng);
+        u.sort(big);
+        check(std::is_sorted(big.begin(), big.end()) && u.scratchBytes() <= 500000,
+              "a sorter with a 500 KB budget sorts 24 MB within it");
     }
 
     // Strong exception guarantee on the bounded path: every allocation

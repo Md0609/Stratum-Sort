@@ -27,18 +27,19 @@ gives you everything:
 
 ## Which function do I want?
 
-| you have | call | stable | extra memory |
+| you have | call | stable | extra memory (default) |
 |---|---|---|---|
-| integers, enums, `char` types | `stratum::sort(v)` | equal keys are identical | ≈ `n·sizeof(T)` |
-| `float` / `double` | `stratum::sort(v)` — IEEE-754 `totalOrder` | idem | ≈ `n·sizeof(T)` |
-| records with a numeric key, order of equal keys irrelevant | `stratum::sort_by_key(v, key)` | no | ≈ `n·sizeof(record)` |
+| integers, enums, `char` types | `stratum::sort(v)` | equal keys are identical | ≤ min(≈ `n·sizeof(T)`, 16 MiB) |
+| `float` / `double` | `stratum::sort(v)` — IEEE-754 `totalOrder` | idem | ≤ min(≈ `n·sizeof(T)`, 16 MiB) |
+| records with a numeric key, order of equal keys irrelevant | `stratum::sort_by_key(v, key)` | no | ≤ min(≈ `n·sizeof(record)`, 16 MiB) |
 | records with a numeric key, order of equal keys must be kept | `stratum::stable_sort_by_key(v, key)` | **yes** | ≈ `n·sizeof(record)` |
 | records that are not trivially copyable, or very large | `stratum::sorted_indices(first, last, key)` | **yes** | `n` (key, index) pairs |
-| 0.10.0 code | `stratum::StratumSort<T>().sort(v)` — unchanged | — | ≈ `n·sizeof(T)` |
+| 0.10.0 code | `stratum::StratumSort<T>().sort(v)` — unchanged | — | ≤ min(≈ `n·sizeof(T)`, 16 MiB) |
 
 "≈" means `n·sizeof(T)` plus `(2⌈n/λ⌉ + 2)` counters of 4 bytes — 1.06×
-the input for an 8-byte key — and **less** on several common inputs (see
-"Memory" below).
+the input for an 8-byte key — and **less** on several common inputs. The
+16 MiB cap is the default memory policy; a `Workspace` can set any other
+budget, down to a floor of a few tens of KB (see "Memory" below).
 
 ## The free functions
 
@@ -179,6 +180,33 @@ for (auto& batch : batches) stratum::sort(batch, ws);
 
 It is movable and not copyable, and `bytes()` reports what it holds.
 
+**Memory budget.** A workspace also bounds how much a sort may hold:
+
+```cpp
+stratum::Workspace<int64_t> ws(1 << 20);   // at most 1 MiB of scratch
+stratum::sort(v, ws);                       // any n
+ws.setBudget(stratum::Workspace<int64_t>::kUnlimited);
+
+stratum::StratumSort<int64_t> sorter;
+sorter.setMemoryBudget(0);                  // the floor: ~44 KB for 64-bit keys
+```
+
+| budget | what a sort holds |
+|---|---|
+| `Workspace<E>::kAutomatic` (the default) | the partner buffer while it needs at most 16 MiB (`AUTOMATIC_MEMORY_LIMIT`); at most 16 MiB above that |
+| `Workspace<E>::kUnlimited` | always the partner buffer: `n·sizeof(E)` plus the counters |
+| a number of bytes `M` | at most `max(M, floor)`; the floor is the in-place engine's counters, 43 856 bytes for 64-bit keys, 30 736 for 32-bit, 20 896 for 8-bit |
+
+Below the partner buffer the sort switches to an in-place distribution
+that produces the same partition in passes of at most 1 024 groups, still
+`Θ(n)` in the worst case (research/ALGORITHM.md §14). It is not stable,
+so it serves `sort`, `sort_by_key`, `StratumSort<T>`, and `stable_sort` of
+a type that is its own key. **`stable_sort_by_key` and `sorted_indices`
+need their `n`-record (or `n`-pair) buffer**: given an explicit budget
+below it they throw `std::length_error` before touching the input, rather
+than fall back to a slower algorithm; the automatic policy does not bound
+them.
+
 **Threads.** Nothing in the library is shared or global. The rules:
 
 | call | safe from several threads at once? |
@@ -204,23 +232,49 @@ pattern under ThreadSanitizer (`make tsan`).
 
 ## Memory
 
-On the general path a sort of `n` elements needs `n·sizeof(E)` bytes plus
-`(2⌈n/λ⌉ + 2)` counters (4 bytes each when `n < 2³²`), and nothing that
-depends on the input's shape. Measured at the allocator, `n = 10⁶`:
+Everything a sort holds besides your array lives in its workspace, and
+nothing in it depends on the input's shape except where it is less.
+Peak auxiliary bytes measured at the allocator, `int64_t`, random keys:
 
-| input | 0.10.0 | 0.11.0 |
-|---|---|---|
-| `int64_t`, default parameters | 26.25 B/elem (3.28×) | **8.5 B/elem (1.06×)** |
-| `int64_t`, `λ = t = 1` | 16.57× | 2.00× |
-| `uint32_t`, default | — | 4.5 B/elem (1.13×) |
-| `uint8_t`, any shape | 10× | **a few hundred bytes** |
-| already ascending, or non-increasing | 3.28× | **0** |
-| sorted, with an unsorted tail of `n − k` elements (`k ≥ n/2`) | 3.28× | `(n − k)` elements |
-| few distinct values (`span < n/λ`) | 3.28× | only the counters |
-| 16-byte records, `stable_sort_by_key` | — | 16.5 B/elem (1.03×) |
+| `n` | 0.10.0 | unlimited (partner buffer) | **automatic (default)** | 600 KiB budget | budget 0 (floor) | `std::sort` |
+|---|---|---|---|---|---|---|
+| 10⁵ | 2.6 MB | 850 KB | 850 KB | 600 KiB | 44 KB | 0 |
+| 10⁶ | 26 MB | 8.5 MB | 8.5 MB | 600 KiB | 44 KB | 0 |
+| 10⁷ | 263 MB | 82.5 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
+| 10⁸ | — | 825 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
 
-`std::sort` needs `O(log n)`; this is the remaining memory limitation, and
-it is structural — see "Limitations" in the README.
+`std::sort` uses no heap and `O(log n)` stack (0.5–1 KB measured); the
+in-place engine's stack is `O(w)` frames, 1–7 KB measured. With the
+automatic policy the 16 MiB are reserved but mostly untouched on random
+input (resident: ~1 MB at 10⁷); the sorted-prefix merge and deep
+refinements are what use them.
+
+What each budget costs in time, `n = 10⁷` `int64_t`, relative to the
+unlimited partner buffer (one Xeon, GCC 13; research/history/V11_memoria.md
+has every shape, type and size):
+
+| input | automatic (16 MiB) | 600 KiB | floor (44 KB) | floor vs `std::sort` |
+|---|---|---|---|---|
+| random | −31% | −36% | +23% | 0.58× |
+| nearly sorted | −26% | −24% | +8% | 0.80× |
+| sorted + random tail | +12% | +36% | +1409% | 0.82× |
+| organ pipe | −3% | +153% | +489% | 0.34× |
+| adversarial | −43% | −45% | +10% | 0.64× |
+| low entropy | −15% | −4% | +42% | 1.04× |
+
+On large arrays the partner buffer's one-pass scatter over the whole
+array is slower than passes of 1 024 groups — from about 4·10⁶ 8-byte keys
+on most inputs, −58% at 10⁸, and 2–4× for 72- to 264-byte records at
+10⁷ — so bounding the memory is also faster there. At the floor every pass is an American-flag
+permutation (no block buffers): slower than the partner buffer, never more
+than 1.04× `std::sort` at 10⁷.
+
+Paths that need less than the table, whatever the budget:
+
+- already ascending or non-increasing input: nothing;
+- a key span smaller than `n/λ` (8-bit keys, few distinct values): only
+  the counters — about 1 KB for `uint8_t`;
+- at most `λ` elements: nothing.
 
 ## Parameters and the automatic default
 
@@ -326,6 +380,11 @@ platform (1.1–2.9×). The README lists every loss with its cause.
   (`std::bad_alloc`), the input is untouched. This does *not* hold with
   `STRATUM_ENABLE_METRICS` (the instrumentation allocates while
   recording), nor if a key function throws.
+- **Bounded memory.** At most 16 MiB of scratch by default, whatever `n`
+  is, and at most `max(budget, floor)` bytes under an explicit
+  `Workspace` budget — except the stable sorts of records, which need
+  their `n`-record buffer and refuse a smaller explicit budget
+  (`std::length_error`, input untouched). See "Memory".
 - **No global state.** See "Workspaces, reuse and threads".
 
 ## Build configurations

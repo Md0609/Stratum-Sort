@@ -10,7 +10,8 @@
 //
 //   unl     Workspace::kUnlimited: the partner buffer at every size (the
 //           behaviour before the memory study)
-//   cur     the default workspace (at this commit: kUnlimited)
+//   cur     the default, Workspace::kAutomatic: partner up to 16 MiB,
+//           bounded to 16 MiB above
 //   b<N>    an explicit budget of N bytes (k/m suffixes): e.g. b1m, b600k,
 //           b0 (the floor: the counter arena alone, every pass a flag pass)
 //   std     std::sort (std::stable_sort for the stable rows)
@@ -77,7 +78,7 @@ template <typename T>
 bool budgetOf(const std::string& mode, std::size_t& budget) {
     if (mode == "std") return false;
     if (mode == "unl") budget = stratum::Workspace<T>::kUnlimited;
-    else if (mode == "cur") budget = stratum::Workspace<T>().budget();
+    else if (mode == "cur") budget = stratum::Workspace<T>::kAutomatic;
     else {
         char* end = nullptr;
         budget = static_cast<std::size_t>(std::strtod(mode.c_str() + 1, &end));

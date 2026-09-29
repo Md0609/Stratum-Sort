@@ -1,5 +1,12 @@
 # Stratum Sort 0.11.0
 
+> **Draft, not published.** Written before the pre-release memory study
+> (research/history/V11_memoria.md): auxiliary memory is now bounded —
+> 16 MiB by default whatever `n` is, any `Workspace` budget down to 44 KB —
+> except for the stable sorts of records. The memory sections below still
+> describe the partner-buffer engine alone (`Workspace::kUnlimited`) and
+> must be rewritten before a release.
+
 0.10.0 closed with a list of seven limitations. This release takes them
 one at a time, measures each on three platforms, and removes or shrinks
 most of them — without touching the partition, so the `Θ(n)` worst-case
@@ -193,8 +200,9 @@ adversarial −12%, worst case −26%. At `n = 10⁷`: random −29%, sorted
   space and need an extra refinement level. A branch on the sign bit made
   MSVC worse still; removing it took few-distinct floats from 1.79× to
   1.36× and random floats from 0.54× to 0.49×, the rest is structural.
-- **Memory**: still `n` elements of scratch where `std::sort` needs
-  `O(log n)`.
+- **Memory**: the stable sorts of records still need `n` elements of
+  scratch where `std::stable_sort` needs `n/2`; every other sort is
+  bounded (see the note at the top).
 
 ## The proof
 

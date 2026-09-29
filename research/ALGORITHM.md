@@ -4,7 +4,10 @@
 > implementation, and their numeric examples use its default `λ = 32`.
 > 0.11.0 keeps the partition and the proof, and rebuilds the machinery
 > around them; **§13** maps every name, re-derives each bound the rebuild
-> touches, and replaces §8.5's allocation table.
+> touches, and replaces §8.5's allocation table. **§14** (pre-release
+> research, not yet part of a published version) shows that the partition
+> needs no Θ(n) memory, proves the bounds of the in-place schedule, and
+> corrects §13.3.
 
 This document is self-contained. Everything needed to reimplement the
 algorithm from scratch, in any language, is here: the motivation, the
@@ -1348,7 +1351,10 @@ node of `m` elements pays at most `4m` bucket computations, and §8.5's
 per-level `O(n)` (F1b) is untouched. Empty children are invisible to the
 search and cost nothing.
 
-**What cannot go.** The `O(n/λ)` counters are the fan-out `⌈m/λ⌉` itself —
+**What cannot go.** *(Corrected by §14: this paragraph is kept as it was
+written, and it is wrong. Both terms belong to the one-pass schedule, not
+to the partition; the in-place schedule of §14 needs neither.)* The
+`O(n/λ)` counters are the fan-out `⌈m/λ⌉` itself —
 what Lemma 4 spends the bit budget on — so removing them changes the
 algorithm. The `n`-element buffer could go only with an in-place
 distribution (American-flag cycle leader, same partition, same division).
@@ -1530,3 +1536,226 @@ one instance.
 14. Count instead of scattering only when the element **is** its key.
 15. For stability, replace exactly the three reordering steps of 13.5 and
     nothing else.
+
+## 14. Memory: what the partition needs, and the bounded-memory engine
+
+**Pre-release research — 0.11.0 is not published.** §13.3 concluded that
+the `n`-element buffer "could go only with an in-place distribution" that
+was 3.5–14× slower and "changes the partition and Lemma 4", and that the
+`O(n/λ)` counters are "the fan-out itself". **Both conclusions are
+refuted here.** The partition of §13.1 can be produced, bucket for bucket,
+with auxiliary memory set by the key width and independent of `n`, in
+`Θ(n)` worst-case time — and on large inputs faster than with the buffer.
+What survives of §13.3 is narrower and is stated in 14.3 and 14.10. Code:
+`include/stratum/detail/InPlace.hpp` and the driver in `Engine.hpp`;
+measurements: `research/history/V11_memoria.md`.
+
+### 14.1 Model and notation
+
+Auxiliary memory is every byte a sort holds besides the caller's array:
+the workspace (heap) and the stack. `w` is the key width in bits
+(`OrderedKey<K>::bits`: 8 for `uint8_t`, 64 for `double`), `D =
+MAX_SUBDIVISION_DEPTH = 6`, `L = INPLACE_RADIX_BITS = 10`, `B` the block
+size in elements. A path is a root-to-leaf chain of refinement levels
+`0..k`, `k ≤ D`; level `i` splits a node of observed span `σᵢ` into `sᵢ`
+buckets of width `Wᵢ = ⌊σᵢ/sᵢ⌋ + 1`, with `sᵢ ≤ σᵢ + 1` (the cap of
+`planTop` and `planSplit`).
+
+### 14.2 Where the Θ(n) came from
+
+| structure | bytes | in `n` | needed by |
+|---|---|---|---|
+| partner buffer | `n·sizeof(E)` | Θ(n) | a **stable, out-of-place, one-pass** scatter |
+| counter arena | `(2⌈n/λ⌉+2)·4` | Θ(n/λ) | a **one-pass** `⌈m/λ⌉`-way scatter |
+| grids, cursors, stack | `O(D + log n)` words | — | — |
+
+Neither of the first two rows is needed by the *partition* — which
+elements share a bucket, which is all Lemma 4 uses. They are needed by
+`Engine`'s *schedule*: every split done in one pass, stably, into a second
+array.
+
+### 14.3 One pass of an `s`-way scatter needs Θ(s) state
+
+Consider any algorithm that reads a node once and writes each element
+directly to its final bucket region. After a prefix of `p` elements, the
+next element can belong to any of the `s` buckets, and its destination is
+that bucket's next free slot. Two histories that differ in any bucket's
+count so far must lead to different states, because an adversary can
+continue with an element of that bucket. The reachable count vectors
+number `C(p+s−1, s−1)`, so the state holds at least `log₂ C(p+s−1, s−1) ≥
+(s−1)·log₂(p/(s−1))` bits: for `p = m/2`, `s = ⌈m/λ⌉`, that is
+`Ω((m/λ)·log λ)` bits. **The arena of §13.3 is necessary for the one-pass
+schedule, and only for it.** Its 32-bit counters are within a
+`32/log₂ λ` factor of this bound.
+
+### 14.4 The multi-pass schedule over the bits of the bucket index
+
+`InPlaceEngine` splits a node into the **same** `sᵢ` buckets — the same
+`bucketOf(key − origin)`, the same exact division — but reaches them in
+passes: with `bᵢ = ⌈log₂ sᵢ⌉` index bits, each pass groups the current
+sub-range by its next `≤ L` most significant bits (at most `2^L` groups)
+and recurses into each group with the bits that remain. After the last
+pass every bucket occupies a contiguous range, in bucket order — the output
+of `Engine`'s pass up to the order *inside* a bucket. Every node therefore
+has the element set it has in §13.1, every leaf is the same set, and
+Lemmas 1–5 apply unchanged; the leaf's internal order differs, which the
+local sorts' bounds (§8.6) do not depend on.
+
+A pass is either a **block permutation** (classify into `2^L` buffer
+blocks of `B` elements, flush full blocks behind the read pointer, permute
+whole blocks, clean up each group's head and tail; the scheme of IPS⁴o,
+Axtmann, Witt, Ferizovic and Sanders 2017), used when block buffers exist
+and the range holds at least `16B` elements, or an **American-flag
+cycle-leader permutation** (count, prefix sums, follow cycles; one element
+in a register). Both leave the range grouped by digit; neither is stable.
+A sub-range of at most `INPLACE_SMALL = 32` elements over several buckets
+is ordered by bucket index with insertion sort. The radix of a pass over
+`c` elements is capped at `2^⌊log₂ c⌋ ≤ c`.
+
+### 14.5 Lemma M1 — index bits along a path
+
+**Claim.** Along any path, `Σᵢ bᵢ ≤ w + 2D + 1`.
+
+*Proof.* `Wᵢ·sᵢ = sᵢ⌊σᵢ/sᵢ⌋ + sᵢ ≤ σᵢ + sᵢ ≤ 2σᵢ + 1` by the cap. A node
+at level `i ≥ 1` lies inside one bucket of level `i−1`, so `σᵢ ≤ Wᵢ₋₁ − 1`
+and `sᵢ ≤ (2σᵢ + 1)/Wᵢ < 2Wᵢ₋₁/Wᵢ`; at the top `σ₀ ≤ 2^w − 1`, so `s₀ <
+2^{w+1}/W₀`. The product telescopes: `Πᵢ₌₀ᵏ sᵢ < 2^{w+1+k}/Wₖ ≤
+2^{w+1+k}`. With `bᵢ < log₂ sᵢ + 1`, `Σ bᵢ < w + 2k + 2 ≤ w + 2D + 2`,
+and `Σ bᵢ` is an integer. ∎
+
+77 bits for 64-bit keys, 21 for 8-bit keys. (A first draft of this section
+and of `InPlace.hpp` used `w + D + 2`, forgetting the rounding up of
+`log₂ sᵢ` at every level. The arena it sized happened to be large enough
+for the correct bound; it is now sized from it.)
+
+### 14.6 Lemma M2 — memory of the in-place engine
+
+Each pass keeps its `r + 1` group boundaries while its groups are visited;
+all passes share `3·2^L` temporaries (histogram and two cursor arrays of
+the block pass); a width-1 node at the end of a path counts its `≤ 2^b`
+keys (§13.6). A pass that consumes `b` index bits, `1 ≤ b ≤ L`, has `r ≤
+2^b` and `(2^b + 1)/b ≤ max(3, (2^L + 1)/L)`. By M1 the live counters
+never exceed
+
+```
+A(w) = 3·2^L + ⌊(w + 2D + 1)·max(3L, 2^L + 1) / L⌋
+```
+
+— 10 964 counters for `w = 64` (43 856 bytes with 32-bit counters), 7 684
+for `w = 32`, 5 224 for `w = 8`. The block buffers are `(2^L + 3)·B`
+elements (`2^L` group buffers, a swap block, a carry block, and one for the
+slot that would straddle the end of the range): 525 824 bytes at 512-byte
+blocks, whatever the element. **Neither depends on `n`.** The stack holds
+one frame per pass and per level on the path, at most `w + 2D + 1 + 2(D +
+1)` frames; leaves are sorted in place (introsort: `O(log t)` frames).
+Measured high water of the arena: 9 238 counters (84% of `A(64)`) on a
+ladder input built so that every level spends exactly 10 bits; 3 075–5 249
+on the 18 benchmark shapes.
+
+So the partition needs `O(2^L·(w + D)/L)` words for any fixed `L` — for
+a fixed key width, `O(1)` in `n`, below the `O(λ + log n)` target — plus
+`O(w + D)` stack frames. At `L = 1` it is `O(w + D)` words in all, at the
+price of up to `w + 2D + 1` passes per element: the far end of the curve.
+
+**Boundaries on demand.** The `r + 1` boundaries could be recomputed
+instead of kept: after a pass the digit is non-decreasing along the range,
+so each group's end is a galloping search (as `Engine` does when it
+releases a node's counters, §13.3). That leaves `3·2^L` temporaries plus
+`2^L` for a counting node — 16 KB instead of 44 KB — for `O(r log(c/r))`
+extra digit computations per pass. Both are constants and the block
+buffers (526 KB) dominate the fast configuration, so it was not done.
+
+### 14.7 Lemma M3 — time
+
+A flag pass over `c` elements with radix `r ≤ c` costs `O(c + r) = O(c)`:
+every element is written once, into its group. A block pass costs
+`O(c + r)` too: classification reads every element once and writes it to a
+buffer and at most once back; the permutation moves each full block
+`O(1)` times; the clean-up of group `j` moves at most its buffered
+remainder and its overhang, both at most its size. Every pass consumes at
+least one index bit of the element's path, so by M1 an element crosses at
+most `w + 2D + 1` passes; with the balanced split and no cap, at most
+`Σᵢ ⌈bᵢ/L⌉ ≤ (w + 2D + 1)/L + D + 1` — 14 for 64-bit keys, and one or two
+on a random input. Small spreads are `O(32·c)`. The leaves are §8.6's.
+**`Θ(n)` in the worst case under H1–H4**; the constant counts passes
+instead of buffer copies.
+
+### 14.8 Spending a budget: blocks, the hybrid, the chunked merge
+
+`planInPlace` spends a budget `M` bytes in this order: the arena `A(w)`
+(always: `sortWith` raises every budget to it, so it is the floor); the
+block buffers, halving `B` until they fit (without them every pass is a
+flag pass); and with what is left a partner buffer of `P` elements and its
+`2⌈P/λ⌉ + 2` counters. Two things use `P`:
+
+- **The hybrid.** A node of at most `P` elements is finished by
+  `Engine::runNode` — one pass per level — and a larger one in place. The
+  partition is the same either way. (Measured: this buys little. At `10⁷`
+  random 64-bit keys, 16 MiB and 600 KB are within 3% of each other, both
+  ~30% faster than the full partner buffer.)
+- **The sorted-prefix merge (§13.4) under a budget.** When the prefix `k ≥
+  n/2` is sorted and the tail `m = n − k` does not fit, the tail is sorted
+  within the budget and merged through the `M' = blocks + P` elements that
+  sort holds anyway, in `q = ⌈m/M'⌉` chunks taken from the tail's end: for
+  a chunk `C`, the prefix elements with a key above `C`'s smallest, `H`,
+  belong after everything in the tail before `C`; one rotation (through
+  the buffer when `|H| ≤ M'`) moves them there, and `H` and `C` are merged
+  backwards. Each chunk rotates the tail before it once: `O(n + q·m)`
+  moves. Taken for `q ≤ INPLACE_MERGE_MAX_CHUNKS = 4`; beyond that the
+  whole input is sorted in place. Unstable on equal keys of `H` and `C`,
+  so it serves only the sorts that may use the in-place engine.
+
+Every reservation, on every path, first asks whether what the workspace
+already holds fits beside it within the budget (`WorkspaceAccess::fit`)
+and releases it if not; everything is still reserved before the first
+write (§13.8). A workspace with a budget therefore never holds more than
+`max(M, A(w)·sizeof(Count))` bytes, reused or not.
+
+**Policies** (`Workspace.hpp`): `kUnlimited` — always the partner buffer;
+**`kAutomatic`, the default** — the partner buffer while it needs at most
+`AUTOMATIC_MEMORY_LIMIT = 16 MiB`, that budget above; an explicit number
+of bytes. The rationale for 16 MiB is in `Config.hpp`.
+
+### 14.9 Stability
+
+The in-place passes and the chunked merge are not stable, so they serve
+`sort`, `sort_by_key` and `StratumSort<T>`, and `stable_sort` of a type
+that is its own key (equal keys are identical bits: no order to observe).
+`stable_sort_by_key` and `sorted_indices` keep the partner buffer: an
+explicit budget below it throws `std::length_error` before the input is
+touched (a silent fallback to an `O(n log n)` stable algorithm would break
+the linear guarantee), and `kAutomatic` does not bound them.
+
+That is a limitation of this implementation, not a theorem. The
+theoretical literature has linear-time integer sorting with `O(1)` extra
+words, stable included, for `w = O(log n)` (e.g. Franceschini,
+Muthukrishnan and Pătraşcu, *Radix sorting with no extra space*, ESA
+2007), by encoding information in the relative order of the elements;
+nothing we know of in that line has constants a production sort can use.
+About this engine one can say: an unstable pass orders a bucket by a
+function of the whole key sequence, which the pass destroys, so restoring
+the input order afterwards needs the original positions — `Θ(n log n)`
+bits. A bounded stable variant needs a stable schedule from the start,
+not a repair of this one.
+
+### 14.10 What remains Θ(n), and what is only a policy
+
+- **Stable sorts of records** (`stable_sort_by_key`, `sorted_indices`):
+  `n` records, or `n` (key, index) pairs — 14.9.
+- **The default below 16 MiB**: by policy, not necessity — the partner
+  buffer is faster on some shapes there, and the policy trades at most
+  16 MiB for that (`Config.hpp`). `Workspace(bytes)` removes it.
+- Nothing else: `sort`, `sort_by_key`, `StratumSort<T>` and `stable_sort`
+  of self-keyed types run in `max(M, A(w)·4)` bytes for any budget `M`.
+
+### 14.11 Checklist additions
+
+16. A budget below the partner buffer selects the in-place schedule;
+    everything is reserved before the first write, as in 13.8.
+17. Size the arena from Lemma M1 (`w + 2D + 1` bits), never from `n`.
+18. Cap every pass's radix at the sub-range's size, and insertion-sort
+    sub-ranges of at most 32 elements: that keeps a pass `O(c)`.
+19. Before every reservation under a budget, count what the workspace
+    already holds.
+20. Never let a stable sort of records fall back to a non-linear stable
+    algorithm to meet a budget: refuse the budget.

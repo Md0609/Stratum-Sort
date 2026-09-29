@@ -295,6 +295,31 @@ constexpr std::size_t INPLACE_BLOCK_MIN_BLOCKS = 16;
 constexpr std::size_t INPLACE_MERGE_MAX_CHUNKS = 4;
 
 // ------------------------------------------------------------------
+// AUTOMATIC MEMORY POLICY
+// ------------------------------------------------------------------
+// A workspace without an explicit budget (every free function called
+// without one, and StratumSort<T>) uses the partner buffer while it needs
+// at most AUTOMATIC_MEMORY_LIMIT bytes, and above that sorts within that
+// many bytes: in place at the levels too large for it, with a partner
+// buffer below. The auxiliary memory of an automatic sort is therefore
+// bounded by a constant, whatever n is.
+//
+// Why 16 MiB (research/history/V11_memoria.md). Below it the partner
+// buffer is the faster strategy on the shapes that need it most - nearly
+// sorted, few outliers, a quicksort killer: the bounded one is 13-45%
+// slower on them at 10^6 64-bit keys - and costs at most 16 MiB. Above it
+// the bounded strategy is as fast or faster almost everywhere: random
+// 64-bit keys -14% at 2 * 10^6, -23% at 4 * 10^6, -31% at 10^7, -58% at
+// 10^8; records of 72 bytes -46% to -84% at 10^7 (the partner buffer's
+// time varies 1.8-5.7 s between runs there; the cause is not established
+// - huge pages made it slower). What 16 MiB buys over a smaller
+// budget is the sorted-prefix merge, which needs the buffer (organ pipe
+// at 10^7: -12% with 16 MiB, +186% with 600 KB). The bounded strategy
+// still loses on few-outlier inputs (+5% to +23%) and on floats with few
+// distinct values (+17% to +22% at 10^7).
+constexpr std::size_t AUTOMATIC_MEMORY_LIMIT = std::size_t{16} << 20;
+
+// ------------------------------------------------------------------
 // AUTOMATIC PARAMETERS (0.11.0)
 // ------------------------------------------------------------------
 // A default-constructed StratumSort, and every free function called
