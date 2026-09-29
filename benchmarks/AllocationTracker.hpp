@@ -33,6 +33,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <new>
+#if defined(__GLIBC__) || defined(__linux__)
+#include <malloc.h>
+#define STRATUM_BENCH_USABLE(p) malloc_usable_size(p)
+#elif defined(__APPLE__)
+#include <malloc/malloc.h>
+#define STRATUM_BENCH_USABLE(p) malloc_size(p)
+#elif defined(_WIN32)
+#include <malloc.h>
+#define STRATUM_BENCH_USABLE(p) _msize(p)
+#endif
 
 namespace stratum {
 namespace bench {
@@ -41,6 +51,12 @@ struct AllocationCounters {
     std::size_t live = 0;
     std::size_t peak = 0;
     std::size_t allocations = 0;
+    // What the allocator really handed out for the same blocks - requested
+    // size rounded up to its size classes, plus this tracker's own header -
+    // where the platform can say (glibc: malloc_usable_size). Equal to the
+    // requested figures elsewhere.
+    std::size_t liveUsable = 0;
+    std::size_t peakUsable = 0;
 };
 
 inline AllocationCounters& allocationCounters() {
@@ -55,8 +71,11 @@ public:
         baseLive_ = c.live;
         baseAllocations_ = c.allocations;
         c.peak = c.live;
+        baseUsable_ = c.liveUsable;
+        c.peakUsable = c.liveUsable;
     }
     std::size_t peakBytes() const { return allocationCounters().peak - baseLive_; }
+    std::size_t peakUsableBytes() const { return allocationCounters().peakUsable - baseUsable_; }
     std::size_t retainedBytes() const {
         const std::size_t live = allocationCounters().live;
         return live > baseLive_ ? live - baseLive_ : 0;
@@ -66,6 +85,7 @@ public:
 private:
     std::size_t baseLive_ = 0;
     std::size_t baseAllocations_ = 0;
+    std::size_t baseUsable_ = 0;
 };
 
 namespace detail {
@@ -86,6 +106,12 @@ inline void* trackedAllocate(std::size_t sz) {
     c.live += sz;
     ++c.allocations;
     if (c.live > c.peak) c.peak = c.live;
+#ifdef STRATUM_BENCH_USABLE
+    c.liveUsable += STRATUM_BENCH_USABLE(raw);
+#else
+    c.liveUsable += sz + kHeader;
+#endif
+    if (c.liveUsable > c.peakUsable) c.peakUsable = c.liveUsable;
     return static_cast<char*>(raw) + kHeader;
 }
 
@@ -95,7 +121,14 @@ inline void trackedRelease(void* p) noexcept {
     // T[] it "sees" a negative subscript of that array and warns, although
     // the block really starts kHeader bytes earlier - it was allocated so.
     char* raw = reinterpret_cast<char*>(reinterpret_cast<std::uintptr_t>(p) - kHeader);
-    allocationCounters().live -= *reinterpret_cast<std::size_t*>(raw);
+    AllocationCounters& c = allocationCounters();
+    const std::size_t sz = *reinterpret_cast<std::size_t*>(raw);
+    c.live -= sz;
+#ifdef STRATUM_BENCH_USABLE
+    c.liveUsable -= STRATUM_BENCH_USABLE(raw);
+#else
+    c.liveUsable -= sz + kHeader;
+#endif
     std::free(raw);
 }
 

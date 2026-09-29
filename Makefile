@@ -246,9 +246,9 @@ build/research_%: research/experiments/%.cpp
 PERF_SOURCES  := $(wildcard research/perf/*.cpp)
 PERF_BINARIES := $(patsubst research/perf/%.cpp,build/perf_%,$(PERF_SOURCES))
 
-build/perf_%: research/perf/%.cpp $(ALGO_HEADERS) benchmarks/AllocationTracker.hpp
+build/perf_%: research/perf/%.cpp $(ALGO_HEADERS) benchmarks/AllocationTracker.hpp benchmarks/BenchDatasets.hpp
 	@mkdir -p build
-	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) -Iresearch/baselines $(DEF_PROD) $< -o $@
+	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) -Iresearch/baselines $(DEF_PROD) $< -o $@ -pthread
 
 research-perf: $(PERF_BINARIES)
 
