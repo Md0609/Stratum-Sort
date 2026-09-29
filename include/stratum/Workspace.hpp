@@ -42,6 +42,7 @@
 #include "Metrics.hpp"
 #endif
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -186,6 +187,23 @@ struct WorkspaceAccess {
     static void releaseElements(Workspace<T>& w) {
         w.elements_.reset();
         w.elementCapacity_ = 0;
+    }
+    // The bytes w would hold after reserving 'elements' elements and
+    // 'counts' counters of type Count, reusing what it already holds.
+    template <typename T, typename Count>
+    static std::size_t bytesAfter(const Workspace<T>& w, std::size_t elements, std::size_t counts) {
+        const bool is32 = std::is_same<Count, uint32_t>::value;
+        const std::size_t c32 = is32 ? std::max(w.count32Capacity_, counts) : w.count32Capacity_;
+        const std::size_t c64 = is32 ? w.count64Capacity_ : std::max(w.count64Capacity_, counts);
+        return std::max(w.elementCapacity_, elements) * sizeof(T) + c32 * sizeof(uint32_t) +
+               c64 * sizeof(uint64_t);
+    }
+    // Makes room for that reservation within 'budget' bytes: keeps what w
+    // holds if the total fits, releases everything otherwise. A reservation
+    // that needs at most 'budget' bytes then never leaves w above it.
+    template <typename T, typename Count>
+    static void fit(Workspace<T>& w, std::size_t elements, std::size_t counts, std::size_t budget) {
+        if (bytesAfter<T, Count>(w, elements, counts) > budget) w.release();
     }
 };
 } // namespace detail

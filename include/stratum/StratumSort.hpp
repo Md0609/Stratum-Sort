@@ -145,7 +145,8 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //
 //   IN PLACE, by passes of at most 2^INPLACE_RADIX_BITS groups
 //   (detail/InPlace.hpp): a counter arena set by the key width - 44 KB for
-//   64-bit keys, whatever n is - plus block buffers. Taken when the budget
+//   64-bit keys, whatever n is - plus block buffers and, with what is left,
+//   a partner buffer for the nodes that fit in it. Taken when the budget
 //   cannot hold the partner buffer.
 //
 //   The default budget is unlimited (the partner buffer); a Workspace

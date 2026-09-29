@@ -115,6 +115,18 @@ public:
         arenaHigh_ = arenaTop_;
     }
 
+    // HYBRID. A node of at most 'capacity' elements is finished by the
+    // partner-buffer Engine instead - one pass per refinement level instead
+    // of ceil(bits / L) - using 'buffer' (capacity elements) and 'arena'
+    // (Engine::arenaFor(ceil(capacity / lambda)) counters). The partition
+    // is the same either way, so this only moves the time/memory point.
+    void enablePartner(E* buffer, std::size_t capacity, Count* arena, std::size_t arenaCapacity) {
+        partnerBuf_ = buffer;
+        partnerCap_ = capacity;
+        partnerArena_ = arena;
+        partnerArenaCap_ = arenaCapacity;
+    }
+
     // Sorts data_[0, n) whose top-level grid is 'top' (>= 2 buckets).
     void run(std::size_t n, const Grid& top) {
         assert(top.binCount >= 2);
@@ -136,6 +148,13 @@ private:
     void process(std::size_t start, std::size_t count, std::size_t depth) {
         if (count == 0) {
             probe_.leaf(0, true);
+            return;
+        }
+        if (partnerCap_ != 0 && count <= partnerCap_ && count > leafThreshold_) {
+            Engine<Traits, Count, Sink, /*Stable=*/false>(tr_, data_ + start, partnerBuf_, partnerArena_,
+                                                          partnerArenaCap_, lambda_, leafThreshold_, probe_,
+                                                          sink_)
+                .runNode(count, depth);
             return;
         }
         if (count <= leafThreshold_ || depth >= MAX_SUBDIVISION_DEPTH) {
@@ -475,6 +494,10 @@ private:
     std::size_t arenaHigh_ = 0;
     E* const blockBuf_;
     const std::size_t blockSize_;
+    E* partnerBuf_ = nullptr;
+    std::size_t partnerCap_ = 0;
+    Count* partnerArena_ = nullptr;
+    std::size_t partnerArenaCap_ = 0;
     const std::size_t lambda_;
     const std::size_t leafThreshold_;
     const Probe probe_;

@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <utility>
@@ -1285,7 +1286,8 @@ void testCountingFill() {
 // hold more than max(budget, floor) bytes, the floor being its counter
 // arena (43 856 bytes for 64-bit keys with 32-bit counters, set by the key
 // width alone). The budgets below exercise, in turn: no block buffers (every
-// pass an American flag permutation), small blocks and full blocks.
+// pass an American flag permutation), small blocks, full blocks, and full
+// blocks plus a partner buffer for the small nodes (the hybrid).
 constexpr std::size_t kBudgetFloorBound = 64 * 1024;
 
 template <typename T>
@@ -1415,6 +1417,39 @@ void testMemoryBudgets() {
         stratum::Workspace<int32_t> ws(0);
         stratum::stable_sort(v, ws);
         check(v == want && ws.bytes() <= kBudgetFloorBound, "stable_sort of int32 within the floor");
+    }
+
+    // Sorted prefix + a tail the budget cannot buffer: the tail is sorted
+    // within the budget and merged through the buffer the budget holds, in
+    // up to INPLACE_MERGE_MAX_CHUNKS chunks (the budgets below give 1, 2, 3
+    // and 4 chunks for this tail, then 5: the whole input in place). The
+    // tail's values sit below, above and among the prefix's.
+    {
+        bool ok = true, bounded = true;
+        for (std::size_t budget : {std::size_t{180000}, std::size_t{240000}, std::size_t{310000},
+                                   std::size_t{600000}, std::size_t{700000}}) {
+            for (int tailShape = 0; tailShape < 4; ++tailShape) {
+                for (int where = 0; where < 3; ++where) {
+                    const std::size_t n = 200000, k = 120000;
+                    std::vector<int64_t> v(n);
+                    for (std::size_t i = 0; i < k; ++i) v[i] = static_cast<int64_t>(rng() % 1000000);
+                    std::sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k));
+                    const int64_t shift = where == 0 ? -2000000 : where == 1 ? 2000000 : 0;
+                    for (std::size_t i = k; i < n; ++i) v[i] = static_cast<int64_t>(rng() % 1000000) + shift;
+                    if (tailShape == 1) std::sort(v.begin() + static_cast<std::ptrdiff_t>(k), v.end());
+                    if (tailShape == 2) std::sort(v.begin() + static_cast<std::ptrdiff_t>(k), v.end(), std::greater<int64_t>());
+                    if (tailShape == 3) for (std::size_t i = k; i < n; ++i) v[i] = v[i] % 7; // few values
+                    std::vector<int64_t> want = v;
+                    std::sort(want.begin(), want.end());
+                    stratum::Workspace<int64_t> ws(budget);
+                    stratum::sort(v, ws);
+                    ok = ok && v == want;
+                    bounded = bounded && ws.bytes() <= budget;
+                }
+            }
+        }
+        check(ok, "sorted prefix + unbufferable tail, merged in 1 to 4 chunks or sorted in place");
+        check(bounded, "the chunked merge stays within the budget");
     }
 
     // Small inputs never pay for the arena: their partner buffer is smaller.

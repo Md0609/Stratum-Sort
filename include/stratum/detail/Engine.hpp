@@ -584,6 +584,14 @@ public:
         probe_.end("refine");
     }
 
+    // One node of the in-place engine's tree, [0, count) of data_, at
+    // refinement depth 'depth', finished with this engine: the hybrid
+    // strategy of InPlaceEngine hands over every node that fits the buffer.
+    void runNode(std::size_t count, std::size_t depth) {
+        arenaTop_ = 0;
+        process(/*inData=*/true, 0, count, depth);
+    }
+
     // A whole array that is one leaf (n <= lambda): sorted where it is.
     void runSingleLeaf(std::size_t n) {
         probe_.begin("refine");
@@ -981,35 +989,114 @@ void mergeSortedTail(const Traits& tr, typename Traits::Element* data, std::size
     assert(w == i);
 }
 
-// The bounded-memory strategy (research/ALGORITHM.md section 14). The budget
+// The same merge through a buffer of M elements that may be shorter than the
+// tail: the tail is consumed in chunks of at most M from its end. For a
+// chunk C, the prefix elements with a key above C's smallest, H, belong
+// after everything in the tail before C: one rotation moves H there, and H
+// and C are merged backwards through the buffer. Moves: each chunk rotates
+// the tail before it once, so O(n + q * (n - k)) for q = ceil((n - k) / M)
+// chunks. Not stable - equal keys of H and C may swap - so it serves only
+// the sorts that may use the in-place engine.
+template <typename Traits>
+void mergeSortedTailChunked(const Traits& tr, typename Traits::Element* data, std::size_t k, std::size_t n,
+                            typename Traits::Element* buf, std::size_t M) {
+    using E = typename Traits::Element;
+    assert(M > 0);
+    while (n > k) {
+        const std::size_t c = std::min(n - k, M);
+        const std::size_t s = n - c; // the chunk is data[s, n)
+        const uint64_t lowest = tr.key(data[s]);
+        E* const a = std::upper_bound(data, data + k, lowest,
+                                      [&](uint64_t v, const E& x) { return v < tr.key(x); });
+        const std::size_t h = static_cast<std::size_t>((data + k) - a);
+        if (h != 0) {
+            // The tail before C, then H: through the buffer when H fits in
+            // it (three streaming copies), by std::rotate otherwise.
+            if (h <= M) {
+                std::memcpy(static_cast<void*>(buf), static_cast<const void*>(a), h * sizeof(E));
+                std::memmove(static_cast<void*>(a), static_cast<const void*>(data + k), (s - k) * sizeof(E));
+                std::memcpy(static_cast<void*>(data + (s - h)), static_cast<const void*>(buf), h * sizeof(E));
+            } else {
+                std::rotate(a, data + k, data + s);
+            }
+            mergeSortedTail(tr, data + (s - h), h, h + c, buf);
+        }
+        k = static_cast<std::size_t>(a - data);
+        n = s - h;
+    }
+}
+
+// The bounded-memory strategy (research/ALGORITHM.md section 14.8). A budget
 // is spent in this order:
 //   1. the in-place engine's counter arena - sized from the key width
 //      alone, 43 856 bytes for 64-bit keys; always reserved (sortWith has
 //      raised the budget to it: it is the floor of the whole strategy);
 //   2. its block buffers, up to INPLACE_BLOCK_BYTES per block, halved until
-//      they fit - without them every pass is an American flag permutation.
-// Everything is reserved before the first write. Whatever the workspace
-// still holds from earlier calls is released first if it would not fit
-// beside the new reservations.
-template <typename Count, typename Traits, typename Sink>
-void runInPlace(const Traits& tr, typename Traits::Element* data, std::size_t n, const Grid& top,
-                std::size_t lambda, std::size_t leafThreshold, std::size_t budget,
-                Workspace<typename Traits::Element>& workspace, const Probe& probe, Sink& sink) {
+//      they fit - without them every pass is an American flag permutation;
+//   3. whatever is left, a partner buffer of P elements (and its counters):
+//      every node of at most P elements is then finished by Engine, one
+//      pass per refinement level (the hybrid).
+struct InPlacePlan {
+    std::size_t arena = 0;        // counters of the in-place engine
+    std::size_t block = 0;        // elements per block; 0: no blocks
+    std::size_t blockElems = 0;   // (2^L + 3) blocks
+    std::size_t partner = 0;      // P
+    std::size_t partnerArena = 0; // Engine's counters for a node of P
+    std::size_t elements() const { return blockElems + partner; }
+    std::size_t counters() const { return arena + partnerArena; }
+};
+
+template <typename Count, typename Traits>
+InPlacePlan planInPlace(std::size_t n, std::size_t lambda, std::size_t leafThreshold, std::size_t budget) {
     using E = typename Traits::Element;
-    using InPlace = InPlaceEngine<Traits, Count, Sink>;
-    const std::size_t arenaIn = InPlace::arenaFor(Traits::kKeyBits);
-    const std::size_t arenaBytes = arenaIn * sizeof(Count);
+    using InPlace = InPlaceEngine<Traits, Count, SortLeaves>;
+    InPlacePlan p;
+    p.arena = InPlace::arenaFor(Traits::kKeyBits);
+    const std::size_t arenaBytes = p.arena * sizeof(Count);
 
     std::size_t block = INPLACE_BLOCK_BYTES / sizeof(E);
     if (block == 0) block = 1;
     while (block > 0 && arenaBytes + InPlace::blockBufferFor(block) * sizeof(E) > budget) block /= 2;
-    const std::size_t blockElems = block ? InPlace::blockBufferFor(block) : 0;
-    const std::size_t total = arenaBytes + blockElems * sizeof(E);
-    if (workspace.bytes() + total > budget) workspace.release();
-    Count* const counts = WorkspaceAccess::counts<E, Count>(workspace, arenaIn);
-    E* const elems = blockElems ? WorkspaceAccess::elements(workspace, blockElems) : nullptr;
+    p.block = block;
+    p.blockElems = block ? InPlace::blockBufferFor(block) : 0;
+    const std::size_t fixed = arenaBytes + p.blockElems * sizeof(E);
 
-    InPlace engine(tr, data, counts, arenaIn, block ? elems : nullptr, block, lambda, leafThreshold, probe, sink);
+    // The largest partner capacity P whose buffer and counters fit the rest.
+    if (budget > fixed) {
+        const std::size_t rest = budget - fixed;
+        auto need = [&](std::size_t m) { return m * sizeof(E) + (2 * ceilDiv(m, lambda) + 2) * sizeof(Count); };
+        std::size_t hi = std::min(n - 1, rest / sizeof(E));
+        std::size_t lo = 0;
+        while (lo < hi) { // largest m in [0, hi] with need(m) <= rest
+            const std::size_t mid = lo + (hi - lo + 1) / 2;
+            if (need(mid) <= rest) lo = mid;
+            else hi = mid - 1;
+        }
+        p.partner = lo > leafThreshold ? lo : 0;
+    }
+    p.partnerArena = p.partner ? 2 * ceilDiv(p.partner, lambda) + 2 : 0;
+    return p;
+}
+
+// Everything a plan needs, reserved before the first write. What the
+// workspace holds from earlier calls is kept if it fits beside it.
+template <typename Count, typename E>
+std::pair<Count*, E*> reserveInPlace(Workspace<E>& workspace, const InPlacePlan& plan, std::size_t budget) {
+    WorkspaceAccess::fit<E, Count>(workspace, plan.elements(), plan.counters(), budget);
+    Count* const counts = WorkspaceAccess::counts<E, Count>(workspace, plan.counters());
+    E* const elems = plan.elements() ? WorkspaceAccess::elements(workspace, plan.elements()) : nullptr;
+    return {counts, elems};
+}
+
+template <typename Count, typename Traits, typename Sink>
+void runInPlace(const Traits& tr, typename Traits::Element* data, std::size_t n, const Grid& top,
+                std::size_t lambda, std::size_t leafThreshold, const InPlacePlan& plan, Count* counts,
+                typename Traits::Element* elems, const Probe& probe, Sink& sink) {
+    using InPlace = InPlaceEngine<Traits, Count, Sink>;
+    InPlace engine(tr, data, counts, plan.arena, plan.block ? elems : nullptr, plan.block, lambda, leafThreshold,
+                   probe, sink);
+    if (plan.partner)
+        engine.enablePartner(elems + plan.blockElems, plan.partner, counts + plan.arena, plan.partnerArena);
     if constexpr (Traits::kElementIsKey) {
         if (top.width == 1 && top.binCount <= InPlace::kRadix) {
             engine.runCounting(n, top);
@@ -1017,6 +1104,49 @@ void runInPlace(const Traits& tr, typename Traits::Element* data, std::size_t n,
         }
     }
     engine.run(n, top);
+}
+
+template <typename Count, typename Traits, typename Sink>
+void sortInPlace(const Traits& tr, typename Traits::Element* data, std::size_t n, const Grid& top,
+                 std::size_t lambda, std::size_t leafThreshold, std::size_t budget,
+                 Workspace<typename Traits::Element>& workspace, const Probe& probe, Sink& sink) {
+    const InPlacePlan plan = planInPlace<Count, Traits>(n, lambda, leafThreshold, budget);
+    const auto r = reserveInPlace<Count>(workspace, plan, budget);
+    runInPlace<Count>(tr, data, n, top, lambda, leafThreshold, plan, r.first, r.second, probe, sink);
+}
+
+// A sorted prefix data[0, k) and a tail the budget cannot buffer: sort the
+// tail within the budget, then merge through the element buffer that sort
+// holds anyway (mergeSortedTailChunked). Declines, before touching anything,
+// when that buffer would need more than INPLACE_MERGE_MAX_CHUNKS chunks.
+template <typename Count, typename Traits, typename Sink>
+bool boundedPrefixMerge(const Traits& tr, typename Traits::Element* data, std::size_t n, std::size_t k,
+                        std::size_t lambda, std::size_t leafThreshold, std::size_t budget,
+                        Workspace<typename Traits::Element>& workspace, const Probe& probe, Sink& sink) {
+    using E = typename Traits::Element;
+    const std::size_t m = n - k;
+    const InPlacePlan plan = planInPlace<Count, Traits>(m, lambda, leafThreshold, budget);
+    const std::size_t M = plan.elements();
+    if (M == 0 || ceilDiv(m, M) > INPLACE_MERGE_MAX_CHUNKS) return false;
+    const auto r = reserveInPlace<Count>(workspace, plan, budget);
+
+    E* const tail = data + k;
+    const Analysis t = analyze(tr, tail, m);
+    if (t.nonIncreasing) {
+        std::reverse(tail, tail + m); // the element is its key, or the sort is unstable
+    } else if (t.ascendingPrefix < m) {
+        const Grid g = planTop(t.minKey, t.maxKey, m, lambda);
+        if (g.binCount == 1) {
+            LocalSort<Traits>(tr, probe).sortLeaf(tail, m);
+        } else {
+            runInPlace<Count>(tr, tail, m, g, lambda, leafThreshold, plan, r.first, r.second, probe, sink);
+        }
+    }
+    probe.begin("join");
+    mergeSortedTailChunked(tr, data, k, n, r.second, M);
+    probe.end("join");
+    probe.localAlgorithm("SortedPrefixMerge");
+    return true;
 }
 
 // Sorts data[0, n) with the given (already clamped) parameters, using
@@ -1094,9 +1224,19 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     // sorted where it is without any scratch, and the tail buffer would
     // be the only allocation of the whole sort.
     if constexpr (!Sink::kRecord) {
-        if (range.ascendingPrefix >= n / 2 && n > lambda &&
-            (!kInPlaceAllowed || partnerNeed(n - range.ascendingPrefix) <= budget)) {
-            const std::size_t k = range.ascendingPrefix;
+        const std::size_t k = range.ascendingPrefix;
+        if (k >= n / 2 && n > lambda && kInPlaceAllowed && partnerNeed(n - k) > budget) {
+            // The tail does not fit the budget: sort it within the budget
+            // and merge in chunks, or, if that takes too many, fall through
+            // and sort everything in place.
+            const bool merged =
+                (n - k <= std::numeric_limits<uint32_t>::max())
+                    ? boundedPrefixMerge<uint32_t>(tr, data, n, k, lambda, leafThreshold, budget, workspace, probe, sink)
+                    : boundedPrefixMerge<uint64_t>(tr, data, n, k, lambda, leafThreshold, budget, workspace, probe, sink);
+            if (merged) return;
+        }
+        if (k >= n / 2 && n > lambda && (!kInPlaceAllowed || partnerNeed(n - k) <= budget)) {
+            WorkspaceAccess::fit<E, uint32_t>(workspace, n - k, 2 * ceilDiv(n - k, lambda) + 2, budget);
             WorkspaceAccess::elements(workspace, n - k);
             sortWith<Stable>(tr, data + k, n - k, lambda, leafThreshold, workspace, probe, sink);
             probe.begin("join");
@@ -1127,11 +1267,13 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     if constexpr (Traits::kElementIsKey && !Sink::kRecord) {
         if (top.width == 1 && top.binCount * 8 <= budget) {
             if (n <= std::numeric_limits<uint32_t>::max()) {
+                WorkspaceAccess::fit<E, uint32_t>(workspace, 0, top.binCount, budget);
                 uint32_t* const counts = WorkspaceAccess::counts<E, uint32_t>(workspace, top.binCount);
                 Engine<Traits, uint32_t, Sink, Stable>(tr, data, nullptr, counts, top.binCount, lambda,
                                                        leafThreshold, probe, sink)
                     .runCounting(n, top);
             } else {
+                WorkspaceAccess::fit<E, uint64_t>(workspace, 0, top.binCount, budget);
                 uint64_t* const counts = WorkspaceAccess::counts<E, uint64_t>(workspace, top.binCount);
                 Engine<Traits, uint64_t, Sink, Stable>(tr, data, nullptr, counts, top.binCount, lambda,
                                                        leafThreshold, probe, sink)
@@ -1145,14 +1287,18 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     if constexpr (kInPlaceAllowed) {
         if (partnerNeed(n) > budget) {
             if (n <= std::numeric_limits<uint32_t>::max())
-                runInPlace<uint32_t>(tr, data, n, top, lambda, leafThreshold, budget, workspace, probe, sink);
+                sortInPlace<uint32_t>(tr, data, n, top, lambda, leafThreshold, budget, workspace, probe, sink);
             else
-                runInPlace<uint64_t>(tr, data, n, top, lambda, leafThreshold, budget, workspace, probe, sink);
+                sortInPlace<uint64_t>(tr, data, n, top, lambda, leafThreshold, budget, workspace, probe, sink);
             return;
         }
     }
 
     // EVERY allocation of the sort happens here, before the first write.
+    if (n <= std::numeric_limits<uint32_t>::max())
+        WorkspaceAccess::fit<E, uint32_t>(workspace, n, 2 * top.binCount + 2, budget);
+    else
+        WorkspaceAccess::fit<E, uint64_t>(workspace, n, 2 * top.binCount + 2, budget);
     E* const aux = WorkspaceAccess::elements(workspace, n);
     if (n <= std::numeric_limits<uint32_t>::max()) {
         using Count = uint32_t;

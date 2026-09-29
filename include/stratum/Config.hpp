@@ -287,6 +287,13 @@ constexpr std::size_t INPLACE_BLOCK_BYTES = 512;
 // permutation instead: the block machinery has an O(r) setup.
 constexpr std::size_t INPLACE_BLOCK_MIN_BLOCKS = 16;
 
+// Sorted prefix + tail under a budget that cannot hold the tail: the tail
+// is sorted within the budget and merged through the buffer the budget
+// does hold, in chunks of that size taken from the tail's end. q chunks
+// cost O(n + q * tail) moves, so the path is taken for at most this many;
+// beyond it the whole input is sorted in place instead.
+constexpr std::size_t INPLACE_MERGE_MAX_CHUNKS = 4;
+
 // ------------------------------------------------------------------
 // AUTOMATIC PARAMETERS (0.11.0)
 // ------------------------------------------------------------------
