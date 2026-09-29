@@ -256,6 +256,38 @@ constexpr std::size_t LOCAL_PARTITION_CUTOFF = 12;
 constexpr std::size_t INTROSORT_DEPTH_FACTOR = 2;
 
 // ------------------------------------------------------------------
+// IN-PLACE DISTRIBUTION (detail/InPlace.hpp)
+// ------------------------------------------------------------------
+// When a workspace's memory budget cannot hold the n-element partner
+// buffer, a split is done in place, over the bits of the bucket index, at
+// most INPLACE_RADIX_BITS bits per pass. Larger: fewer passes, more
+// counters (2^bits + 1 per live pass) and more simultaneously open write
+// streams (one buffer block each). Measured for 8..11 on random, nearly
+// sorted, low-entropy, clustered and worst-case 64-bit keys at 10^6 and
+// 10^7 (research/history/V11_memoria.md): 10 is within 5% of 11 (the
+// fastest at 10^6, tied at 10^7) at half its block memory; 8 and 9 are
+// 13-18% slower at 10^7.
+constexpr unsigned INPLACE_RADIX_BITS = 10;
+
+// A sub-range of at most this many elements spread over several buckets
+// is ordered by bucket index with an insertion sort instead of a pass:
+// keeps every pass's radix below its element count, so a pass is O(c).
+constexpr std::size_t INPLACE_SMALL = 32;
+static_assert(INPLACE_RADIX_BITS >= 1 && INPLACE_RADIX_BITS <= 16, "radix bits out of range");
+
+// Bytes per block in the block-based pass: one buffer block per sub-bucket
+// ((2^INPLACE_RADIX_BITS + 3) blocks in all, 526 KB) is the pass's whole
+// element scratch. Measured for 256..2048 (V11_memoria.md): 512 is within
+// 4% of 1024 (the fastest at 10^6; 512 is at 10^7) at half its memory;
+// 256 and 2048 are 14% slower at 10^7. A budget too small for the blocks halves them until
+// they fit.
+constexpr std::size_t INPLACE_BLOCK_BYTES = 512;
+
+// A range shorter than this many blocks is passed with the American flag
+// permutation instead: the block machinery has an O(r) setup.
+constexpr std::size_t INPLACE_BLOCK_MIN_BLOCKS = 16;
+
+// ------------------------------------------------------------------
 // AUTOMATIC PARAMETERS (0.11.0)
 // ------------------------------------------------------------------
 // A default-constructed StratumSort, and every free function called

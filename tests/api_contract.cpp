@@ -1274,6 +1274,191 @@ void testCountingFill() {
           "a width-1 top level allocates only its counters, not an element buffer");
 }
 
+
+// ------------------------------------------------------------------
+// 14. Memory budgets (pre-release research, see research/history/V11_memoria.md)
+// ------------------------------------------------------------------
+// A Workspace built with a number of bytes bounds the whole auxiliary
+// memory of the sort: below the partner buffer the engine switches to the
+// in-place distribution (detail/InPlace.hpp), which must produce the same
+// sorted output for every input, key type and parameter, and must never
+// hold more than max(budget, floor) bytes, the floor being its counter
+// arena (43 856 bytes for 64-bit keys with 32-bit counters, set by the key
+// width alone). The budgets below exercise, in turn: no block buffers (every
+// pass an American flag permutation), small blocks and full blocks.
+constexpr std::size_t kBudgetFloorBound = 64 * 1024;
+
+template <typename T>
+static std::vector<T> budgetShape(int shape, std::size_t n, std::mt19937_64& rng) {
+    using L = std::numeric_limits<T>;
+    std::vector<T> v(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        switch (shape) {
+        case 0: v[i] = static_cast<T>(rng()); break;                                  // random
+        case 1: v[i] = static_cast<T>(L::min() + static_cast<T>(i % 5)); break;       // few distinct
+        case 2: v[i] = (i % 997 == 0) ? L::max() : static_cast<T>(rng() % 50); break; // cluster + outliers
+        case 3: v[i] = (rng() & 1) ? L::min() : L::max(); break;                      // extremes
+        case 4: v[i] = static_cast<T>(i % 1000); break;                               // sawtooth
+        case 5: v[i] = static_cast<T>(uint64_t{1} << (rng() % (8 * sizeof(T) - 1))); break; // one bit set
+        case 6: v[i] = static_cast<T>(i < n / 2 ? i : n - i); break;                  // organ pipe
+        default: v[i] = static_cast<T>(rng() % (n + 1)); break;                       // base of 7-9
+        }
+    }
+    if (shape == 7) std::sort(v.begin(), v.end());                                   // sorted
+    if (shape == 8) {                                                                 // sorted prefix + tail
+        std::sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(3 * n / 4));
+    }
+    if (shape == 9) {                                                                 // nearly sorted
+        std::sort(v.begin(), v.end());
+        for (std::size_t k = 0; k < n / 100 + 1 && n > 1; ++k) std::swap(v[rng() % n], v[rng() % n]);
+    }
+    return v;
+}
+
+template <typename T>
+static bool budgetBattery(std::mt19937_64& rng, std::size_t& worstExcess) {
+    bool ok = true;
+    for (std::size_t budget : {std::size_t{0}, std::size_t{200000}, std::size_t{700000}, std::size_t{1500000}}) {
+        for (std::size_t n : {2u, 17u, 33u, 100u, 1000u, 4097u, 65536u, 300000u}) {
+            for (int shape = 0; shape < 10; ++shape) {
+                std::vector<T> v = budgetShape<T>(shape, n, rng);
+                std::vector<T> want = v;
+                std::sort(want.begin(), want.end());
+                stratum::Workspace<T> ws(budget);
+                stratum::sort(v, ws);
+                const std::size_t limit = std::max(budget, kBudgetFloorBound);
+                if (ws.bytes() > limit) worstExcess = std::max(worstExcess, ws.bytes() - limit);
+                ok = ok && v == want && ws.bytes() <= limit;
+                // The same with tuning parameters at their extremes: lambda
+                // = 1 makes every level as deep as it can be.
+                if (n <= 65536) {
+                    std::vector<T> u = budgetShape<T>(shape, n, rng);
+                    std::vector<T> uw = u;
+                    std::sort(uw.begin(), uw.end());
+                    stratum::Parameters p;
+                    p.targetElementsPerBin = 1 + n % 7;
+                    p.leafThreshold = 1 + n % 5;
+                    stratum::Workspace<T> ws2(budget);
+                    stratum::sort(u, ws2, p);
+                    ok = ok && u == uw;
+                }
+            }
+        }
+    }
+    return ok;
+}
+
+struct Rec72 {
+    uint64_t key;
+    uint64_t id;
+    unsigned char payload[56];
+};
+
+void testMemoryBudgets() {
+    section("14. Memory budgets");
+    std::mt19937_64 rng(1414);
+    std::size_t excess = 0;
+    const bool integral = budgetBattery<uint8_t>(rng, excess) && budgetBattery<int16_t>(rng, excess) &&
+                          budgetBattery<uint32_t>(rng, excess) && budgetBattery<int64_t>(rng, excess) &&
+                          budgetBattery<uint64_t>(rng, excess);
+    check(integral, "bounded sorts are correct: 5 key types, 10 shapes, 8 sizes, 4 budgets, 2 parameter sets");
+    check(excess == 0, "a bounded workspace never holds more than max(budget, 64 KB); worst excess " +
+                           std::to_string(excess) + " bytes");
+
+    // Floating point: specials, signed zeros, few distinct bit patterns.
+    for (std::size_t budget : {std::size_t{0}, std::size_t{300000}}) {
+        std::vector<double> d(200000);
+        const double pool[] = {-0.0, 0.0, 1.5, -2.25, std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::denorm_min()};
+        for (std::size_t i = 0; i < d.size(); ++i)
+            d[i] = (i % 3 == 0) ? pool[rng() % 7] : static_cast<double>(static_cast<int64_t>(rng())) * 1e-9;
+        std::vector<double> dw = d;
+        std::sort(dw.begin(), dw.end(), [](double a, double b) {
+            return stratum::OrderedKey<double>::key(a) < stratum::OrderedKey<double>::key(b);
+        });
+        stratum::Workspace<double> ws(budget);
+        stratum::sort(d, ws);
+        check(std::memcmp(d.data(), dw.data(), d.size() * sizeof(double)) == 0,
+              "bounded sort of doubles, bit for bit, budget " + std::to_string(budget));
+    }
+
+    // Records, unstable: sorted by key, and a permutation (every id once).
+    for (std::size_t budget : {std::size_t{0}, std::size_t{100000}, std::size_t{2000000}}) {
+        std::vector<Rec72> r(150000);
+        for (std::size_t i = 0; i < r.size(); ++i) {
+            r[i].key = (i % 2) ? rng() : rng() % 100;
+            r[i].id = i;
+            std::memset(r[i].payload, static_cast<int>(i & 0xff), sizeof(r[i].payload));
+        }
+        stratum::Workspace<Rec72> ws(budget);
+        stratum::sort_by_key(r, [](const Rec72& x) { return x.key; }, ws);
+        bool sorted = true, perm = true, intactPayload = true;
+        std::vector<char> seen(r.size(), 0);
+        for (std::size_t i = 0; i < r.size(); ++i) {
+            if (i && r[i].key < r[i - 1].key) sorted = false;
+            if (r[i].id >= r.size() || seen[r[i].id]) perm = false;
+            else seen[r[i].id] = 1;
+            if (r[i].payload[55] != static_cast<unsigned char>(r[i].id & 0xff)) intactPayload = false;
+        }
+        check(sorted && perm && intactPayload && ws.bytes() <= std::max(budget, kBudgetFloorBound),
+              "bounded sort_by_key of 72-byte records, budget " + std::to_string(budget));
+    }
+
+    // The stable sort of a self-keyed type may use the in-place engine: equal
+    // keys are identical bit patterns.
+    {
+        std::vector<int32_t> v(300000);
+        for (auto& x : v) x = static_cast<int32_t>(rng() % 1000) - 500;
+        std::vector<int32_t> want = v;
+        std::stable_sort(want.begin(), want.end());
+        stratum::Workspace<int32_t> ws(0);
+        stratum::stable_sort(v, ws);
+        check(v == want && ws.bytes() <= kBudgetFloorBound, "stable_sort of int32 within the floor");
+    }
+
+    // Small inputs never pay for the arena: their partner buffer is smaller.
+    {
+        std::vector<int64_t> v(1000);
+        for (auto& x : v) x = static_cast<int64_t>(rng());
+        stratum::Workspace<int64_t> ws(0);
+        stratum::sort(v, ws);
+        check(std::is_sorted(v.begin(), v.end()) && ws.bytes() < 10000,
+              "budget 0, n = 1000: the partner buffer (8.5 KB) is used, not the 44 KB arena");
+    }
+
+    // Strong exception guarantee on the bounded path: every allocation
+    // precedes the first write there too.
+    {
+        std::vector<int64_t> original(300000);
+        for (auto& x : original) x = static_cast<int64_t>(rng() % 1000000);
+        bool everThrew = false, everCompleted = false, intact = true;
+        for (std::size_t allowed = 0; allowed < 4000 && !everCompleted; ++allowed) {
+            std::vector<int64_t> v = original;
+            stratum::Workspace<int64_t> ws(700000);
+            bool threw = false;
+            g_allocSeen = 0;
+            g_allocSkipped = 0;
+            g_allocBudget = allowed;
+            g_allocLimiterOn = true;
+            try {
+                stratum::sort(v, ws);
+            } catch (const std::bad_alloc&) {
+                threw = true;
+            }
+            g_allocLimiterOn = false;
+            everThrew = everThrew || threw;
+            everCompleted = everCompleted || !threw;
+            if (threw && v != original) intact = false;
+        }
+        check(everThrew && everCompleted, "the limiter fired on the bounded path and a run completed");
+#ifndef STRATUM_ENABLE_METRICS
+        check(intact, "on bad_alloc in the bounded path the input is left exactly as it was");
+#else
+        (void)intact;
+#endif
+    }
+}
 } // namespace
 
 // Allocation limiter for the exception-safety test. Defined at namespace
@@ -1396,6 +1581,7 @@ int main() {
     testPresortedExceptionGuarantee();
     testAutomaticParameters();
     testCountingFill();
+    testMemoryBudgets();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

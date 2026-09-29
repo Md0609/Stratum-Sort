@@ -186,6 +186,7 @@ struct IndexedKey {
 struct IndexedKeyTraits {
     using Element = IndexedKey;
     static constexpr bool kElementIsKey = false; // the index is a payload
+    static constexpr unsigned kKeyBits = 64;
     static uint64_t key(const IndexedKey& e) { return e.key; }
     static bool less(const IndexedKey& a, const IndexedKey& b) { return a.key < b.key; }
 };

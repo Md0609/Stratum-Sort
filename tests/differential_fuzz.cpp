@@ -42,9 +42,18 @@
 static std::mt19937_64 rng(0xC0FFEE);
 static long long cases = 0;
 
+// One case in four is BOUNDED: a larger n and a workspace whose memory
+// budget is drawn below the partner buffer, so the in-place engine runs
+// (detail/InPlace.hpp) - with no block buffers, small ones, full ones, or
+// full ones plus a partner buffer for the small nodes, depending on the
+// draw. Below its floor (the counter arena, tens of KB) a budget is raised
+// to it, so n has to be large enough for the partner buffer to exceed it.
+static bool drawBounded() { return (rng() & 3) == 0; }
+
 template <typename T>
 void oneCase() {
-    const std::size_t n = std::uniform_int_distribution<std::size_t>(0, 3000)(rng);
+    const bool bounded = drawBounded();
+    const std::size_t n = std::uniform_int_distribution<std::size_t>(0, bounded ? 60000 : 3000)(rng);
     const std::size_t lambda = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
     const std::size_t t = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
 
@@ -85,12 +94,15 @@ void oneCase() {
     std::vector<T> expected = v;
     std::sort(expected.begin(), expected.end());
 
-    stratum::StratumSort<T> sorter(lambda, t);
-    sorter.sort(v);
+    const stratum::StratumSort<T> sorter(lambda, t);
+    const std::size_t budget =
+        bounded ? std::uniform_int_distribution<std::size_t>(0, n * sizeof(T) + 1)(rng) : stratum::Workspace<T>::kUnlimited;
+    stratum::Workspace<T> ws(budget);
+    sorter.sort(v, ws);
     ++cases;
     if (v != expected) {
-        std::printf("MISMATCH  type=%zub n=%zu lambda=%zu t=%zu shape=%d\n",
-                    sizeof(T), n, lambda, t, shape);
+        std::printf("MISMATCH  type=%zub n=%zu lambda=%zu t=%zu shape=%d budget=%zu\n",
+                    sizeof(T), n, lambda, t, shape, budget);
         std::exit(1);
     }
 }
@@ -101,7 +113,8 @@ void oneCase() {
 // machinery around it, under the sanitizers.
 template <typename F, typename Bits>
 void oneFloatCase() {
-    const std::size_t n = std::uniform_int_distribution<std::size_t>(0, 3000)(rng);
+    const bool bounded = drawBounded();
+    const std::size_t n = std::uniform_int_distribution<std::size_t>(0, bounded ? 60000 : 3000)(rng);
     std::vector<F> v(n);
     const int shape = std::uniform_int_distribution<int>(0, 3)(rng);
     for (auto& x : v) {
@@ -115,11 +128,14 @@ void oneFloatCase() {
     std::vector<F> expected = v;
     std::sort(expected.begin(), expected.end(), [](F a, F b) {
         return stratum::OrderedKey<F>::key(a) < stratum::OrderedKey<F>::key(b); });
-    if (rng() & 1) stratum::sort(v);
-    else stratum::stable_sort(v);
+    const std::size_t budget = bounded ? std::uniform_int_distribution<std::size_t>(0, n * sizeof(F) + 1)(rng)
+                                       : stratum::Workspace<F>::kUnlimited;
+    stratum::Workspace<F> ws(budget);
+    if (rng() & 1) stratum::sort(v, ws);
+    else stratum::stable_sort(v, ws);
     ++cases;
     if (n != 0 && std::memcmp(v.data(), expected.data(), n * sizeof(F)) != 0) {
-        std::printf("MISMATCH  float%zu n=%zu shape=%d\n", sizeof(F) * 8, n, shape);
+        std::printf("MISMATCH  float%zu n=%zu shape=%d budget=%zu\n", sizeof(F) * 8, n, shape, budget);
         std::exit(1);
     }
 }

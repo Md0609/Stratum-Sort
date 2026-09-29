@@ -24,14 +24,15 @@
 // fresh process per row removes that.
 //
 // Variants: 0.10.0 (research/baselines/v0_10_0), 0.11 before this study
-// (research/baselines/v0_11_pre), the current header (cur; curs = its
-// stable sort), std::sort and std::stable_sort. Key types: uint8, uint32,
-// uint64, float, double, and records of a uint64 key plus 8, 64 or 256
-// payload bytes.
+// (research/baselines/v0_11_pre), the current header in each memory mode
+// (cur = automatic, unl = unlimited, b<bytes> = explicit budget; a trailing
+// s = the stable sort), std::sort and std::stable_sort. Key types: uint8,
+// uint32, uint64, float, double, and records of a uint64 key plus 8, 64 or
+// 256 payload bytes.
 //
 //   make research-perf
 //   ./build/perf_MemoryAudit [--n 1e6,1e7] [--types u64,rec72] [--shapes random,adversarial]
-//                            [--variants v011,cur,std] > audit.csv
+//                            [--variants v011,cur,unl,b0,b1m,std] > audit.csv
 // Linux only (clear_refs, VmHWM, pthread stacks).
 #include "AllocationTracker.hpp"
 #include "BenchDatasets.hpp"
@@ -206,11 +207,24 @@ bool runVariant(const std::string& variant, std::vector<T>& d, std::size_t& wsBy
         wsBytes = ws.bytes();
         return true;
     }
-    // The current header, default workspace; a trailing 's' is the stable sort.
-    const bool stable = variant == "curs";
-    const bool known = variant == "cur" || stable;
+    // The current header, by memory policy; a trailing 's' is the stable
+    // sort. cur: automatic (the default); unl: kUnlimited (the partner
+    // buffer at every size, the pre-study behaviour); b<bytes>[k|m]: that
+    // explicit budget, e.g. b0 (the floor), b1m, b16m.
+    const bool stable = !variant.empty() && variant.back() == 's' && variant != "std";
+    const std::string policy = stable ? variant.substr(0, variant.size() - 1) : variant;
+    std::size_t budget = 0;
+    bool known = true;
+    if (policy == "cur") budget = stratum::Workspace<T>().budget();
+    else if (policy == "unl") budget = stratum::Workspace<T>::kUnlimited;
+    else if (policy.size() > 1 && policy[0] == 'b') {
+        char* end = nullptr;
+        budget = static_cast<std::size_t>(std::strtod(policy.c_str() + 1, &end));
+        if (*end == 'k') budget <<= 10;
+        if (*end == 'm') budget <<= 20;
+    } else known = false;
     if (known) {
-        stratum::Workspace<T> ws;
+        stratum::Workspace<T> ws(budget);
         if constexpr (IsRecord<T>::value) {
             if (stable) stratum::stable_sort_by_key(d, byKey, ws);
             else stratum::sort_by_key(d, byKey, ws);

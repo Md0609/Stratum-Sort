@@ -71,13 +71,14 @@
 // a width-1 grid over keys that are their own element (countingFill),
 // which needs the counters alone.
 //
-// The last term is structural. A split into ceil(m / lambda) buckets needs
-// one counter per bucket: that fan-out IS the algorithm (it is what Lemma 4
-// spends the bit budget on), so O(n / lambda) counters cannot go without
-// changing the algorithm. The n-element buffer could only go with an
-// in-place distribution; research/history/V11_informe.md (section 3.3)
-// measures one - 3.5x to 14x slower at this fan-out, and not stable - and
-// research/ALGORITHM.md section 13.3 has the full memory accounting.
+// Both terms belong to this engine's SCHEDULE, not to the partition: a
+// one-pass split into ceil(m / lambda) buckets needs one cursor per bucket,
+// and a stable one-pass scatter needs somewhere to scatter to. When the
+// workspace's budget cannot hold them, InPlaceEngine (InPlace.hpp) produces
+// the same buckets in passes of at most 2^INPLACE_RADIX_BITS groups,
+// permuting in place, with a counter arena set by the key width alone
+// (research/ALGORITHM.md section 14; section 13.3 has the accounting of
+// this engine).
 //
 // EXCEPTION SAFETY IS UNCHANGED. Every allocation - the buffer and the
 // arena, both sized from n before anything is read twice - happens before
@@ -869,6 +870,16 @@ private:
     Sink& sink_;
 };
 
+} // namespace detail
+} // inline namespace STRATUM_ABI_NAMESPACE
+} // namespace stratum
+
+#include "InPlace.hpp"
+
+namespace stratum {
+inline namespace STRATUM_ABI_NAMESPACE {
+namespace detail {
+
 // ============================================================
 // Driver
 // ============================================================
@@ -970,6 +981,44 @@ void mergeSortedTail(const Traits& tr, typename Traits::Element* data, std::size
     assert(w == i);
 }
 
+// The bounded-memory strategy (research/ALGORITHM.md section 14). The budget
+// is spent in this order:
+//   1. the in-place engine's counter arena - sized from the key width
+//      alone, 43 856 bytes for 64-bit keys; always reserved (sortWith has
+//      raised the budget to it: it is the floor of the whole strategy);
+//   2. its block buffers, up to INPLACE_BLOCK_BYTES per block, halved until
+//      they fit - without them every pass is an American flag permutation.
+// Everything is reserved before the first write. Whatever the workspace
+// still holds from earlier calls is released first if it would not fit
+// beside the new reservations.
+template <typename Count, typename Traits, typename Sink>
+void runInPlace(const Traits& tr, typename Traits::Element* data, std::size_t n, const Grid& top,
+                std::size_t lambda, std::size_t leafThreshold, std::size_t budget,
+                Workspace<typename Traits::Element>& workspace, const Probe& probe, Sink& sink) {
+    using E = typename Traits::Element;
+    using InPlace = InPlaceEngine<Traits, Count, Sink>;
+    const std::size_t arenaIn = InPlace::arenaFor(Traits::kKeyBits);
+    const std::size_t arenaBytes = arenaIn * sizeof(Count);
+
+    std::size_t block = INPLACE_BLOCK_BYTES / sizeof(E);
+    if (block == 0) block = 1;
+    while (block > 0 && arenaBytes + InPlace::blockBufferFor(block) * sizeof(E) > budget) block /= 2;
+    const std::size_t blockElems = block ? InPlace::blockBufferFor(block) : 0;
+    const std::size_t total = arenaBytes + blockElems * sizeof(E);
+    if (workspace.bytes() + total > budget) workspace.release();
+    Count* const counts = WorkspaceAccess::counts<E, Count>(workspace, arenaIn);
+    E* const elems = blockElems ? WorkspaceAccess::elements(workspace, blockElems) : nullptr;
+
+    InPlace engine(tr, data, counts, arenaIn, block ? elems : nullptr, block, lambda, leafThreshold, probe, sink);
+    if constexpr (Traits::kElementIsKey) {
+        if (top.width == 1 && top.binCount <= InPlace::kRadix) {
+            engine.runCounting(n, top);
+            return;
+        }
+    }
+    engine.run(n, top);
+}
+
 // Sorts data[0, n) with the given (already clamped) parameters, using
 // 'workspace' for every byte of scratch.
 template <bool Stable, typename Traits, typename Sink>
@@ -986,6 +1035,27 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     const Analysis range = analyze(tr, data, n);
     probe.end("analyze");
 
+    // ---- Memory budget (Workspace) ---------------------------------------
+    // The partner-buffer strategy needs n elements and 2 ceil(n / lambda) + 2
+    // counters. A budget that cannot hold them selects the in-place engine,
+    // which needs a counter arena set by the key width, never by n - for the
+    // unstable sorts, and for the stable ones whose element is its own key
+    // (equal keys are identical bits: no order to keep).
+    auto partnerNeed = [&](std::size_t m) {
+        const std::size_t countBytes = m <= std::numeric_limits<uint32_t>::max() ? 4 : 8;
+        return m * sizeof(E) + (2 * ceilDiv(m, lambda) + 2) * countBytes;
+    };
+    constexpr bool kInPlaceAllowed = (!Stable || Traits::kElementIsKey) && !Sink::kRecord;
+    std::size_t budget = WorkspaceAccess::budget(workspace);
+    // The floor: a budget below the in-place engine's arena is raised to it.
+    // Every sort then holds at most max(budget, floor) bytes, and one whose
+    // partner buffer fits under the floor (a small n) uses that buffer
+    // instead of an arena larger than it.
+    {
+        const std::size_t countBytes = n <= std::numeric_limits<uint32_t>::max() ? 4 : 8;
+        const std::size_t floorBytes = inPlaceArenaFor(Traits::kKeyBits) * countBytes;
+        if (budget < floorBytes) budget = floorBytes;
+    }
     // ---- Presorted input ------------------------------------------------
     // Already ascending (this includes every key equal): nothing to do.
     if (range.ascendingPrefix == n) {
@@ -1024,7 +1094,8 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     // sorted where it is without any scratch, and the tail buffer would
     // be the only allocation of the whole sort.
     if constexpr (!Sink::kRecord) {
-        if (range.ascendingPrefix >= n / 2 && n > lambda) {
+        if (range.ascendingPrefix >= n / 2 && n > lambda &&
+            (!kInPlaceAllowed || partnerNeed(n - range.ascendingPrefix) <= budget)) {
             const std::size_t k = range.ascendingPrefix;
             WorkspaceAccess::elements(workspace, n - k);
             sortWith<Stable>(tr, data + k, n - k, lambda, leafThreshold, workspace, probe, sink);
@@ -1054,7 +1125,7 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     // Width 1 at the top and the element is its key: count and write. The
     // only allocation is the counters, still before the first write.
     if constexpr (Traits::kElementIsKey && !Sink::kRecord) {
-        if (top.width == 1) {
+        if (top.width == 1 && top.binCount * 8 <= budget) {
             if (n <= std::numeric_limits<uint32_t>::max()) {
                 uint32_t* const counts = WorkspaceAccess::counts<E, uint32_t>(workspace, top.binCount);
                 Engine<Traits, uint32_t, Sink, Stable>(tr, data, nullptr, counts, top.binCount, lambda,
@@ -1066,6 +1137,17 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
                                                        leafThreshold, probe, sink)
                     .runCounting(n, top);
             }
+            return;
+        }
+    }
+
+    // In place, when the budget cannot hold the partner buffer.
+    if constexpr (kInPlaceAllowed) {
+        if (partnerNeed(n) > budget) {
+            if (n <= std::numeric_limits<uint32_t>::max())
+                runInPlace<uint32_t>(tr, data, n, top, lambda, leafThreshold, budget, workspace, probe, sink);
+            else
+                runInPlace<uint64_t>(tr, data, n, top, lambda, leafThreshold, budget, workspace, probe, sink);
             return;
         }
     }

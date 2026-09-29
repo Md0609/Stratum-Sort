@@ -72,6 +72,7 @@ struct OrderedKeyImpl<K, typename std::enable_if<std::is_integral<K>::value &&
     static_assert(sizeof(K) <= sizeof(uint64_t),
                   "keys wider than 64 bits are not supported (hypothesis H1)");
     static constexpr bool supported = true;
+    static constexpr unsigned bits = 8 * sizeof(K); // the key's span is below 2^bits
     static uint64_t key(K value) { return keyImpl(value, std::is_signed<K>{}); }
     static bool less(K a, K b) { return a < b; }
     // The inverse of key(): exact for every key key() can produce.
@@ -95,6 +96,7 @@ template <typename K>
 struct OrderedKeyImpl<K, typename std::enable_if<std::is_enum<K>::value>::type> {
     using Underlying = typename std::underlying_type<K>::type;
     static constexpr bool supported = OrderedKeyImpl<Underlying>::supported;
+    static constexpr unsigned bits = OrderedKeyImpl<Underlying>::bits;
     static uint64_t key(K value) {
         return OrderedKeyImpl<Underlying>::key(static_cast<Underlying>(value));
     }
@@ -131,6 +133,7 @@ struct FloatKey {
     static_assert(std::numeric_limits<F>::is_iec559, "float keys need IEEE-754 arithmetic");
     static_assert(sizeof(F) == sizeof(Bits), "unexpected floating-point width");
     static constexpr bool supported = true;
+    static constexpr unsigned bits = 8 * sizeof(Bits);
     static constexpr unsigned kTop = 8 * sizeof(Bits) - 1;
     static constexpr Bits kSign = Bits{1} << kTop;
 
@@ -187,6 +190,8 @@ struct SelfKeyTraits {
     // what lets the engine finish a node whose every bucket holds a single
     // key by counting instead of moving (Engine.hpp, countingFill()).
     static constexpr bool kElementIsKey = true;
+    // Width of the key, w in research/ALGORITHM.md: every span is below 2^w.
+    static constexpr unsigned kKeyBits = OrderedKey<T>::bits;
     static T fromKey(uint64_t k) { return OrderedKey<T>::fromKey(k); }
 };
 
@@ -214,6 +219,7 @@ struct ExtractedKeyTraits {
 
     // Equal keys do not make equal records: the payload differs.
     static constexpr bool kElementIsKey = false;
+    static constexpr unsigned kKeyBits = OrderedKey<KeyType>::bits;
 
     uint64_t key(const E& e) const { return OrderedKey<KeyType>::key(fn(e)); }
     bool less(const E& a, const E& b) const { return OrderedKey<KeyType>::less(fn(a), fn(b)); }

@@ -65,7 +65,8 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
                 include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp \
                 include/stratum/KeyTraits.hpp include/stratum/Workspace.hpp \
                 include/stratum/Sort.hpp \
-                include/stratum/detail/Engine.hpp include/stratum/detail/FastDivision.hpp
+                include/stratum/detail/Engine.hpp include/stratum/detail/FastDivision.hpp \
+                include/stratum/detail/InPlace.hpp
 
 .PHONY: all test contract sanitizers tsan fuzz timings bench examples \
         research research-perf studies package package-verify clean help
@@ -287,6 +288,7 @@ PACKAGE_FILES := \
 	include/stratum/Sort.hpp \
 	include/stratum/detail/Engine.hpp \
 	include/stratum/detail/FastDivision.hpp \
+	include/stratum/detail/InPlace.hpp \
 	tests/main.cpp \
 	tests/api_contract.cpp \
 	tests/edge_sanitizers.cpp \

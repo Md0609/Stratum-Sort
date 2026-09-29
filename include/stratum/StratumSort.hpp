@@ -129,25 +129,29 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //   measurement tool, not a product; tests/api_contract.cpp pins the
 //   difference.
 //
-// MEMORY: a sort of n elements needs, in its workspace,
+// MEMORY: bounded by the workspace's budget (Workspace.hpp). Two strategies,
+//   the same partition:
 //
+//   PARTNER BUFFER, one pass per refinement level:
 //        n * sizeof(T)                        one partner buffer
 //     +  (2 * ceil(n / lambda) + 2) counters  4 bytes each when n < 2^32
-//
-//   and nothing else: no per-element index, no refinement tree, and no
-//   term that depends on the shape of the input. Measured peak for an
-//   8-byte key: 1.06x the input at the automatic lambda = 16 (8.5 bytes
-//   per element; 0.10.0: 3.28x at its default 32), 1.03x at lambda = 32,
-//   and 2.0x at lambda = t = 1 (0.10.0: 16.56x). Less on many inputs:
+//   8.5 bytes per element for an 8-byte key at lambda = 16 (1.06x the
+//   input; 0.10.0: 3.28x), 2.0x at lambda = t = 1. Less on many inputs:
 //     - already ascending or non-increasing: nothing at all;
 //     - a sorted prefix of at least half the input: n - k elements;
-//     - a key span smaller than n / lambda - few distinct values, 8-bit
-//       keys from n = 4096, 16-bit keys from n ~ 10^6 - so that the
-//       top-level grid has width 1 (research/ALGORITHM.md 13.6): only the
-//       span + 1 counters, a few hundred bytes for uint8_t (0.10.0: 10x
-//       the input);
+//     - a key span smaller than n / lambda (few distinct values, 8-bit
+//       keys from n = 4096): only the span + 1 counters;
 //     - at most lambda elements: nothing.
-//   research/perf/MemoryProfile.cpp measures all of it at the allocator.
+//
+//   IN PLACE, by passes of at most 2^INPLACE_RADIX_BITS groups
+//   (detail/InPlace.hpp): a counter arena set by the key width - 44 KB for
+//   64-bit keys, whatever n is - plus block buffers. Taken when the budget
+//   cannot hold the partner buffer.
+//
+//   The default budget is unlimited (the partner buffer); a Workspace
+//   built with a number of bytes, passed to sort(data, workspace), bounds
+//   it.
+//   research/perf/MemoryAudit.cpp measures all of it at the allocator.
 //
 //   The workspace an instance owns is allocated on first use and reused
 //   across later calls; it grows, never shrinks by itself, and is released

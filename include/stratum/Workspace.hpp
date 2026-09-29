@@ -19,12 +19,13 @@
 // No lock is involved, because nothing is shared: sort(data, workspace) is
 // const and touches no member of the sorter.
 //
-// WHAT IT HOLDS, and why this is the whole auxiliary memory of a sort:
-//   - one buffer of n elements, the partner of the caller's array in the
-//     ping-pong between refinement levels;
-//   - one array of 2 * ceil(n / lambda) + 2 counters, 32-bit whenever n
-//     fits in 32 bits, for the per-bucket histograms of every level.
-// It grows on demand and never shrinks by itself; release() gives the
+// WHAT IT HOLDS - the whole auxiliary memory of a sort - is at most one
+// buffer of elements and one array of counters (32-bit whenever n fits in
+// 32 bits), sized by the strategy the budget below selects: n elements and
+// 2 * ceil(n / lambda) + 2 counters for the partner-buffer strategy, or a
+// counter arena set by the key width, block buffers and a partner buffer
+// of what is left for the in-place one. It grows on demand and never
+// shrinks by itself (unless a smaller budget is set); release() gives the
 // memory back. Reusing one workspace across calls is what avoids paying
 // for the allocation - and, for a large n, the page faults of touching it
 // for the first time - on every call.
@@ -62,7 +63,30 @@ class Workspace {
                   "the scratch buffer is an array of T, so T must be default constructible");
 
 public:
+    // MEMORY BUDGET. Everything a sort holds besides the caller's array
+    // lives in its workspace, and the workspace can bound it:
+    //
+    //   kUnlimited (the default)  always the partner buffer, n elements;
+    //   any number of bytes       the sort changes strategy to stay within
+    //                             it: in place by blocks, then by the
+    //                             American flag permutation as the budget
+    //                             shrinks (research/ALGORITHM.md section 14).
+    //
+    // The floor is the in-place engine's counters, 44 KB for 64-bit keys,
+    // set by the key width and never by n: a smaller budget is raised to it. The
+    // one sort that cannot honour a budget is the stable sort of records
+    // (stable_sort_by_key), whose linear-time strategy needs n records of
+    // scratch: it takes them whatever the budget.
+    static constexpr std::size_t kUnlimited = static_cast<std::size_t>(-1);
+
     Workspace() = default;
+    explicit Workspace(std::size_t budgetBytes) : budget_(budgetBytes) {}
+    std::size_t budget() const { return budget_; }
+    void setBudget(std::size_t budgetBytes) {
+        budget_ = budgetBytes;
+        if (budget_ < kUnlimited && bytes() > budget_) release();
+    }
+
     Workspace(Workspace&&) noexcept = default;
     Workspace& operator=(Workspace&&) noexcept = default;
     Workspace(const Workspace&) = delete;
@@ -129,6 +153,7 @@ private:
         return counts64_.get();
     }
 
+    std::size_t budget_ = kUnlimited;
     std::unique_ptr<T[]> elements_;
     std::size_t elementCapacity_ = 0;
     std::unique_ptr<uint32_t[]> counts32_;
@@ -152,6 +177,15 @@ struct WorkspaceAccess {
     template <typename T, typename Count>
     static Count* counts(Workspace<T>& w, std::size_t k) {
         return w.reserveCounts(k, static_cast<Count*>(nullptr));
+    }
+    template <typename T>
+    static std::size_t budget(const Workspace<T>& w) {
+        return w.budget_;
+    }
+    template <typename T>
+    static void releaseElements(Workspace<T>& w) {
+        w.elements_.reset();
+        w.elementCapacity_ = 0;
     }
 };
 } // namespace detail
