@@ -1496,15 +1496,19 @@ void testMemoryBudgets() {
               "budget 0, n = 1000: the partner buffer (8.5 KB) is used, not the 44 KB arena");
     }
 
-    // The automatic policy: the partner buffer up to AUTOMATIC_MEMORY_LIMIT,
-    // bounded above it; and the class's own workspace follows its budget.
+    // The default is unlimited; the automatic policy (opt-in) keeps the
+    // partner buffer up to AUTOMATIC_MEMORY_LIMIT and bounds it above; the
+    // class's own workspace follows its budget.
     {
         const std::size_t limit = stratum::AUTOMATIC_MEMORY_LIMIT;
         std::vector<int64_t> small(1000000), big(3000000);
         for (auto& x : small) x = static_cast<int64_t>(rng());
         for (auto& x : big) x = static_cast<int64_t>(rng());
         StratumSort<int64_t> s;
-        check(s.memoryBudget() == stratum::Workspace<int64_t>::kAutomatic, "a sorter's budget is automatic by default");
+        check(s.memoryBudget() == stratum::Workspace<int64_t>::kUnlimited &&
+                  stratum::Workspace<int64_t>().budget() == stratum::Workspace<int64_t>::kUnlimited,
+              "the default budget is unlimited, for a sorter and for a workspace");
+        s.setMemoryBudget(stratum::Workspace<int64_t>::kAutomatic);
         s.sort(small);
         const std::size_t smallBytes = s.scratchBytes();
         s.releaseScratch();
@@ -1514,11 +1518,10 @@ void testMemoryBudgets() {
               "automatic: partner buffer at 10^6 (" + std::to_string(smallBytes) + " B), at most 16 MiB at 3 * 10^6 (" +
                   std::to_string(s.scratchBytes()) + " B)");
         StratumSort<int64_t> u;
-        u.setMemoryBudget(stratum::Workspace<int64_t>::kUnlimited);
         std::shuffle(big.begin(), big.end(), rng);
         u.sort(big);
         check(std::is_sorted(big.begin(), big.end()) && u.scratchBytes() >= big.size() * sizeof(int64_t),
-              "kUnlimited keeps the partner buffer at any size");
+              "by default (kUnlimited) the partner buffer is used at any size");
         u.setMemoryBudget(500000);
         check(u.scratchBytes() == 0, "lowering the budget below what the workspace holds releases it");
         std::shuffle(big.begin(), big.end(), rng);

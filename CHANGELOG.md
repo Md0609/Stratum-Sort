@@ -14,24 +14,26 @@ bound the new machinery touches. Every 0.10.0 call site compiles and
 sorts as before.
 
 ### Pre-release: bounded memory (research, not yet reviewed for release)
-- **Auxiliary memory bounded whatever `n` is.** A new in-place engine
+- **Auxiliary memory boundable whatever `n` is.** A new in-place engine
   (`detail/InPlace.hpp`) produces the same partition in passes of at most
   1 024 groups, permuting by blocks (or American flag), with a counter
   arena set by the key width alone — 43 856 bytes for 64-bit keys — and
   `Θ(n)` worst-case time (`research/ALGORITHM.md` §14; §13.3's claim that
   the buffer could not go is corrected there).
 - **`Workspace` memory budget.** `Workspace(budgetBytes)`, `budget()`,
-  `setBudget()`, `Workspace::kAutomatic` (the default: the partner buffer
-  up to 16 MiB, at most 16 MiB above), `Workspace::kUnlimited` (the
-  behaviour below), and `StratumSort<T>::memoryBudget()` /
-  `setMemoryBudget()`. Any budget down to the arena; what is left after
-  the arena and the block buffers finishes small nodes with the partner
-  engine and merges a sorted prefix in up to four chunks.
-- **Default behaviour change above 16 MiB of scratch**: sorts no longer
-  allocate `n` elements there. Measured at 10⁷ `int64_t`: 16 MiB instead
-  of 82.5 MB, and −31% time on random keys (−58% at 10⁸: the one-pass
-  scatter over the whole array was the slower schedule); 72-byte records
-  −46% to −84%.
+  `setBudget()`, `Workspace::kUnlimited` (the default: the partner
+  buffer, the behaviour below), `Workspace::kAutomatic` (opt-in: the
+  partner buffer up to 16 MiB, at most 16 MiB above), and
+  `StratumSort<T>::memoryBudget()` / `setMemoryBudget()`. Any budget down
+  to the arena; what is left after the arena and the block buffers
+  finishes small nodes with the partner engine, scatters small sub-ranges
+  through it in one pass, and merges a sorted prefix in up to four chunks.
+- **The default is unchanged** (the partner buffer). A bounded default
+  was tried and measured on the study's Intel Xeon and on the CI runners
+  (AMD EPYC 7763 and 9V74, Apple M1 and M2 Pro; GCC, AppleClang, MSVC): at
+  10⁷ `int64_t` it was −31% on random keys on the Xeon but +28…+74% on
+  AMD EPYC with GCC (nearly sorted +82…+170%) and up to +261% on Apple M1
+  (organ pipe); research/history/V11_memoria.md §13.
 - **`stable_sort_by_key` and `sorted_indices` under an explicit budget
   smaller than their `n`-element buffer throw `std::length_error`**
   before touching the input. Without an explicit budget they behave as

@@ -266,7 +266,9 @@ constexpr std::size_t INTROSORT_DEPTH_FACTOR = 2;
 // sorted, low-entropy, clustered and worst-case 64-bit keys at 10^6 and
 // 10^7 (research/history/V11_memoria.md): 10 is within 5% of 11 (the
 // fastest at 10^6, tied at 10^7) at half its block memory; 8 and 9 are
-// 13-18% slower at 10^7.
+// 13-18% slower at 10^7. The CI runners agree (AMD EPYC 7763 and 9V74,
+// Apple M1; research/data/memoria/ci/tune_*.md): no L of 8, 9 or 10 with
+// blocks of 128 to 1024 bytes beats 10 with 512.
 constexpr unsigned INPLACE_RADIX_BITS = 10;
 
 // A sub-range of at most this many elements spread over several buckets
@@ -279,8 +281,9 @@ static_assert(INPLACE_RADIX_BITS >= 1 && INPLACE_RADIX_BITS <= 16, "radix bits o
 // ((2^INPLACE_RADIX_BITS + 3) blocks in all, 526 KB) is the pass's whole
 // element scratch. Measured for 256..2048 (V11_memoria.md): 512 is within
 // 4% of 1024 (the fastest at 10^6; 512 is at 10^7) at half its memory;
-// 256 and 2048 are 14% slower at 10^7. A budget too small for the blocks halves them until
-// they fit.
+// 256 and 2048 are 14% slower at 10^7; smaller blocks did not help on the
+// CI's EPYC either (L2 512 KB, below the 526 KB of blocks). A budget too
+// small for the blocks halves them until they fit.
 constexpr std::size_t INPLACE_BLOCK_BYTES = 512;
 
 // A range shorter than this many blocks is passed with the American flag
@@ -295,28 +298,29 @@ constexpr std::size_t INPLACE_BLOCK_MIN_BLOCKS = 16;
 constexpr std::size_t INPLACE_MERGE_MAX_CHUNKS = 4;
 
 // ------------------------------------------------------------------
-// AUTOMATIC MEMORY POLICY
+// AUTOMATIC MEMORY POLICY (opt-in: Workspace<T>::kAutomatic)
 // ------------------------------------------------------------------
-// A workspace without an explicit budget (every free function called
-// without one, and StratumSort<T>) uses the partner buffer while it needs
-// at most AUTOMATIC_MEMORY_LIMIT bytes, and above that sorts within that
-// many bytes: in place at the levels too large for it, with a partner
-// buffer below. The auxiliary memory of an automatic sort is therefore
-// bounded by a constant, whatever n is.
+// A workspace with the kAutomatic budget uses the partner buffer while it
+// needs at most AUTOMATIC_MEMORY_LIMIT bytes, and above that sorts within
+// that many bytes: in place at the levels too large for it, with a partner
+// buffer below. Its auxiliary memory is bounded by a constant, whatever n
+// is.
 //
-// Why 16 MiB (research/history/V11_memoria.md). Below it the partner
-// buffer is the faster strategy on the shapes that need it most - nearly
-// sorted, few outliers, a quicksort killer: the bounded one is 13-45%
-// slower on them at 10^6 64-bit keys - and costs at most 16 MiB. Above it
-// the bounded strategy is as fast or faster almost everywhere: random
-// 64-bit keys -14% at 2 * 10^6, -23% at 4 * 10^6, -31% at 10^7, -58% at
-// 10^8; records of 72 bytes -46% to -84% at 10^7 (the partner buffer's
-// time varies 1.8-5.7 s between runs there; the cause is not established
-// - huge pages made it slower). What 16 MiB buys over a smaller
-// budget is the sorted-prefix merge, which needs the buffer (organ pipe
-// at 10^7: -12% with 16 MiB, +186% with 600 KB). The bounded strategy
-// still loses on few-outlier inputs (+5% to +23%) and on floats with few
-// distinct values (+17% to +22% at 10^7).
+// It is NOT the default (kUnlimited is), and the reason is measured
+// (research/history/V11_memoria.md section 13): at 10^7 64-bit keys the
+// bounded strategy is faster than the partner buffer on the study's Intel
+// Xeon (random -31%) and about even under MSVC (random -18% to +3%), but
+// slower on AMD EPYC with GCC (random +28% to +74%, nearly sorted +82% to
+// +170%) and on Apple M1/M2 (nearly sorted +30% to +44%, organ pipe up to
+// +261%, few outliers up to +104%). Which schedule wins flips between
+// machines: on random keys the partner buffer is 0.27x-0.29x std::sort on
+// EPYC with GCC and the bounded one 0.37x-0.46x; on the Xeon, 0.47x and
+// 0.33x. A default that costs 30-170% on common machines is not a
+// controlled penalty; an explicit budget is the caller's trade.
+//
+// Why 16 MiB for the policy: below it the partner buffer is the faster
+// strategy everywhere measured, and what 16 MiB buys over a smaller budget
+// is the sorted-prefix merge, which needs the buffer.
 constexpr std::size_t AUTOMATIC_MEMORY_LIMIT = std::size_t{16} << 20;
 
 // ------------------------------------------------------------------

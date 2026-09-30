@@ -29,17 +29,18 @@ gives you everything:
 
 | you have | call | stable | extra memory (default) |
 |---|---|---|---|
-| integers, enums, `char` types | `stratum::sort(v)` | equal keys are identical | ≤ min(≈ `n·sizeof(T)`, 16 MiB) |
-| `float` / `double` | `stratum::sort(v)` — IEEE-754 `totalOrder` | idem | ≤ min(≈ `n·sizeof(T)`, 16 MiB) |
-| records with a numeric key, order of equal keys irrelevant | `stratum::sort_by_key(v, key)` | no | ≤ min(≈ `n·sizeof(record)`, 16 MiB) |
+| integers, enums, `char` types | `stratum::sort(v)` | equal keys are identical | ≈ `n·sizeof(T)` — boundable |
+| `float` / `double` | `stratum::sort(v)` — IEEE-754 `totalOrder` | idem | ≈ `n·sizeof(T)` — boundable |
+| records with a numeric key, order of equal keys irrelevant | `stratum::sort_by_key(v, key)` | no | ≈ `n·sizeof(record)` — boundable |
 | records with a numeric key, order of equal keys must be kept | `stratum::stable_sort_by_key(v, key)` | **yes** | ≈ `n·sizeof(record)` |
 | records that are not trivially copyable, or very large | `stratum::sorted_indices(first, last, key)` | **yes** | `n` (key, index) pairs |
-| 0.10.0 code | `stratum::StratumSort<T>().sort(v)` — unchanged | — | ≤ min(≈ `n·sizeof(T)`, 16 MiB) |
+| 0.10.0 code | `stratum::StratumSort<T>().sort(v)` — unchanged | — | ≈ `n·sizeof(T)` — boundable |
 
 "≈" means `n·sizeof(T)` plus `(2⌈n/λ⌉ + 2)` counters of 4 bytes — 1.06×
-the input for an 8-byte key — and **less** on several common inputs. The
-16 MiB cap is the default memory policy; a `Workspace` can set any other
-budget, down to a floor of a few tens of KB (see "Memory" below).
+the input for an 8-byte key — and **less** on several common inputs.
+"Boundable" means a `Workspace` budget can cap it at any size down to a
+floor of a few tens of KB, whatever `n` is, still in `Θ(n)` time (see
+"Memory" below); the default budget does not cap it.
 
 ## The free functions
 
@@ -193,8 +194,8 @@ sorter.setMemoryBudget(0);                  // the floor: ~44 KB for 64-bit keys
 
 | budget | what a sort holds |
 |---|---|
-| `Workspace<E>::kAutomatic` (the default) | the partner buffer while it needs at most 16 MiB (`AUTOMATIC_MEMORY_LIMIT`); at most 16 MiB above that |
-| `Workspace<E>::kUnlimited` | always the partner buffer: `n·sizeof(E)` plus the counters |
+| `Workspace<E>::kUnlimited` (the default) | always the partner buffer: `n·sizeof(E)` plus the counters |
+| `Workspace<E>::kAutomatic` | the partner buffer while it needs at most 16 MiB (`AUTOMATIC_MEMORY_LIMIT`); at most 16 MiB above that |
 | a number of bytes `M` | at most `max(M, floor)`; the floor is the in-place engine's counters, 43 856 bytes for 64-bit keys, 30 736 for 32-bit, 20 896 for 8-bit |
 
 Below the partner buffer the sort switches to an in-place distribution
@@ -204,8 +205,8 @@ so it serves `sort`, `sort_by_key`, `StratumSort<T>`, and `stable_sort` of
 a type that is its own key. **`stable_sort_by_key` and `sorted_indices`
 need their `n`-record (or `n`-pair) buffer**: given an explicit budget
 below it they throw `std::length_error` before touching the input, rather
-than fall back to a slower algorithm; the automatic policy does not bound
-them.
+than fall back to a slower algorithm; `kUnlimited` and `kAutomatic` do
+not bound them.
 
 **Threads.** Nothing in the library is shared or global. The rules:
 
@@ -236,24 +237,40 @@ Everything a sort holds besides your array lives in its workspace, and
 nothing in it depends on the input's shape except where it is less.
 Peak auxiliary bytes measured at the allocator, `int64_t`, random keys:
 
-| `n` | 0.10.0 | unlimited (partner buffer) | **automatic (default)** | 600 KiB budget | budget 0 (floor) | `std::sort` |
+| `n` | 0.10.0 | **unlimited (default)** | `kAutomatic` | 600 KiB budget | budget 0 (floor) | `std::sort` |
 |---|---|---|---|---|---|---|
-| 10⁵ | 2.6 MB | 850 KB | 850 KB | 600 KiB | 44 KB | 0 |
-| 10⁶ | 26 MB | 8.5 MB | 8.5 MB | 600 KiB | 44 KB | 0 |
-| 10⁷ | 263 MB | 82.5 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
-| 10⁸ | — | 825 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
+| 10⁵ | 2.6 MB | **850 KB** | 850 KB | 600 KiB | 44 KB | 0 |
+| 10⁶ | 26 MB | **8.5 MB** | 8.5 MB | 600 KiB | 44 KB | 0 |
+| 10⁷ | 263 MB | **82.5 MB** | 16 MiB | 600 KiB | 44 KB | 0 |
+| 10⁸ | — | **825 MB** | 16 MiB | 600 KiB | 44 KB | 0 |
 
 `std::sort` uses no heap and `O(log n)` stack (0.5–1 KB measured); the
-in-place engine's stack is `O(w)` frames, 1–7 KB measured. With the
-automatic policy the 16 MiB are reserved but mostly untouched on random
-input (resident: ~1 MB at 10⁷); the sorted-prefix merge and deep
-refinements are what use them.
+in-place engine's stack is `O(w)` frames, 1–7 KB measured.
 
-What each budget costs in time, `n = 10⁷` `int64_t`, relative to the
-unlimited partner buffer (one Xeon, GCC 13; research/history/V11_memoria.md
-has every shape, type and size):
+What a bound costs in time **depends on the machine**. `n = 10⁷`
+`int64_t`, the 16 MiB policy relative to the default partner buffer, same
+code (research/history/V11_memoria.md §13; raw reports in
+`research/data/memoria/ci/`):
 
-| input | automatic (16 MiB) | 600 KiB | floor (44 KB) | floor vs `std::sort` |
+| machine | compiler | random | nearly sorted | organ pipe | adversarial | 72-byte records |
+|---|---|---|---|---|---|---|
+| AMD EPYC 7763 | GCC 13 | +30…+74% | +94…+170% | +26…+29% | +28…+68% | +16…+19% |
+| AMD EPYC 9V74 | GCC 13 | +28% | +82% | +25% | +44% | +11% |
+| Apple M1 / M2 Pro (VMs) | AppleClang 21 | −26…+5% | +30…+44% | +149…+261% | −5…+14% | −50…+38% |
+| AMD EPYC 7763 / 9V74 | MSVC 19.51 | −18…+3% | +10…+25% | +1…+10% | −16…+2% | +10…+11% |
+| Intel Xeon (the study's machine) | GCC 13 | −31% | −26% | −3% | −43% | −46% |
+
+Both schedules move against `std::sort` from machine to machine, and
+which one wins flips: on random keys at 10⁷ the partner buffer is
+0.27–0.29× `std::sort` on the EPYC runners with GCC and the 16 MiB policy
+0.37–0.46×; on the Xeon it is the other way round, 0.47× against 0.33×.
+Most machines measured favour the partner buffer, hence the default.
+Bound the memory when the memory matters — the sort stays `Θ(n)`, and
+with 16 MiB 0.26–0.46× `std::sort` on random keys on every machine above.
+
+On one machine (the Xeon, GCC 13), what each budget costs at 10⁷:
+
+| input | `kAutomatic` (16 MiB) | 600 KiB | floor (44 KB) | floor vs `std::sort` |
 |---|---|---|---|---|
 | random | −31% | −36% | +23% | 0.58× |
 | nearly sorted | −26% | −24% | +8% | 0.80× |
@@ -262,12 +279,9 @@ has every shape, type and size):
 | adversarial | −43% | −45% | +10% | 0.64× |
 | low entropy | −15% | −4% | +42% | 1.04× |
 
-On large arrays the partner buffer's one-pass scatter over the whole
-array is slower than passes of 1 024 groups — from about 4·10⁶ 8-byte keys
-on most inputs, −58% at 10⁸, and 2–4× for 72- to 264-byte records at
-10⁷ — so bounding the memory is also faster there. At the floor every pass is an American-flag
-permutation (no block buffers): slower than the partner buffer, never more
-than 1.04× `std::sort` at 10⁷.
+At the floor every pass is an American-flag permutation (no block
+buffers): slower than the partner buffer, never more than 1.04×
+`std::sort` at 10⁷ there.
 
 Paths that need less than the table, whatever the budget:
 
@@ -380,10 +394,11 @@ platform (1.1–2.9×). The README lists every loss with its cause.
   (`std::bad_alloc`), the input is untouched. This does *not* hold with
   `STRATUM_ENABLE_METRICS` (the instrumentation allocates while
   recording), nor if a key function throws.
-- **Bounded memory.** At most 16 MiB of scratch by default, whatever `n`
-  is, and at most `max(budget, floor)` bytes under an explicit
-  `Workspace` budget — except the stable sorts of records, which need
-  their `n`-record buffer and refuse a smaller explicit budget
+- **Bounded memory, on request.** By default about `n·sizeof(T)` of
+  scratch; under an explicit `Workspace` budget at most
+  `max(budget, floor)` bytes whatever `n` is, and at most 16 MiB with
+  `kAutomatic` — except the stable sorts of records, which need their
+  `n`-record buffer and refuse a smaller explicit budget
   (`std::length_error`, input untouched). See "Memory".
 - **No global state.** See "Workspaces, reuse and threads".
 

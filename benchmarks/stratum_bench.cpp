@@ -385,7 +385,7 @@ void runRecordTable(Report& rep, std::size_t n, int reps) {
 
 // ---- Memory policies ---------------------------------------------------------
 // The same inputs under each workspace budget (Workspace.hpp): unlimited
-// (the partner buffer, n elements), automatic (the default: the partner
+// (the default: the partner buffer, n elements), automatic (the partner
 // buffer up to 16 MiB, at most 16 MiB above), 600 KB (the in-place engine
 // with its block buffers) and 0 (raised to the floor, the counter arena:
 // every pass an American flag permutation). Time relative to the

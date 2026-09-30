@@ -140,7 +140,7 @@ repository, not in this package.
 | | |
 |---|---|
 | **Time, best / average / worst** | `Θ(n)` under H1–H4; one read-only pass on already-sorted input |
-| **Auxiliary space** | bounded whatever `n` is: by default `min(n·sizeof(E) + (2⌈n/λ⌉ + 2)·4, 16 MiB)` — 1.06× the input for an 8-byte key up to 16 MiB (0.10.0: 3.28×); with a `Workspace` budget `M`, at most `max(M, 44 KB)`. Nothing on sorted or reversed input. The stable sorts of records need `n` records |
+| **Auxiliary space** | by default `n·sizeof(E) + (2⌈n/λ⌉ + 2)·4` — 1.06× the input for an 8-byte key (0.10.0: 3.28×); bounded on request whatever `n` is: with a `Workspace` budget `M`, at most `max(M, 44 KB)`, still `Θ(n)` time. Nothing on sorted or reversed input. The stable sorts of records need `n` records |
 | **Recursion depth** | at most 7 refinement levels |
 | **Deterministic** | yes — no randomness anywhere, and parameters depend on `n` only |
 | **Stable** | `stable_sort`, `stable_sort_by_key`, `sorted_indices`: yes. `sort`, `sort_by_key`, `StratumSort<T>`: no |
@@ -155,11 +155,13 @@ repository, not in this package.
 - **Stable sorts of records keep `Θ(n)` memory**: `stable_sort_by_key`
   needs `n` records of scratch, `sorted_indices` `n` (key, index) pairs,
   and an explicit budget below that throws `std::length_error`. Every
-  other sort is bounded (above).
-- **Bounded memory costs time on some inputs**: a small budget cannot
+  other sort can be bounded (above).
+- **Bounded memory is opt-in, and its cost depends on the machine**: at
+  10⁷ 64-bit keys a 16 MiB budget is −31% on one Intel Xeon but +28…+74%
+  on AMD EPYC with GCC on random keys (+82…+170% nearly sorted), so the
+  default is the unbounded partner buffer. A small budget also cannot
   hold the buffer of the sorted-prefix shortcut, and the 44 KB floor is
-  1.1–2× slower than the default (still at most 1.04× `std::sort` at
-  10⁷ 64-bit keys).
+  1.1–2× slower than the partner buffer.
 - **Records** must be trivially copyable for `sort_by_key`; for other
   types use `sorted_indices`.
 - **It loses to `std::sort` on some inputs**: ones built against its own

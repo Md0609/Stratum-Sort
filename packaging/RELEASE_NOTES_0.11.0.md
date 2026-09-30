@@ -1,11 +1,12 @@
 # Stratum Sort 0.11.0
 
 > **Draft, not published.** Written before the pre-release memory study
-> (research/history/V11_memoria.md): auxiliary memory is now bounded —
-> 16 MiB by default whatever `n` is, any `Workspace` budget down to 44 KB —
-> except for the stable sorts of records. The memory sections below still
-> describe the partner-buffer engine alone (`Workspace::kUnlimited`) and
-> must be rewritten before a release.
+> (research/history/V11_memoria.md): auxiliary memory can now be bounded
+> on request — any `Workspace` budget down to 44 KB whatever `n` is, still
+> `Θ(n)` time — except for the stable sorts of records. The default stays
+> the partner buffer (`Workspace::kUnlimited`, 1.06× the input), which is
+> what the memory sections below describe; the budgets must be added to
+> them before a release.
 
 0.10.0 closed with a list of seven limitations. This release takes them
 one at a time, measures each on three platforms, and removes or shrinks

@@ -8,10 +8,10 @@
 // first touch included, as a caller that sorts once pays them); the table
 // reports medians.
 //
-//   unl     Workspace::kUnlimited: the partner buffer at every size (the
-//           behaviour before the memory study)
-//   cur     the default, Workspace::kAutomatic: partner up to 16 MiB,
-//           bounded to 16 MiB above
+//   unl     Workspace::kUnlimited, the default: the partner buffer at
+//           every size (also the behaviour before the memory study)
+//   cur     Workspace::kAutomatic (the default during the study, opt-in
+//           since): partner up to 16 MiB, bounded to 16 MiB above
 //   b<N>    an explicit budget of N bytes (k/m suffixes): e.g. b1m, b600k,
 //           b0 (the floor: the counter arena alone, every pass a flag pass)
 //   std     std::sort (std::stable_sort for the stable rows)

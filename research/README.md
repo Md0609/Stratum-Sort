@@ -58,8 +58,9 @@ Highlights, if you only read a few:
 
 - `V11_memoria.md` — pre-release memory study: whether `Θ(n)` auxiliary
   memory is necessary (it is not, except for stable sorts of records),
-  the audit, the theory, two candidates, the selection and every
-  measurement
+  the audit, the theory, the candidates, every measurement, and why the
+  default stays unbounded (a bounded default was faster on one Xeon and
+  slower on the CI's AMD EPYC and Apple runners)
 - `V11_informe.md` — the 0.11.0 audit and report: the diagnosis of every
   0.10.0 limitation, its classification, each change with its before and
   after, what was rejected, and what remains
@@ -108,9 +109,12 @@ one process:
 | `perf/MemoryAudit.cpp` | pre-release memory study: auxiliary bytes four ways (heap, usable, RSS, stack), one process per row, per version, memory policy, type and shape |
 | `perf/MemoryModes.cpp` | pre-release memory study: time of each memory policy (unlimited, automatic, explicit budgets) on the same inputs |
 | `perf/StableByIndex.cpp` | pre-release memory study: stable sort of records through (key, index) pairs (candidate C, not adopted) |
+| `perf/InPlaceTuning.cpp` | pre-release memory study: the in-place engine's constants (radix bits, block size) against the partner buffer; built per configuration by the `tune` job of `bench.yml` |
 
 `baselines/v0_11_pre/` is the 0.11 header before the memory study, frozen
-the same way; `data/memoria/` holds the raw CSVs of that study.
+the same way; `data/memoria/` holds the raw CSVs of that study and
+`data/memoria/ci/` the CI reports it cites (benchmark and tuning runs,
+named by commit, platform, CPU and compiler).
 
 ```bash
 make research-perf

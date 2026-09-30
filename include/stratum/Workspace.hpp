@@ -67,11 +67,11 @@ public:
     // MEMORY BUDGET. Everything a sort holds besides the caller's array
     // lives in its workspace, and the workspace can bound it:
     //
-    //   kAutomatic (the default)  the partner buffer while it needs at most
+    //   kUnlimited (the default)  always the partner buffer, n elements -
+    //                             the fastest strategy on most machines;
+    //   kAutomatic                the partner buffer while it needs at most
     //                             AUTOMATIC_MEMORY_LIMIT (16 MiB), and that
     //                             many bytes at most above it (Config.hpp);
-    //   kUnlimited                always the partner buffer, n elements -
-    //                             the behaviour before the memory study;
     //   any number of bytes       the sort changes strategy to stay within
     //                             it: in place by blocks, then by the
     //                             American flag permutation as the budget
@@ -82,7 +82,7 @@ public:
     // one sort that cannot honour a budget is the stable sort of records
     // (stable_sort_by_key), whose linear-time strategy needs n records of
     // scratch: given an explicit budget below that, it throws
-    // std::length_error before touching the input. With kAutomatic it takes
+    // std::length_error before touching the input. Under kAutomatic it takes
     // what it needs.
     static constexpr std::size_t kUnlimited = static_cast<std::size_t>(-1);
     static constexpr std::size_t kAutomatic = static_cast<std::size_t>(-2);
@@ -161,7 +161,7 @@ private:
         return counts64_.get();
     }
 
-    std::size_t budget_ = kAutomatic;
+    std::size_t budget_ = kUnlimited;
     std::unique_ptr<T[]> elements_;
     std::size_t elementCapacity_ = 0;
     std::unique_ptr<uint32_t[]> counts32_;

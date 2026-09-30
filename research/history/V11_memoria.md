@@ -10,18 +10,35 @@ Pregunta de partida: Stratum Sort necesitaba un buffer de `n` elementos más
 **Respuesta corta: no.** La partición de Stratum Sort — la que prueba el
 `Θ(n)` — se puede producir con memoria auxiliar fijada por el ancho de la
 clave e independiente de `n` (43 856 B para claves de 64 bits), en tiempo
-`Θ(n)` peor caso, y en entradas grandes **más rápido** que con el buffer.
-Lo único que sigue siendo Θ(n) es el orden **estable de registros**.
+`Θ(n)` peor caso. Lo único que sigue siendo Θ(n) es el orden **estable de
+registros**.
+
+**Lo que no se sostuvo:** que acotar la memoria sea además más rápido. Lo
+es en el Xeon donde se hizo el estudio (−31% a 10⁷, −58% a 10⁸), y por
+eso el commit cc038e7 hizo de 16 MiB el defecto; en los runners de CI
+(AMD EPYC con GCC, Apple M1/M2) el mismo código es **más lento** que el
+buffer compañero (+28…+74% aleatorio, +82…+170% casi ordenado a 10⁷), y
+en Windows/MSVC queda a la par (§13). El defecto final es por tanto el
+buffer compañero (`kUnlimited`); la memoria acotada es una opción
+explícita (`Workspace(bytes)`, `kAutomatic`) con su coste medido.
 
 Código: `include/stratum/detail/InPlace.hpp` (motor) y el driver de
 `detail/Engine.hpp`. Teoría y pruebas: `research/ALGORITHM.md` §14.
 Herramientas: `research/perf/MemoryAudit.cpp` (bytes) y
 `research/perf/MemoryModes.cpp` (tiempo). Datos crudos:
-`research/data/memoria/`. Commits: auditoría (3654251), candidato A
-(7967b88), candidato B (3af7c01), selección final (este commit).
+`research/data/memoria/` (y `ci/` para los informes de CI). Commits:
+auditoría (3654251), candidato A (7967b88), candidato B (3af7c01),
+selección con defecto acotado (cc038e7), arreglo MSVC y ajuste en CI
+(77c6006), reparto de una pasada por el buffer parcial (1103ac5), defecto
+de vuelta a `kUnlimited` (este commit).
 
 Todas las cifras son de un Xeon a 2.8 GHz (4 vCPU, 15 GB, THP en modo
 `madvise`), GCC 13 `-O3`, salvo §13 (CI en Linux, macOS y Windows).
+
+**Nomenclatura.** En §1–§12, "defecto" y `cur` significan `kAutomatic`
+(buffer compañero hasta 16 MiB, 16 MiB por encima), que **era** el defecto
+durante el estudio. El defecto final es `kUnlimited` (`unl`); §6 y §13
+explican el cambio.
 
 ---
 
@@ -32,15 +49,15 @@ Todas las cifras son de un Xeon a 2.8 GHz (4 vCPU, 15 GB, THP en modo
 | 1 | ¿De dónde viene la memoria auxiliar? | Del **horario** del motor, no de la partición: buffer compañero `n·sizeof(E)` (el 94–99%) + arena `2⌈n/λ⌉+2` contadores (0.5 B/elem). Pila < 3 KB. Nada depende de la forma de la entrada (§2). |
 | 2 | ¿Qué es realmente necesario? | Para la partición: `A(w) = 3·2^L + ⌊(w+2D+1)·max(3L, 2^L+1)/L⌋` contadores — 43 856 B (w = 64), 30 736 B (w = 32), 20 896 B (w = 8) — y `O(w + D)` marcos de pila. Para el horario de **una pasada**: Ω(s·log λ) bits, probado (§3). Para el orden estable de registros, en esta implementación: `n` registros. |
 | 3 | ¿Qué era accidental? | El buffer de `n` elementos para los órdenes inestables y para `stable_sort` de números; la arena Θ(n/λ). Ambos son del horario "una pasada, estable, fuera de sitio". |
-| 4 | ¿Se puede eliminar Θ(n)? | **Sí**, para `sort`, `sort_by_key`, `StratumSort<T>` y `stable_sort` de tipos que son su propia clave: memoria `O(1)` en `n`. **No** (en esta implementación) para `stable_sort_by_key` y `sorted_indices`. |
-| 5 | Mínimo práctico | **44 KB** (el suelo; pases American flag): a 10⁷ u64, +8…+100% frente al buffer compañero (sin contar las formas de prefijo ordenado) y ≤ 1.04× `std::sort`. **600 KiB** (con bloques): más rápido que el buffer a 10⁷ en la mayoría de formas. |
-| 6 | Coste en tiempo | Política por defecto a 10⁷ u64: aleatorio −31%, casi ordenado −26%, adversarial −43%, peor forma +12% (sorted_tail). A 10⁸: −58%. Registros de 72 B a 10⁷: −46%; 264 B: −74…−94%. Pierde: floats con pocos valores (+21…+24%), organ_pipe a 10⁸ (+237%, sigue en 0.15× `std::sort`). Tablas en §7–§10. |
-| 7 | Estabilidad | `stable_sort` de números: gratis (claves iguales = bits iguales). Registros: Θ(n); con presupuesto explícito menor, `std::length_error` antes de tocar nada; con el automático, sin cota. El prototipo C (§10.3) no lo mejora lo bastante. |
+| 4 | ¿Se puede eliminar Θ(n)? | **Sí**, para `sort`, `sort_by_key`, `StratumSort<T>` y `stable_sort` de tipos que son su propia clave: memoria `O(1)` en `n` con cualquier presupuesto, tiempo `Θ(n)` peor caso. **No** (en esta implementación) para `stable_sort_by_key` y `sorted_indices`. Eliminarlo **por defecto**, en cambio, no compensa: cuesta tiempo en la mitad de las máquinas medidas (§13). |
+| 5 | Mínimo práctico | **44 KB** (el suelo; pases American flag): a 10⁷ u64, +20…+147% frente al buffer compañero según máquina y forma (sin contar las formas de prefijo ordenado), ≤ 1.04× `std::sort` en el Xeon. **600 KiB** (con bloques): en el Xeon, más rápido que el buffer a 10⁷ en la mayoría de formas; en EPYC con GCC, +29…+176%. |
+| 6 | Coste en tiempo | **Depende de la máquina** (§13). `kAutomatic` (16 MiB) frente al buffer a 10⁷ u64: Xeon aleatorio −31%, casi ordenado −26%; EPYC + GCC +28…+74% y +82…+170%; M1/M2 −26…+5% y +30…+44% (organ_pipe hasta +261%); MSVC −18…+3% y +10…+25%. Siempre `Θ(n)` y 0.26–0.46× `std::sort` en aleatorio. En el Xeon a 10⁸: −58%; registros de 72 B −46%, de 264 B −74…−94%. Tablas en §7–§10 (Xeon) y §13 (CI). |
+| 7 | Estabilidad | `stable_sort` de números: gratis (claves iguales = bits iguales). Registros: Θ(n); con presupuesto explícito menor, `std::length_error` antes de tocar nada; con `kUnlimited` o `kAutomatic`, sin cota. El prototipo C (§10.3) no lo mejora lo bastante. |
 | 8 | Clave/valor | `sort_by_key` in-place, moviendo bloques de registros: **a 10⁷, 72 B: 1.22× → 0.66× `std::sort`; 264 B: 3.69× → 0.94×**. El buffer compañero era el cuello de botella de los registros grandes. |
-| 9 | uint8 vs uint64 | u8: rejilla de anchura 1 → solo contadores (1 KiB) con cualquier política; suelo 20 896 B. u64: suelo 43 856 B; 16 MiB por defecto desde 1.9·10⁶ elementos. |
-| 10 | Escalado a 10⁸ | Memoria: `unl` 8.25 B/elem constante (Θ(n)); por defecto 16 MiB = 0.168 B/elem → decrece como 1/n; suelo 0.00044 B/elem. Tiempo: por defecto 0.33× `std::sort` a 10⁷ y 0.31× a 10⁸; el buffer compañero se degrada de 0.47× a 0.75×. |
-| 11 | Mejor arquitectura | Dos horarios para una misma partición (`Engine` de una pasada con buffer; `InPlaceEngine` por pases de ≤ 1 024 grupos), elegidos por un **presupuesto** en el `Workspace`; defecto automático 16 MiB; suelo por ancho de clave; fusión por trozos del prefijo ordenado; rechazo explícito para registros estables (§6). |
-| 12 | Limitación que queda | El orden **estable de registros** sigue siendo Θ(n) (`n` registros o `n` pares). Y por política, no por necesidad: por debajo de 16 MiB el defecto sigue usando el buffer compañero (≤ 16 MiB). |
+| 9 | uint8 vs uint64 | u8: rejilla de anchura 1 → solo contadores (1 KiB) con cualquier política; suelo 20 896 B. u64: suelo 43 856 B; `kAutomatic` acota desde 1.9·10⁶ elementos. |
+| 10 | Escalado a 10⁸ | Memoria: `unl` (defecto) 8.25 B/elem constante (Θ(n)); `kAutomatic` 16 MiB = 0.168 B/elem → decrece como 1/n; suelo 0.00044 B/elem. Tiempo en el Xeon: 16 MiB 0.33× `std::sort` a 10⁷ y 0.31× a 10⁸; el buffer compañero se degrada de 0.47× a 0.75×. (10⁸ no se midió en CI.) |
+| 11 | Mejor arquitectura | Dos horarios para una misma partición (`Engine` de una pasada con buffer; `InPlaceEngine` por pases de ≤ 1 024 grupos), elegidos por un **presupuesto** en el `Workspace`: defecto `kUnlimited` (el buffer, el más rápido en la mayoría de máquinas medidas); `kAutomatic` y `Workspace(bytes)` para acotar, con suelo por ancho de clave, reparto de una pasada por el buffer parcial y fusión por trozos del prefijo ordenado; rechazo explícito para registros estables (§6). |
+| 12 | Limitación que queda | El orden **estable de registros** sigue siendo Θ(n) (`n` registros o `n` pares). Y el precio de acotar no es controlable en general: en EPYC con GCC, +28…+170% a 10⁷; por eso acotar es opción del usuario, no el defecto (§13, §14). |
 
 ---
 
@@ -73,7 +90,7 @@ independientes (candidatos A, B y final).
 Nombres de variante: `v010` = 0.10.0 congelada, `v011` = 0.11 antes del
 estudio congelada (`research/baselines/v0_11_pre`), `unl` =
 `Workspace::kUnlimited` (buffer compañero, el comportamiento anterior),
-`cur` = el defecto (`kAutomatic`), `b600k` = presupuesto de 600 KiB,
+`cur` = `kAutomatic` (el defecto durante el estudio; hoy opcional), `b600k` = presupuesto de 600 KiB,
 `b0` = presupuesto 0 (el suelo), `std`/`stdstable` = la biblioteca
 estándar; sufijo `s` = orden estable.
 
@@ -228,20 +245,42 @@ Además, todas las reservas cuentan lo que el workspace ya guarda
 (`WorkspaceAccess::fit`): con presupuesto, el workspace nunca supera
 `max(presupuesto, suelo)`, también cuando se reutiliza entre llamadas.
 
+3. **Reparto de una pasada por el buffer parcial** (commit 1103ac5, tras
+   ver el CI): el híbrido apenas tocaba el buffer en entradas aleatorias
+   (RSS ~1 MB con 16 MiB reservados). Ahora un subrango de `c ≤ P`
+   elementos, con no más buckets que elementos, se reparte en UNA pasada —
+   contar, dispersar al buffer, copiar de vuelta, `O(c)` — y cada hijo se
+   localiza galopando, como en `Engine`. Misma partición. En el Xeon:
+   neutro. En EPYC 7763 + GCC (mismo modelo, runs distintos): `kAutomatic`
+   a 10⁷ aleatorio +74% → +30…+32%, casi ordenado +170% → +90…+94%; en el
+   mismo run, los bloques sin buffer parcial quedan en +59% y +130%. Ayuda
+   mucho, pero no cierra la distancia (§13).
+
 ## 6. Selección: la arquitectura final
 
 | política (`Workspace`) | memoria auxiliar | cuándo |
 |---|---|---|
-| `kAutomatic` (**defecto**) | `min(n·sizeof(E) + contadores, 16 MiB)` | todas las funciones sin workspace y `StratumSort<T>` |
-| `kUnlimited` | `n·sizeof(E) + (2⌈n/λ⌉+2)·4` | el comportamiento de 0.11-pre |
+| `kUnlimited` (**defecto**) | `n·sizeof(E) + (2⌈n/λ⌉+2)·4` | todas las funciones sin workspace y `StratumSort<T>`; el comportamiento de 0.11-pre |
+| `kAutomatic` | `min(n·sizeof(E) + contadores, 16 MiB)` | opción: memoria `O(1)` en `n` con el buffer donde es barato |
 | `Workspace(bytes)` | `max(bytes, A(w)·4)` | control explícito; `0` = el suelo |
 | `stable_sort_by_key`, `sorted_indices` | `n` registros / `n` pares | presupuesto explícito menor → `std::length_error` antes de tocar nada |
 
-**Por qué 16 MiB** (`Config.hpp`): por debajo, el buffer compañero es más
-rápido en las formas que más lo necesitan (casi ordenado, pocos outliers,
-quicksort killer: 13–45% a 10⁶) y cuesta como mucho 16 MiB; por encima, la
-estrategia acotada es igual o más rápida casi siempre; lo que 16 MiB
-compran frente a 600 KB es la fusión del prefijo ordenado.
+**Por qué `kUnlimited` y no 16 MiB por defecto.** Con los datos del Xeon
+(§7–§11) el defecto acotado ganaba en casi todo, y cc038e7 lo adoptó. El
+CI lo desmintió (§13). Antes de medir el último intento (1103ac5) fijé el
+criterio para mantenerlo: a 10⁷ u64, en **todas** las plataformas, como
+mucho +15% en aleatorio y adversarial y +35% en casi ordenado,
+few_outliers y low_entropy. Resultado: EPYC 7763 + GCC +30% / +94%, EPYC
+9V74 + GCC +28% / +82%, M1 organ_pipe +261% y few_outliers +104%. No se
+cumple, así que el defecto vuelve al buffer. Es la lectura honesta del
+encargo: la penalización de tiempo debía ser "pequeña y controlada", y
++30…+170% en máquinas corrientes no lo es.
+
+**Por qué 16 MiB para `kAutomatic`** (`Config.hpp`): por debajo, el buffer
+compañero es más rápido o igual en todas las máquinas medidas (a 10⁶, 600 KB
+cuesta −2…+278% según forma y máquina; organ_pipe hasta +1306%) y cuesta
+como mucho 16 MiB; lo que
+16 MiB compran frente a 600 KB es la fusión del prefijo ordenado.
 
 **Por qué no el suelo por defecto**: 44 KB son posibles, pero sin bloques
 cada pase es American flag: +8…+100% frente al buffer a 10⁷ (aunque
@@ -251,8 +290,8 @@ defecto.
 **Por qué error y no degradación** para registros estables: la única
 alternativa acotada conocida con constantes usables es `O(n log n)`
 (merge in-place); aceptarla en silencio rompería la garantía Θ(n) peor
-caso que el usuario tiene. Con `kAutomatic` no se acota: la función
-estable toma lo que necesita, como antes.
+caso que el usuario tiene. Con `kUnlimited` o `kAutomatic` no se acota:
+la función estable toma lo que necesita, como antes.
 
 ## 7. Escalado: de 10⁴ a 10⁸
 
@@ -555,11 +594,16 @@ propia campaña alternada**; la fila de 0.10.0 sale de `VersionTimings`
 | candidato A (600 KiB) | 0.61 MB (0.061) | −35% | −21% | +204% | −21% | −83% |
 | candidato B (16 MiB, sin fusión) | 16 MiB (1.68) | −34% | −6% | +175% | −26% | −73% |
 | candidato B + fusión por trozos | 16 MiB (1.68) | — | — | −12% | — | — |
-| **final (defecto)** | **16 MiB (1.68)** | **−31%** | **−26%** | **−3%** | **−43%** | **−46…−84%** |
+| `kAutomatic` (defecto de cc038e7) | 16 MiB (1.68) | −31% | −26% | −3% | −43% | −46…−84% |
+| **final: defecto `kUnlimited`** | **82.5 MB (8.25)** | **= 0.11-pre** | **=** | **=** | **=** | **=** |
+| final: `kAutomatic`, EPYC 7763 + GCC (CI, 1103ac5) | 16 MiB (1.68) | +30% | +94% | +26% | +28% | +19% |
+| final: `kAutomatic`, M1 + Clang (CI, 1103ac5) | 16 MiB (1.68) | −2% | +30% | +261% | +14% | −14% |
+| final: `kAutomatic`, EPYC 9V74 + MSVC (CI, 1103ac5) | 16 MiB (1.68) | +3% | +25% | +1% | +2% | +10% |
 
-Y frente a `std::sort` a 10⁷ (`final_version_timings.txt`, 18 formas): el
-final va de 0.04× (sorted_tail) a 0.68× (local_disorder); 0.10.0 iba de
-0.21× a 1.47×.
+Y frente a `std::sort` a 10⁷ en el Xeon (`final_version_timings.txt`, 18
+formas, con `kAutomatic`): de 0.04× (sorted_tail) a 0.68×
+(local_disorder); 0.10.0 iba de 0.21× a 1.47×. Con el defecto final
+(`unl`) la columna es la de 0.11-pre: 0.47× en aleatorio.
 
 ## 12. Lo descartado, y por qué
 
@@ -579,6 +623,9 @@ final va de 0.04× (sorted_tail) a 0.68× (local_disorder); 0.10.0 iba de
 | orden estable acotado por degradación a `O(n log n)` | rompería la garantía Θ(n) | **rechazado**: `std::length_error` |
 | candidato C (pares clave-índice) | §10.3 | no adoptado en esta fase |
 | explicación TLB del buffer compañero con registros | refutada por el experimento de páginas enormes | §10.4 |
+| **`kAutomatic` (16 MiB) como defecto** | −31% en el Xeon; +28…+170% en EPYC + GCC, hasta +261% en M1 | **revertido**: defecto `kUnlimited` (§6, §13) |
+| hipótesis L2: bloques más pequeños o radio menor para un L2 de 512 KB | 8 configuraciones en EPYC 9V74 y 3 en EPYC 7763 y M1: ninguna mejora L = 10 / 512 B | **refutada**; la constante se queda |
+| buffer parcial solo para nodos pequeños (híbrido de 3af7c01) | casi no se usaba en aleatorio | ampliado: reparto de una pasada por el buffer (1103ac5, §5) |
 
 ## 13. Multiplataforma
 
@@ -586,9 +633,75 @@ final va de 0.04× (sorted_tail) a 0.68× (local_disorder); 0.10.0 iba de
 (`--suite memory`, y dentro de `ci` y `full`): int64 a 10⁶ y 10⁷ en varias
 formas y registros de 72 B a 10⁷, con presupuesto ilimitado, automático,
 600 KiB y 0, tiempo relativo y bytes medidos en el asignador. El workflow
-`bench.yml` la ejecuta en Linux (GCC), macOS arm64 (AppleClang) y Windows
-(MSVC) en cada push de esta rama. Resultados: sección añadida tras el
-run de CI (ver el final de este documento).
+`bench.yml` la ejecuta en Linux (GCC 13.3), macOS arm64 (AppleClang 21) y
+Windows (MSVC 19.51) en cada push de esta rama; el job `tune` compila
+`research/perf/InPlaceTuning.cpp` con varias `(L, bloque)`. Los informes
+completos están en `research/data/memoria/ci/`. **GitHub no garantiza el
+mismo hardware entre runs**: el mismo job cayó en EPYC 7763, EPYC 9V74, M1
+o M2 Pro según el día; por eso cada fila lleva su CPU.
+
+### 13.1 `kAutomatic` (16 MiB) frente al buffer compañero, int64 a 10⁷
+
+| commit | SO | CPU | compilador | aleatorio | casi ordenado | organ_pipe | adversarial | registros 72 B |
+|---|---|---|---|---|---|---|---|---|
+| cc038e7 | Linux | AMD EPYC 7763 | GCC 13.3 | +74% | +170% | +29% | +68% | +16% |
+| cc038e7 | macOS | Apple M2 Pro (VM) | Clang 21 | +5% | +44% | +149% | +7% | +38% |
+| 77c6006 | Linux | AMD EPYC 9V74 | GCC 13.3 | +28% | +82% | +25% | +44% | +11% |
+| 77c6006 | macOS | Apple M1 (VM) | Clang 21 | −26% | +30% | +220% | −5% | −50% |
+| 77c6006 | Windows | AMD EPYC 7763 | MSVC 19.51 | −18% | +10% | +10% | −16% | +11% |
+| 1103ac5 | Linux | AMD EPYC 7763 | GCC 13.3 | +30% | +94% | +26% | +28% | +19% |
+| 1103ac5 | macOS | Apple M1 (VM) | Clang 21 | −2% | +30% | +261% | +14% | −14% |
+| 1103ac5 | Windows | AMD EPYC 9V74 | MSVC 19.51 | +3% | +25% | +1% | +2% | +10% |
+| (local) | Linux | Intel Xeon 2.8 GHz | GCC 13 | −31% | −26% | −3% | −43% | −46% |
+
+(cc038e7 no compiló en Windows: el error C2131 de MSVC en C++17, arreglado
+en 77c6006. A 10⁶ `kAutomatic` es el mismo camino que el buffer, 8.5
+B/elem en ambos; sus diferencias, −17…+4%, son ruido del runner.)
+
+### 13.2 Los dos horarios varían, y cuál gana se invierte
+
+A 10⁷ aleatorio, frente a `std::sort` de la misma máquina:
+
+| máquina | buffer (`unl`) | `kAutomatic` | suelo |
+|---|---|---|---|
+| EPYC 7763 + GCC | 0.27–0.29× | 0.38–0.46× | 0.40–0.42× |
+| EPYC 9V74 + GCC | 0.29× | 0.37× | 0.45× |
+| EPYC 7763 + MSVC | 0.43× | 0.35× | 0.55× |
+| EPYC 9V74 + MSVC | 0.28× | 0.29× | 0.52× |
+| M1 / M2 Pro + Clang | 0.24–0.38× | 0.26–0.28× | 0.45–0.53× |
+| Xeon + GCC (local) | 0.47× | 0.33× | 0.60× |
+
+`kAutomatic` queda en 0.26–0.46× `std::sort` en todas y el suelo en
+0.40–0.60×; el buffer compañero va de 0.24× a 0.47×. Ninguno de los dos
+es constante, pero lo que decide es su **orden**: en EPYC + GCC el buffer
+gana con holgura (0.27–0.29× frente a 0.37–0.46×), en el Xeon pierde
+(0.47× frente a 0.33×). El mismo EPYC 7763 da el buffer en 0.27× con GCC
+y 0.43× con MSVC: la dispersión de una pasada sobre todo el arreglo es
+sensible a la CPU **y** al código generado. No tengo contadores
+de hardware en los runners para explicar por qué (§10.4 tampoco pudo en
+el Xeon); lo medido es la diferencia.
+
+### 13.3 El ajuste de constantes no la cierra (`tune_*.md`)
+
+Hipótesis de 77c6006: los 526 KB de bloques no caben en el L2 de 512 KB
+del EPYC 7763. Medido con `L ∈ {8, 9, 10}` y bloques de 128 a 1024 B:
+
+| máquina | mejor configuración | bloques vs buffer, 10⁷ aleatorio | casi ordenado | few_outliers |
+|---|---|---|---|---|
+| EPYC 9V74 (L2 1 MB), 8 configuraciones | L = 10, 512 B | +32% (resto +32…+64%) | +80% (resto +101…+148%) | +138% (resto +176…+250%) |
+| EPYC 7763 (L2 512 KB), 3 configuraciones | L = 10, 512 B | +59% (L = 9, 8: +96…+97%) | +130% (+203…+205%) | +155% (+252…+255%) |
+| M1 (L2 12 MB), 3 configuraciones | ruido de VM | −19…+5% | +17…+61% | +46…+72% |
+
+Refutada: bloques más pequeños (que sí caben en L2) son **peores**. La
+constante `L = 10, 512 B` se queda.
+
+### 13.4 Decisión
+
+Criterio fijado antes del último run (§6): no se cumple en EPYC + GCC ni
+en M1. **Defecto: `kUnlimited`.** La memoria acotada queda como opción con
+su coste publicado (README, `docs/usage.md` "Memory"), y
+`research/perf/InPlaceTuning.cpp` + el job `tune` quedan para medirla en
+otras máquinas.
 
 ## 14. Lo que queda
 
@@ -597,10 +710,11 @@ run de CI (ver el final de este documento).
    baja a 16 B/elem con ganancia de tiempo para registros ≥ 264 B, pero no
    lo elimina. Un orden estable lineal con memoria acotada existe en teoría
    (Franceschini–Muthukrishnan–Pătraşcu, ESA 2007) sin constantes usables.
-2. **Por debajo de 16 MiB el defecto usa el buffer compañero** — por
-   política, no por necesidad: ahí es más rápido en las formas casi
-   ordenadas y con pocos outliers. `Workspace(bytes)` lo acota a cualquier
-   nivel.
+2. **El defecto no acota la memoria** — por política, no por necesidad:
+   el buffer compañero es el horario más rápido en la mayoría de las
+   máquinas medidas (§13), y el coste de acotar va de −31% a +170% según
+   la máquina y la forma. `Workspace(bytes)` o `kAutomatic` lo acotan a
+   cualquier nivel, en `Θ(n)`.
 3. **Costes del modo acotado**: floats con pocos valores (+21…+24%),
    prefijo ordenado con una cola que necesita > 4 trozos (organ_pipe a
    10⁸: +237%, aunque 0.15× `std::sort`), y el suelo sin bloques
@@ -609,5 +723,11 @@ run de CI (ver el final de este documento).
    0.3–3 KB de pila). Es constante, pero no es `O(log n)` en bytes
    absolutos; bajar a ~16 KB (offsets bajo demanda) o ~1 KB (L = 1) es
    posible a coste de tiempo.
-5. **No verificado fuera de x86-64/Linux** hasta que el CI de esta rama
-   termine (§13).
+5. **Por qué el buffer compañero es tan rápido en EPYC + GCC y lento en
+   el Xeon** (0.27× frente a 0.47× `std::sort`) queda sin explicar: sin
+   contadores de hardware, solo se midió la diferencia (§13.2). Mientras
+   no se entienda, cualquier regla automática para elegir el horario sería
+   una apuesta por máquina.
+6. **10⁸ solo se midió en el Xeon.** Allí el buffer de 825 MB se degrada
+   (0.75× `std::sort`) y 16 MiB ganan −58%; en CI no hay memoria para
+   repetirlo.

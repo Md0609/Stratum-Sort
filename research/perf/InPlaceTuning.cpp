@@ -12,12 +12,14 @@
 //   blocks     arena + block buffers exactly: every pass by blocks, no
 //              partner buffer at all
 //   floor      budget 0: the arena alone, every pass an American flag
-//   automatic  the default policy (partner up to 16 MiB, 16 MiB above)
+//   automatic  Workspace::kAutomatic (partner up to 16 MiB, 16 MiB above)
 //
 // Why it exists: the block buffers are (2^L + 3) blocks, 526 KB at the
-// defaults, and the memory study measured them fast on a Xeon with a large
-// L2 and slow on the CI's EPYC 7763 (L2 512 KB). Which (L, block) is best
-// depends on the cache; this measures it where it matters.
+// defaults, and the memory study measured the bounded modes fast on a Xeon
+// and slow on the CI's EPYC 7763 (L2 512 KB). The hypothesis was the
+// cache; the runs refuted it (research/data/memoria/ci/tune_*.md): on EPYC
+// 7763 and 9V74 no (L, block) of eight brings the bounded modes near the
+// partner buffer, and L = 10 with 512-byte blocks stays the best.
 //
 //   ./perf_InPlaceTuning [--n 1e6,1e7] [--reps 5]
 #include "BenchDatasets.hpp"

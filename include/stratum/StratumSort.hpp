@@ -149,9 +149,11 @@ inline namespace STRATUM_ABI_NAMESPACE {
 //   a partner buffer for the nodes that fit in it. Taken when the budget
 //   cannot hold the partner buffer.
 //
-//   The default budget is automatic: the partner buffer while it needs at
-//   most AUTOMATIC_MEMORY_LIMIT (16 MiB, about 1.9 million 8-byte keys),
-//   at most 16 MiB above that. setMemoryBudget() sets another one.
+//   The default budget is unlimited (the partner buffer): measured on
+//   three platforms, bounding it costs time on some of them
+//   (research/history/V11_memoria.md section 13). setMemoryBudget() - or a
+//   Workspace built with a budget - bounds it: a number of bytes, or
+//   Workspace<T>::kAutomatic (at most 16 MiB whatever n is).
 //   research/perf/MemoryAudit.cpp measures all of it at the allocator.
 //
 //   The workspace an instance owns is allocated on first use and reused
@@ -249,7 +251,7 @@ public:
     void releaseScratch() noexcept { workspace_.release(); }
 
     // The memory budget of the instance's own workspace, in bytes, or
-    // Workspace<T>::kAutomatic (the default) / Workspace<T>::kUnlimited.
+    // Workspace<T>::kUnlimited (the default) / Workspace<T>::kAutomatic.
     // A workspace passed to sort(data, workspace) carries its own.
     std::size_t memoryBudget() const { return workspace_.budget(); }
     void setMemoryBudget(std::size_t budgetBytes) { workspace_.setBudget(budgetBytes); }

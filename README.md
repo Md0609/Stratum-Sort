@@ -110,7 +110,7 @@ bound for the 0.11.0 engine — is in
 | | |
 |---|---|
 | **Time, best / average / worst** | `Θ(n)` in the worst case, for every input and every argument, under H1–H4 below; one read-only pass on sorted input |
-| **Auxiliary space** | **Bounded, whatever `n` is** (pre-release, research/ALGORITHM.md §14): by default `min(n·sizeof(E) + (2⌈n/λ⌉ + 2)·4, 16 MiB)` — 1.06× the input for an 8-byte key up to 16 MiB, then 16 MiB flat; with a `Workspace` budget `M`, at most `max(M, 44 KB)`. Zero on sorted and reversed input. **Exception:** the stable sorts of records (`stable_sort_by_key`, `sorted_indices`) need `n` records / pairs. 0.10.0: 3.28× the input |
+| **Auxiliary space** | By default `n·sizeof(E) + (2⌈n/λ⌉ + 2)·4` — 1.06× the input for an 8-byte key (0.10.0: 3.28×), the fastest choice on most machines measured. **Bounded on request, whatever `n` is** (pre-release, research/ALGORITHM.md §14): with a `Workspace` budget `M`, at most `max(M, 44 KB)`, still `Θ(n)` time; `Workspace<E>::kAutomatic` caps it at 16 MiB. Zero on sorted and reversed input. **Exception:** the stable sorts of records (`stable_sort_by_key`, `sorted_indices`) need `n` records / pairs under any budget |
 | **Recursion depth** | `≤ D + 1 = 7` refinement levels |
 | **Stable** | `stable_sort`, `stable_sort_by_key`, `sorted_indices`: **yes**. `sort`, `sort_by_key`, `StratumSort<T>`: no |
 | **Threads** | one `const` sorter may serve any number of threads, one `Workspace` each; no locks, no global state |
@@ -138,7 +138,7 @@ holds uniformly. `Θ(n²)` is not reachable — quicksort only sees
 | Integral keys ≤ 64 bits only | **reduced**: + enums, `float`, `double`, records by key | an order-preserving key map; `totalOrder` proved over all 2³² floats |
 | Not stable, no key/value | **eliminated** | `stable_sort`, `stable_sort_by_key`, `sorted_indices` |
 | Not thread-safe per instance | **eliminated** | `Workspace`; `sort(data, ws) const` |
-| `Θ(n)` extra memory, 3.28× | **eliminated** except for stable sorts of records: ≤ 16 MiB by default, any budget down to 44 KB, still `Θ(n)` time (pre-release) | the same partition in place, in passes of ≤ 1 024 groups; caller's array as a buffer, no index cache, no tree |
+| `Θ(n)` extra memory, 3.28× | **reduced** to 1.06× by default; **eliminated on request** except for stable sorts of records: any budget down to 44 KB, still `Θ(n)` time (pre-release) | the same partition in place, in passes of ≤ 1 024 groups; caller's array as a buffer, no index cache, no tree |
 | ~6× slower than `std::sort` on sorted input | **eliminated**: 0.05–0.39× | detected inside the min/max pass, which it resumes |
 | λ tuned to one cache | **eliminated** | automatic λ from `n`, measured on four environments |
 | Timings from one machine | **eliminated** | CI benchmark on Linux, macOS and Windows |
@@ -162,12 +162,17 @@ What remains, and why:
   constants is known to us. An explicit budget below that throws
   `std::length_error` instead of degrading. `stable_sort` of numbers is
   not affected (equal keys are identical). Structural for this design.
-- **Bounded memory costs time on some inputs.** Under a small budget the
-  sorted-prefix shortcut needs a buffer it may not have (sorted input
-  with a long unsorted tail: +36% at 600 KiB, +1409% at the 44 KB floor,
-  still 0.82× `std::sort`), and the floor's American-flag passes are
-  1.1–2× slower than the partner buffer. The default policy keeps the
-  partner buffer up to 16 MiB, where it is the faster choice.
+- **Bounded memory is opt-in, because what it costs depends on the
+  machine.** The same code, `int64_t` at `n = 10⁷`, 16 MiB policy against
+  the default partner buffer, on the CI runners: AMD EPYC with GCC random
+  +28…+74%, nearly sorted +82…+170%; Apple M1/M2 random −26…+5%, nearly
+  sorted +30…+44%, organ pipe +149…+261%; Windows/MSVC random −18…+3%; the
+  Xeon the study was run on, random −31%. It is always `Θ(n)` and stays
+  0.26–0.46× `std::sort` on random keys, but the default is the partner
+  buffer (research/history/V11_memoria.md §13). Under a small budget the
+  sorted-prefix shortcut also needs a buffer it may not have (sorted input
+  with a long unsorted tail: +1409% at the 44 KB floor, still 0.82×
+  `std::sort`).
 - **Where it loses to `std::sort`** (`n = 10⁶`, ratio > 1 means slower):
 
   | input | Linux, GCC | macOS arm64, AppleClang | Windows, MSVC |
@@ -273,13 +278,13 @@ sorted −29%, duplicates −71%, adversarial −41%.
 `int64_t`, random keys (pre-release; research/history/V11_memoria.md has
 every type, shape and size):
 
-| `n` | 0.10.0 | unlimited budget (partner buffer) | **default (automatic)** | 600 KiB budget | budget 0 (floor) | `std::sort` |
+| `n` | 0.10.0 | **default (partner buffer)** | `kAutomatic` | 600 KiB budget | budget 0 (floor) | `std::sort` |
 |---|---|---|---|---|---|---|
-| 10⁶ | 26 MB | 8.5 MB | 8.5 MB | 600 KiB | 44 KB | 0 |
-| 10⁷ | 263 MB | 82.5 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
-| 10⁸ | — | 825 MB | **16 MiB** | 600 KiB | 44 KB | 0 |
+| 10⁶ | 26 MB | **8.5 MB** | 8.5 MB | 600 KiB | 44 KB | 0 |
+| 10⁷ | 263 MB | **82.5 MB** | 16 MiB | 600 KiB | 44 KB | 0 |
+| 10⁸ | — | **825 MB** | 16 MiB | 600 KiB | 44 KB | 0 |
 
-Other inputs, default policy, bytes per element at `n = 10⁶`:
+Other inputs, default budget, bytes per element at `n = 10⁶`:
 
 | input | 0.10.0 | 0.11.0 |
 |---|---|---|

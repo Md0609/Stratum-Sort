@@ -208,8 +208,9 @@ bool runVariant(const std::string& variant, std::vector<T>& d, std::size_t& wsBy
         return true;
     }
     // The current header, by memory policy; a trailing 's' is the stable
-    // sort. cur: automatic (the default); unl: kUnlimited (the partner
-    // buffer at every size, the pre-study behaviour); b<bytes>[k|m]: that
+    // sort. cur: kAutomatic (the default during the study, opt-in since);
+    // unl: kUnlimited (the default: the partner buffer at every size, also
+    // the pre-study behaviour); b<bytes>[k|m]: that
     // explicit budget, e.g. b0 (the floor), b1m, b16m.
     const bool stable = !variant.empty() && variant.back() == 's' && variant != "std";
     const std::string policy = stable ? variant.substr(0, variant.size() - 1) : variant;

@@ -1690,9 +1690,15 @@ flag pass); and with what is left a partner buffer of `P` elements and its
 
 - **The hybrid.** A node of at most `P` elements is finished by
   `Engine::runNode` — one pass per level — and a larger one in place. The
-  partition is the same either way. (Measured: this buys little. At `10⁷`
-  random 64-bit keys, 16 MiB and 600 KB are within 3% of each other, both
-  ~30% faster than the full partner buffer.)
+  partition is the same either way. (Measured on the study's Xeon: this
+  buys little. At `10⁷` random 64-bit keys, 16 MiB and 600 KB are within
+  3% of each other, both ~30% faster than the full partner buffer there —
+  and slower on other machines, §14.10.)
+- **One-pass sub-ranges.** A sub-range of `c ≤ P` elements left by an
+  in-place pass whose grid has at most `c` buckets is distributed in one
+  pass through the partner buffer — count, scatter, copy back, `O(c)` —
+  and each child found by galloping, as `Engine` does; the partition is
+  the same.
 - **The sorted-prefix merge (§13.4) under a budget.** When the prefix `k ≥
   n/2` is sorted and the tail `m = n − k` does not fit, the tail is sorted
   within the budget and merged through the `M' = blocks + P` elements that
@@ -1711,10 +1717,10 @@ and releases it if not; everything is still reserved before the first
 write (§13.8). A workspace with a budget therefore never holds more than
 `max(M, A(w)·sizeof(Count))` bytes, reused or not.
 
-**Policies** (`Workspace.hpp`): `kUnlimited` — always the partner buffer;
-**`kAutomatic`, the default** — the partner buffer while it needs at most
-`AUTOMATIC_MEMORY_LIMIT = 16 MiB`, that budget above; an explicit number
-of bytes. The rationale for 16 MiB is in `Config.hpp`.
+**Policies** (`Workspace.hpp`): **`kUnlimited`, the default** — always
+the partner buffer; `kAutomatic` — the partner buffer while it needs at
+most `AUTOMATIC_MEMORY_LIMIT = 16 MiB`, that budget above; an explicit
+number of bytes. Why the default is not bounded: §14.10.
 
 ### 14.9 Stability
 
@@ -1724,7 +1730,8 @@ that is its own key (equal keys are identical bits: no order to observe).
 `stable_sort_by_key` and `sorted_indices` keep the partner buffer: an
 explicit budget below it throws `std::length_error` before the input is
 touched (a silent fallback to an `O(n log n)` stable algorithm would break
-the linear guarantee), and `kAutomatic` does not bound them.
+the linear guarantee), and `kUnlimited` / `kAutomatic` do not bound
+them.
 
 That is a limitation of this implementation, not a theorem. The
 theoretical literature has linear-time integer sorting with `O(1)` extra
@@ -1742,9 +1749,17 @@ not a repair of this one.
 
 - **Stable sorts of records** (`stable_sort_by_key`, `sorted_indices`):
   `n` records, or `n` (key, index) pairs — 14.9.
-- **The default below 16 MiB**: by policy, not necessity — the partner
-  buffer is faster on some shapes there, and the policy trades at most
-  16 MiB for that (`Config.hpp`). `Workspace(bytes)` removes it.
+- **The default** (`kUnlimited`): by policy, not necessity. Both
+  schedules are `Θ(n)`; which one is faster is a property of the machine,
+  not of the theorem. At `10⁷` 64-bit keys the bounded schedule (16 MiB)
+  is −31% on random keys on the study's Xeon and +28…+74% on AMD EPYC with
+  GCC (nearly sorted +82…+170%), −26…+5% on Apple M1/M2, −18…+3% under
+  MSVC (research/history/V11_memoria.md §13). Which schedule wins flips
+  between machines (random keys: partner buffer 0.27–0.29× `std::sort` on
+  EPYC with GCC, bounded 0.37–0.46×; on the Xeon 0.47× and 0.33×). A
+  default that costs up to 2.7× on common machines is not a controlled
+  penalty, so bounding is the caller's choice: `Workspace(bytes)` or
+  `kAutomatic`.
 - Nothing else: `sort`, `sort_by_key`, `StratumSort<T>` and `stable_sort`
   of self-keyed types run in `max(M, A(w)·4)` bytes for any budget `M`.
 
