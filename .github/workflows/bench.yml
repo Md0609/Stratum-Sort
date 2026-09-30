@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: "quick | ci | types | lambda | memory | full"
+        description: "quick | ci | types | lambda | memory | full | tune"
         required: false
         default: "ci"
   push:
@@ -64,3 +64,42 @@ jobs:
           path: |
             bench-*.md
             bench-*.csv
+
+  # The in-place engine's constants (L, block size) measured on the runners
+  # themselves: research/perf/InPlaceTuning.cpp built once per configuration
+  # against a copy of include/ with the two constants edited. Runs when the
+  # commit message contains [tune], or on dispatch with suite = tune. Not on
+  # Windows: the loop below needs a compiler on PATH, which the MSVC runner
+  # only has inside a developer shell.
+  tune:
+    name: tune / ${{ matrix.os }}
+    if: contains(github.event.head_commit.message, '[tune]') || github.event.inputs.suite == 'tune'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run every (L, block) configuration
+        shell: bash
+        run: |
+          out="tune-${{ runner.os }}-${{ runner.arch }}.md"
+          for cfg in "10 512" "10 256" "10 128" "9 512" "9 256" "8 512" "8 256" "8 1024"; do
+            set -- $cfg
+            d="inc_$1_$2"
+            rm -rf "$d"
+            cp -r include "$d"
+            sed -i.bak "s/constexpr unsigned INPLACE_RADIX_BITS = 10;/constexpr unsigned INPLACE_RADIX_BITS = $1;/; s/constexpr std::size_t INPLACE_BLOCK_BYTES = 512;/constexpr std::size_t INPLACE_BLOCK_BYTES = $2;/" "$d/stratum/Config.hpp"
+            grep -q "INPLACE_RADIX_BITS = $1;" "$d/stratum/Config.hpp"
+            grep -q "INPLACE_BLOCK_BYTES = $2;" "$d/stratum/Config.hpp"
+            c++ -std=c++17 -O3 -DNDEBUG -I"$d" -Idatasets -Ibenchmarks research/perf/InPlaceTuning.cpp -o "tune_$1_$2"
+            "./tune_$1_$2" | tee -a "$out"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tune-${{ runner.os }}-${{ runner.arch }}
+          path: tune-*.md

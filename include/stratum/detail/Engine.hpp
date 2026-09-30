@@ -1199,8 +1199,11 @@ void sortWith(const Traits& tr, typename Traits::Element* data, std::size_t n, s
     // budget that cannot hold it is refused here, before anything is written:
     // degrading silently to an O(n log n) or quadratic stable algorithm
     // would break the guarantee the caller relies on.
+    // (The condition is !kInPlaceAllowed && !Sink::kRecord, spelled with the
+    // template parameters: MSVC in C++17 mode rejects a local constexpr
+    // variable inside an if constexpr of a lambda.)
     auto requireBuffer = [&](std::size_t bytes) {
-        if constexpr (!kInPlaceAllowed && !Sink::kRecord) {
+        if constexpr (Stable && !Traits::kElementIsKey && !Sink::kRecord) {
             if (bytes > budget)
                 throw std::length_error("stratum: the stable sort of records needs a workspace budget of at "
                                         "least n records; this one is smaller");
