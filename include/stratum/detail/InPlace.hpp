@@ -206,6 +206,13 @@ private:
             smallSpread(start, c, g, divider, childDepth);
             return;
         }
+        // A sub-range the partner buffer can hold, over no more buckets than
+        // elements: one counting scatter through the buffer finishes every
+        // remaining bit at once, in cache, instead of more in-place passes.
+        if (partnerCap_ != 0 && c <= partnerCap_ && span <= c && span + 1 <= partnerArenaCap_) {
+            partnerSpread(start, c, g, divider, loBucket, static_cast<std::size_t>(span), childDepth);
+            return;
+        }
         // Balanced split of the index bits into passes of at most kRadixBits,
         // and never a radix above c: a pass over c elements then costs O(c).
         const unsigned bits = bitsFor(span);
@@ -417,6 +424,61 @@ private:
             for (std::size_t q = 0; q < static_cast<std::size_t>(fill[j]); ++q) a[nextHole()] = bb[q];
         }
         for (std::size_t j = 0; j <= r; ++j) bound[j] = static_cast<Count>(bound[j] + start);
+    }
+
+    // ---- One scatter through the partner buffer ------------------------
+    // data_[start, start + c) holds the buckets [loBucket, loBucket + s) of
+    // grid g, c <= partnerCap_, s <= c: count them, scatter into the
+    // partner buffer, copy back - O(c + s) = O(c), and on a sub-range left
+    // by an in-place pass the buffer is small enough to stay in cache. The
+    // counters are not kept (the children reuse the partner arena and
+    // buffer); each child's end is found again by galloping, since the
+    // bucket index is non-decreasing along the range after the scatter.
+    void partnerSpread(std::size_t start, std::size_t c, const Grid& g, const FastDivider64& divider,
+                       uint64_t loBucket, std::size_t s, std::size_t childDepth) {
+        E* const a = data_ + start;
+        E* const buf = partnerBuf_;
+        Count* const cnt = partnerArena_;
+        const uint64_t origin = g.origin;
+        std::fill(cnt, cnt + s + 1, Count{0});
+        divider.dispatch([&](const auto& bucketOf) {
+            for (std::size_t i = 0; i < c; ++i) {
+                const std::size_t b = static_cast<std::size_t>(bucketOf(tr_.key(a[i]) - origin) - loBucket);
+                assert(b < s);
+                ++cnt[b + 1];
+            }
+            for (std::size_t b = 0; b < s; ++b) cnt[b + 1] = static_cast<Count>(cnt[b + 1] + cnt[b]);
+            for (std::size_t i = 0; i < c; ++i) {
+                const std::size_t b = static_cast<std::size_t>(bucketOf(tr_.key(a[i]) - origin) - loBucket);
+                buf[cnt[b]] = a[i];
+                cnt[b] = static_cast<Count>(cnt[b] + 1);
+            }
+        });
+        std::memcpy(static_cast<void*>(a), static_cast<const void*>(buf), c * sizeof(E));
+        std::size_t p = 0;
+        while (p < c) {
+            std::size_t q = p + 1;
+            divider.dispatch([&](const auto& bucketOf) {
+                const uint64_t b = bucketOf(tr_.key(a[p]) - origin);
+                auto after = [&](std::size_t i) { return bucketOf(tr_.key(a[i]) - origin) > b; };
+                // exponential probe, then binary search, for the first i > p
+                // whose bucket is past b
+                std::size_t step = 1, lo = p, hi = p + 1;
+                while (hi < c && !after(hi)) {
+                    lo = hi;
+                    step *= 2;
+                    hi = (c - hi > step) ? hi + step : c;
+                }
+                while (hi - lo > 1) {
+                    const std::size_t mid = lo + (hi - lo) / 2;
+                    if (after(mid)) hi = mid;
+                    else lo = mid;
+                }
+                q = hi;
+            });
+            process(start + p, q - p, childDepth);
+            p = q;
+        }
     }
 
     // At most INPLACE_SMALL elements over several buckets: order them by

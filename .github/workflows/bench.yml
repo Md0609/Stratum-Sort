@@ -87,7 +87,7 @@ jobs:
         shell: bash
         run: |
           out="tune-${{ runner.os }}-${{ runner.arch }}.md"
-          for cfg in "10 512" "10 256" "10 128" "9 512" "9 256" "8 512" "8 256" "8 1024"; do
+          for cfg in "10 512" "9 512" "8 512"; do
             set -- $cfg
             d="inc_$1_$2"
             rm -rf "$d"
