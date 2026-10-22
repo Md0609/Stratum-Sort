@@ -132,7 +132,7 @@ evidencia pegada en la PR. Sin evidencia, la PR se rechaza aunque los tests pase
 | G1 | **Corrección**: `make test`, `make sanitizers` y `make fuzz N=200000` (con la batería ampliada) | Cualquiera falla |
 | G2 | **Contadores** (build de investigación), batería completa, antes y después | El trabajo total sube en **cualquier** dataset sin una justificación escrita en la PR, o el exponente de la meta A empeora |
 | G3 | **Reloj** (solo build de *release*, `make timings` o el A/B de SS-0), A/B **alternado** en una sesión, 9 repeticiones × 3 sesiones, batería × tamaños | (a) algún dataset empeora frente a la versión anterior por encima de su suelo de ruido, o (b) algún dataset que estaba en "gana" deja de estarlo |
-| G4 | **Memoria auxiliar** (recuento de asignaciones de `make profile`) | Sube más de un 5 % sin aprobación del autor |
+| G4 | **Memoria auxiliar** (asignaciones y bytes de heap por `sort()`: `make research && ./build/research_PhaseProfile`) | Sube más de un 5 % sin aprobación del autor |
 | G5 | **Demostración**: si el cambio toca una fase, se actualiza el lema correspondiente de `ALGORITHM.md` | Cambia una fase y la demostración no |
 | G6 | **Adversario nuevo**: cada mecanismo nuevo viene con un intento de entrada que lo derrote (p. ej., para una pasada previa de orden: "ordenado salvo el último elemento"), y esa entrada se añade a la batería | No hay intento de adversario |
 | G7 | **Honestidad de medida**: nunca se citan tiempos del build de investigación; los rangos se publican junto a las medianas | Se cita un tiempo de *research* o solo medianas |
@@ -185,7 +185,7 @@ del M4.
 
 | ID | Paso | Hecho cuando | Estado |
 |---|---|---|---|
-| SS-0 | Instrumentos | Batería ampliada del §4 en `timings`, en el A/B y en el fuzz; salida en CSV; un objetivo `make` de **A/B alternado** que compara dos *commits* y saca la tabla de veredictos de G3; **contador de trabajo total** (A2) en el build de investigación; todo documentado en `BENCHMARKS.md` | ⬜ |
+| SS-0 | Instrumentos | Batería ampliada del §4 en `timings`, en el A/B y en el fuzz; salida en CSV; un objetivo `make` de **A/B alternado** que compara dos *commits* y saca la tabla de veredictos de G3; **contador de trabajo total** (A2) en el build de investigación; todo documentado en `BENCHMARKS.md`. `BENCHMARKS.md` cita `make baseline` y `make profile`, que hoy no existen en el `Makefile`: se añaden como objetivos (sobre `research_ReferenceBaseline` y `research_PhaseProfile`) o se corrige la documentación | ⬜ |
 | SS-1 | Líneas base | `research/baselines/v0.10.0-linux-x86_64.csv` con la batería completa, 3 sesiones y el suelo de ruido de Linux por dataset (3 ejecuciones del mismo binario). El CSV del M4 lo aporta el autor; hasta entonces, el veredicto del M4 queda "pendiente" | ⬜ |
 | SS-2 | Orden global | Pasada previa `O(n)` con salida temprana para ascendente, descendente y constante. **Gana** en SortedAscending, SortedDescending y AllEqual en las dos plataformas, sin regresión (G3) en ningún otro dataset, con "ordenado salvo el último" en la batería (G6) | ⬜ |
 | SS-3 | Casi ordenados | Si la línea base muestra pérdidas en NearlySorted, SortedPlusTail, OrganPipe o Sawtooth: cerrarlas **dentro de la idea**. Si solo se cierran con una mezcla (merge), es un `[LÍMITE]` (§6) | ⬜ |
