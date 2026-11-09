@@ -29,7 +29,14 @@
 // historically: keys spanning the entire universe, inputs containing only
 // the two extremes, and inputs with almost no distinct values.
 //
+// Since SS-0 a quarter of the cases are drawn instead from the objective.md
+// section 4 battery (datasets/Battery.hpp: the ten current datasets, the
+// eight new ones and the eight AdversaryBattery families), at a random size
+// and for the case's own key type, with the adversaries rebuilt against the
+// lambda the sorter of that case actually uses.
+//
 // Deterministic by construction: a fixed seed, so a failure reproduces.
+#include "Battery.hpp"
 #include "stratum/StratumSort.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -40,6 +47,7 @@
 
 static std::mt19937_64 rng(0xC0FFEE);
 static long long cases = 0;
+static long long batteryCases = 0;
 
 template <typename T>
 void oneCase() {
@@ -47,14 +55,27 @@ void oneCase() {
     const std::size_t lambda = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
     const std::size_t t = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
 
-    // Random distribution shape, biased towards the nasty ones.
-    const int shape = std::uniform_int_distribution<int>(0, 5)(rng);
+    // Random distribution shape, biased towards the nasty ones. Shapes 6
+    // and 7 draw a dataset of the section 4 battery instead.
+    const int shape = std::uniform_int_distribution<int>(0, 7)(rng);
     const T lo = std::numeric_limits<T>::min();
     const T hi = std::numeric_limits<T>::max();
-    std::vector<T> v(n);
+    stratum::StratumSort<T> sorter(lambda, t);
+    std::size_t dataset = 0;
+    std::vector<T> v;
+    if (shape >= 6) {
+        const auto& b = stratum::testing::battery();
+        dataset = std::uniform_int_distribution<std::size_t>(0, b.size() - 1)(rng);
+        const stratum::testing::AdversaryTarget target{sorter.targetElementsPerBin(),
+                                                       stratum::MAX_SUBDIVISION_DEPTH};
+        v = stratum::testing::batteryDataset<T>(dataset, n, target, rng());
+        ++batteryCases;
+    }
+    if (shape < 6) v.resize(n);
     std::uniform_int_distribution<long long> full(static_cast<long long>(lo),
                                                   static_cast<long long>(hi));
     for (auto& x : v) {
+        if (shape >= 6) break;
         switch (shape) {
             case 0: x = static_cast<T>(full(rng)); break;                       // whole universe
             case 1: x = static_cast<T>(std::uniform_int_distribution<int>(0, 3)(rng)); break;
@@ -65,17 +86,18 @@ void oneCase() {
         }
     }
     // Plant the extremes sometimes, so the maximal span is actually hit.
-    if (n > 1 && (rng() & 1)) { v[0] = lo; v[n - 1] = hi; }
+    // Never on a battery dataset: it would destroy the shape being tested.
+    if (shape < 6 && n > 1 && (rng() & 1)) { v[0] = lo; v[n - 1] = hi; }
 
     std::vector<T> expected = v;
     std::sort(expected.begin(), expected.end());
 
-    stratum::StratumSort<T> sorter(lambda, t);
     sorter.sort(v);
     ++cases;
     if (v != expected) {
-        std::printf("MISMATCH  type=%zub n=%zu lambda=%zu t=%zu shape=%d\n",
-                    sizeof(T), n, lambda, t, shape);
+        std::printf("MISMATCH  type=%zub n=%zu lambda=%zu t=%zu shape=%d dataset=%s\n",
+                    sizeof(T), v.size(), lambda, t, shape,
+                    shape >= 6 ? stratum::testing::battery()[dataset].name : "-");
         std::exit(1);
     }
 }
@@ -94,5 +116,6 @@ int main(int argc, char** argv) {
             case 7: oneCase<uint64_t>(); break;
         }
     }
-    std::printf("OK: %lld cases, no disagreement with std::sort\n", cases);
+    std::printf("OK: %lld cases (%lld from the section 4 battery), no disagreement with std::sort\n",
+                cases, batteryCases);
 }
