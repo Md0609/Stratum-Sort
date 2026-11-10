@@ -65,7 +65,7 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
                 include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp
 
 .PHONY: all test contract sanitizers fuzz timings examples \
-        research studies ab baseline profile counters overhead release-identity \
+        research studies ab baseline linux-baseline profile counters overhead release-identity \
         package package-verify clean help
 
 # ============================================================
@@ -187,12 +187,25 @@ endif
 #   make ab A=master B=HEAD SESSIONS=1 SIZES=1e4,1e5 TYPES=int64,uint32
 A ?= master
 B ?= WORKTREE
+# Kept in a variable: inside $(or ...) a literal comma would split the list,
+# and `make ab` without SIZES measured only n = 1e4.
+AB_SIZES_DEFAULT := 1e4,1e5,1e6,1e7
 ab:
 	@if [ ! -f research/tools/ab_compare.sh ]; then \
 	    echo "make ab needs the repository (research/ is not in the package)."; exit 2; fi
-	SESSIONS=$(or $(SESSIONS),3) REPS=$(or $(REPS),9) WARMUP=$(or $(WARMUP),1) SIZES=$(or $(SIZES),1e4,1e5,1e6,1e7) \
+	SESSIONS=$(or $(SESSIONS),3) REPS=$(or $(REPS),9) WARMUP=$(or $(WARMUP),1) SIZES=$(or $(SIZES),$(AB_SIZES_DEFAULT)) \
 	TYPES=$(or $(TYPES),int64) DATASETS=$(DATASETS) FLOORS=$(FLOORS) OUT=$(OUT) CXX=$(CXX) \
 	    bash research/tools/ab_compare.sh $(A) $(B)
+
+# SS-1: the Linux baseline of the release build - SESSIONS runs of the same
+# build/timings over the whole battery, the baseline CSV and the measured
+# noise floors (research/tools/baseline_linux.sh, research/BENCHMARKS.md).
+linux-baseline:
+	@if [ ! -f research/tools/baseline_linux.sh ]; then \
+	    echo "make linux-baseline needs the repository (research/ is not in the package)."; exit 2; fi
+	SESSIONS=$(or $(SESSIONS),3) REPS=$(or $(REPS),9) WARMUP=$(or $(WARMUP),1) SIZES=$(or $(SIZES),all) \
+	TYPES=$(or $(TYPES),all) DATASETS=$(DATASETS) VERSION=$(VERSION) CXX=$(CXX) \
+	    bash research/tools/baseline_linux.sh
 
 # For research-only changes: is the release machine code of the working
 # tree byte-identical to BASE's? (research/tools/release_identity.sh)
@@ -339,4 +352,4 @@ help:
 	@echo "Product:  make all | test | sanitizers | fuzz | timings | examples"
 	@echo "Package:  make package | package-verify   -> dist/$(PKGNAME).zip"
 	@echo "Research: make research       (built, never shipped)"
-	@echo "Measure:  make ab A=<rev> B=<rev|WORKTREE> | baseline | profile | counters | overhead | release-identity BASE=<rev>"
+	@echo "Measure:  make ab A=<rev> B=<rev|WORKTREE> | linux-baseline | baseline | profile | counters | overhead | release-identity BASE=<rev>"
