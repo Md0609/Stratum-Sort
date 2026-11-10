@@ -18,15 +18,36 @@ Definitions (the same as research/tools/ab_table.py, objective.md section 4):
   u              the larger of the built-in threshold (6 %, ManyRepeated
                  18 %, Concentrated 12 %) and the floor measured here.
 
-Noise floor of a dataset ("3 runs of the same binary", objective.md
-section 4). The sessions run the same binary on the same inputs, so any
-difference between them is noise. For every (type, n) row with
-n >= --floor-min-n, the spread of the per-session medians is
-max/min - 1, taken both of the Stratum Sort time (what a B/A comparison
-sees) and of the ratio against std::sort (what a verdict sees). The floor
-of the dataset is the largest of those spreads over its rows. n = 10^3 is
-left out by default: the whole sort takes microseconds there, and the meta
-B only asks it not to lose.
+Noise floor of a dataset (objective.md section 4: "3 runs of the same
+binary"). Two measurements of the same code, both kept:
+
+  ab_floor       with --ab-raw: the raw.csv of `make ab A=master B=master`
+                 (3 sessions, one process per repetition, ABBA). For every
+                 (type, n) row, the largest |session median of B/A - 1|;
+                 the floor of the dataset is the largest over its rows.
+                 This is exactly the quantity G3 (a) thresholds, so with
+                 u >= ab_floor the same code cannot be called "pierde".
+                 It is the floor that is applied, and the one written in
+                 the 'threshold' column of --floors.
+  single_spread  the spread (max/min - 1) of the per-session medians of the
+                 ratio against std::sort in the sessions given here, each
+                 ONE process. It also contains the per-process effects
+                 (layout, ASLR, cache state) that `make ab` averages over 9
+                 processes per session, so it is larger; it is reported,
+                 and only applied when --ab-raw is not given.
+
+Rows with n < --floor-min-n (default 10^4) do not count: at n = 10^3 the
+whole sort takes microseconds, and the meta B only asks it not to lose.
+
+Why the ratio and not the absolute time: on a shared VM the whole machine
+drifts between back-to-back sessions (measured on 2026-11-10: one session
+~25 % faster than the others on every dataset). That drift moves Stratum
+Sort and std::sort together, so it cancels in the ratio, and `make ab`
+cancels it the same way by alternating A and B in adjacent processes.
+The spread of the absolute time is still written per row
+(stratum_session_spread) so the drift stays visible, but using it as the
+floor would only measure the machine's drift and push every threshold to
+30-80 %, which would make G3 unable to reject anything.
 
 Outputs:
   --out     the baseline: '#' lines (system, flags, commit, command) and one
@@ -67,6 +88,7 @@ def main():
     ap.add_argument("--floors", required=True, help="per-dataset floors CSV to write")
     ap.add_argument("--meta", action="append", default=[],
                     help="extra '# key: value' line for the header (repeatable)")
+    ap.add_argument("--ab-raw", help="raw.csv of `make ab A=<rev> B=<same rev>` for the floors")
     ap.add_argument("--floor-min-n", type=int, default=10000,
                     help="smallest n that counts towards the noise floor (default 1e4)")
     args = ap.parse_args()
@@ -107,18 +129,45 @@ def main():
     nsess = len(args.sessions)
 
     # Pass 1: noise floors per dataset.
-    floor = {}
-    worst = {}
+    single = {}
+    single_worst = {}
     for key in keys:
         typ, ds, n = key
         if key in na or n < args.floor_min_n or len(ratios[key]) < 2:
             continue
-        sm = [statistics.median(v) for v in s_ms[key].values()]
         rm = [statistics.median(v) for v in ratios[key].values()]
-        f = max(spread(sm), spread(rm))
-        if f > floor.get(ds, -1.0):
-            floor[ds] = f
-            worst[ds] = "%s n=%d" % (typ, n)
+        f = spread(rm)
+        if f > single.get(ds, -1.0):
+            single[ds] = f
+            single_worst[ds] = "%s n=%d" % (typ, n)
+
+    abf = {}
+    ab_worst = {}
+    ab_sessions = 0
+    if args.ab_raw:
+        ms = {}
+        with open(args.ab_raw, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["status"] != "ok":
+                    if row["status"] != "na":
+                        mismatches.append((args.ab_raw, row["dataset"], row["rep"]))
+                    continue
+                k = (row["type"], row["dataset"], int(row["n"]))
+                ms[(k, row["side"], int(row["session"]), int(row["rep"]))] = float(row["stratum_ms"])
+        ba = defaultdict(lambda: defaultdict(list))
+        for (k, side, sess, rep), a in ms.items():
+            b = ms.get((k, "B", sess, rep))
+            if side == "A" and b is not None and a > 0:
+                ba[k][sess].append(b / a)
+        for (typ, ds, n), per in ba.items():
+            if n < args.floor_min_n:
+                continue
+            ab_sessions = max(ab_sessions, len(per))
+            dev = max(abs(statistics.median(v) - 1.0) for v in per.values())
+            if dev > abf.get(ds, -1.0):
+                abf[ds] = dev
+                ab_worst[ds] = "%s n=%d" % (typ, n)
+    floor = abf if args.ab_raw else single
 
     # Pass 2: one row per (type, dataset, n), sizes ascending within a type,
     # datasets in battery order.
@@ -131,6 +180,9 @@ def main():
     with open(args.out, "w", newline="") as out:
         for line in header:
             out.write(line + "\n")
+        if args.ab_raw:
+            out.write("# floors: from %s (%d sessions of the same code, ABBA); see the floors file\n"
+                      % (args.ab_raw, ab_sessions))
         for m in args.meta:
             out.write("# " + m + "\n")
         out.write("# sessions=%d floor_min_n=%d; ratio = Stratum Sort / std::sort; range = "
@@ -138,13 +190,14 @@ def main():
                   "release build only\n" % (nsess, args.floor_min_n))
         w = csv.writer(out, lineterminator="\n")
         w.writerow(["type", "dataset", "n", "n_real", "reps", "ratio_median", "ratio_min",
-                    "ratio_max", "stratum_ms_median", "std_ms_median", "session_spread",
+                    "ratio_max", "stratum_ms_median", "std_ms_median", "ratio_session_spread",
+                    "stratum_session_spread",
                     "threshold", "verdict_linux", "verdict_m4"])
         for key in rows:
             typ, ds, n = key
             u = max(KNOWN_FLOORS.get(ds, DEFAULT_THRESHOLD), floor.get(ds, 0.0))
             if key in na or not ratios[key]:
-                w.writerow([typ, ds, n, "", 0, "", "", "", "", "", "", "%.3f" % u, "n/a",
+                w.writerow([typ, ds, n, "", 0, "", "", "", "", "", "", "", "%.3f" % u, "n/a",
                             "pendiente"])
                 counts["n/a"] += 1
                 continue
@@ -158,19 +211,30 @@ def main():
                         "%.4f" % min(sess_med), "%.4f" % max(sess_med),
                         "%.6f" % statistics.median([x for y in s_ms[key].values() for x in y]),
                         "%.6f" % statistics.median([x for y in t_ms[key].values() for x in y]),
-                        "%.4f" % spread(sm), "%.3f" % u, v, "pendiente"])
+                        "%.4f" % spread(sess_med), "%.4f" % spread(sm), "%.3f" % u, v,
+                        "pendiente"])
 
     with open(args.floors, "w", newline="") as f:
         w = csv.writer(f, lineterminator="\n")
-        f.write("# Linux noise floors per dataset: max over (type, n >= %d) of the spread "
-                "(max/min - 1) of the per-session medians of %d runs of the same binary.\n"
-                % (args.floor_min_n, nsess))
+        if args.ab_raw:
+            f.write("# Linux noise floors per dataset (threshold): max over (type, n >= %d) of "
+                    "|session median of B/A - 1| in an A/B of the same code, %d sessions.\n"
+                    % (args.floor_min_n, ab_sessions))
+        else:
+            f.write("# Linux noise floors per dataset (threshold): max over (type, n >= %d) of the "
+                    "spread of the per-session medians of the ratio to std::sort, %d single-process "
+                    "sessions of the same binary.\n" % (args.floor_min_n, nsess))
+        f.write("# single_spread: that spread in the %d single-process baseline sessions "
+                "(reported, larger: includes per-process effects).\n" % nsess)
         f.write("# Usable as `make ab FLOORS=<this file>` (first two columns).\n")
-        w.writerow(["dataset", "threshold", "builtin", "applied", "worst_row"])
+        w.writerow(["dataset", "threshold", "builtin", "applied", "worst_row", "single_spread",
+                    "single_worst_row"])
         for ds in sorted(floor, key=lambda d: order[d]):
             builtin = KNOWN_FLOORS.get(ds, DEFAULT_THRESHOLD)
             w.writerow([ds, "%.3f" % floor[ds], "%.3f" % builtin,
-                        "%.3f" % max(builtin, floor[ds]), worst[ds]])
+                        "%.3f" % max(builtin, floor[ds]),
+                        ab_worst.get(ds) if args.ab_raw else single_worst[ds],
+                        "%.3f" % single.get(ds, float("nan")), single_worst.get(ds, "")])
 
     print("baseline: %d rows (%s), %d sessions -> %s"
           % (len(rows), ", ".join("%d %s" % (c, k) for k, c in sorted(counts.items())),

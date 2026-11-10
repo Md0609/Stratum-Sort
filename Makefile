@@ -187,10 +187,13 @@ endif
 #   make ab A=master B=HEAD SESSIONS=1 SIZES=1e4,1e5 TYPES=int64,uint32
 A ?= master
 B ?= WORKTREE
+# Kept in a variable: inside $(or ...) a literal comma would split the list,
+# and `make ab` without SIZES measured only n = 1e4.
+AB_SIZES_DEFAULT := 1e4,1e5,1e6,1e7
 ab:
 	@if [ ! -f research/tools/ab_compare.sh ]; then \
 	    echo "make ab needs the repository (research/ is not in the package)."; exit 2; fi
-	SESSIONS=$(or $(SESSIONS),3) REPS=$(or $(REPS),9) WARMUP=$(or $(WARMUP),1) SIZES=$(or $(SIZES),1e4,1e5,1e6,1e7) \
+	SESSIONS=$(or $(SESSIONS),3) REPS=$(or $(REPS),9) WARMUP=$(or $(WARMUP),1) SIZES=$(or $(SIZES),$(AB_SIZES_DEFAULT)) \
 	TYPES=$(or $(TYPES),int64) DATASETS=$(DATASETS) FLOORS=$(FLOORS) OUT=$(OUT) CXX=$(CXX) \
 	    bash research/tools/ab_compare.sh $(A) $(B)
 
