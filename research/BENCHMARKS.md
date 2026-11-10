@@ -187,7 +187,8 @@ separate days or reboots, so they share whatever slow drift the machine
 has; and on a shared VM a neighbour's load lands in some repetitions and
 not others. A run of `master` against itself is the way to see the floor
 on a given machine, and it has produced false `pierde` rows on this one
-(see "A/B of the same code, measured" below). That is what SS-1 measures per dataset.
+(see "A/B of the same code, measured" below). That is what SS-1 measures per dataset
+(see "Linux baseline (SS-1)" below).
 
 ### A/B of the same code, measured (Linux x86_64 VM, 4 cores, GCC 13.3)
 
@@ -204,10 +205,79 @@ Every one of those non-`empate` rows is noise by construction — the code
 was the same. With 6 % and three back-to-back sessions this machine
 produces roughly one false row per hundred; that is a property of the
 machine and of consecutive sessions, not something to fix by moving the
-threshold. Until SS-1 has measured the Linux floors per dataset (and
-passed them with `FLOORS=`), read an isolated `pierde` just over 6 % with
-a session range touching 1.0 as "re-run it", and treat
-`make release-identity` as decisive for research-only changes.
+threshold. SS-1 has since measured the Linux floors per dataset: pass
+`FLOORS=research/baselines/v0.10.0-linux-x86_64-floors.csv`. Without it,
+read an isolated `pierde` just over 6 % with a session range touching 1.0
+as "re-run it", and treat `make release-identity` as decisive for
+research-only changes.
+
+## Linux baseline (SS-1) — `make linux-baseline`
+
+The reference every G3 verdict and every performance PR is compared
+against on Linux. Files in `research/baselines/`:
+
+| file | what |
+|---|---|
+| `v0.10.0-linux-x86_64.csv` | one row per `type × dataset × n` (26 datasets, `n = 10³…10⁷`, `int64_t` and `uint32_t`): median ratio against `std::sort` over 3 × 9 repetitions, range (min–max of the 3 session medians), median times, the spreads between sessions, the threshold applied, `verdict_linux` and `verdict_m4` (`pendiente` until the author adds the M4 CSV, objective.md §7). The `#` header carries SystemInfo (CPU, compiler, flags, λ, t, D), the commit and the commands |
+| `v0.10.0-linux-x86_64-floors.csv` | the measured Linux noise floor per dataset; pass it to `make ab FLOORS=research/baselines/v0.10.0-linux-x86_64-floors.csv` |
+| `raw/v0.10.0-linux-x86_64-s{1,2,3}.csv` | the three sessions, one row per repetition (`timings --csv`) |
+| `raw/v0.10.0-linux-x86_64-ab-same-code.{csv,md}` | the A/B of `master` against itself that the floors come from, and its G3 table |
+
+Regenerate (release build only, G7; about 25 min + 85 min on a 4-core Xeon VM):
+
+```bash
+make linux-baseline                                   # 3 sessions, writes the three files above
+make ab A=master B=master TYPES=int64,uint32 OUT=build/ab/noise
+cp build/ab/noise/raw.csv research/baselines/raw/v0.10.0-linux-x86_64-ab-same-code.csv
+python3 research/tools/baseline_table.py research/baselines/raw/v0.10.0-linux-x86_64-s{1,2,3}.csv \
+    --ab-raw research/baselines/raw/v0.10.0-linux-x86_64-ab-same-code.csv \
+    --out research/baselines/v0.10.0-linux-x86_64.csv \
+    --floors research/baselines/v0.10.0-linux-x86_64-floors.csv --meta "commit: …"
+```
+
+`make linux-baseline` runs `build/timings --csv --sizes all --types all
+--reps 9 --warmup 1` three times back to back (each session is one
+process; every repetition times Stratum Sort and then `std::sort` on the
+same input) and calls `research/tools/baseline_table.py`. Variables:
+`SESSIONS` (3), `REPS` (9), `WARMUP` (1), `SIZES` (all), `TYPES` (all),
+`DATASETS`, and `NAME`/`OUTDIR` in the environment.
+
+**Verdicts** use exactly the definitions of `make ab` (above), with
+u = the larger of the built-in threshold and the measured floor.
+
+**The noise floor**, measured on 2026-11-10 in two ways, both kept in the
+floors file:
+
+- `threshold` (applied): `make ab` of the same commit against itself,
+  3 × 9, `10⁴…10⁷`, both types. Per row, the largest |session median of
+  B/A − 1|; per dataset, the largest over its rows (`n ≥ 10⁴`). This is the
+  quantity G3 (a) thresholds, so with u at least this large the same code
+  cannot come out `pierde`. Result: 5.5–20 % (OrganPipe 20 %, Adv3MassiveDup
+  16 %, Concentrated 14 %; 25 of 26 datasets above 6 %, ManyRepeated keeps
+  its built-in 18 %). That run, at the
+  plain 6 %, rejected itself once (RandomUniform 10⁵ uint32) and gave three
+  false `gana`.
+- `single_spread` (reported): the spread (max/min − 1) of the session medians
+  of the ratio against `std::sort` in the three baseline sessions — "three
+  runs of the same binary". It is larger (up to 69 %, mostly at `n = 10⁴` and
+  `10⁵`) because each session is ONE process, so per-process effects (memory
+  layout, cache and frequency state) are not averaged, whereas `make ab`
+  runs 9 processes per session.
+
+The absolute times drifted between the back-to-back sessions (session 3
+about 25 % faster on every dataset, `stratum_session_spread` in the CSV);
+that drift moves both sorts together and cancels in the ratio, which is why
+no floor is taken from absolute times.
+
+**What the baseline says** (Linux, 2026-11-10; the M4 is still pending):
+at `n ≥ 10⁴` Stratum Sort wins on the uniform-like, gaussian, concentrated,
+small/huge-range, sawtooth, organ-pipe, sorted-plus-tail and few-distinct
+(16, 256) inputs, and loses on SortedDescending, FewDistinct2 (`int64_t`),
+Adv4DominantOutliers, Adv5Alternating, Adv6OneBucketFar (`int64_t`),
+Adv7MaximalLeaf and Adv8TotalCost (4.5–8×); SortedAscending and NearlySorted
+move between `gana`, `empate` and `pierde` with `n` and the type, and several
+`uint32_t` rows that win up to `10⁶` lose at `10⁷`. At `n = 10³` it loses on 15 of 26
+datasets per type. The per-row numbers are in the CSV.
 
 ## Total-work counter (objective.md A2) — `make counters`
 

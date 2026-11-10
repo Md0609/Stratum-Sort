@@ -1,0 +1,30 @@
+# Linux noise floors per dataset (threshold): max over (type, n >= 10000) of |session median of B/A - 1| in an A/B of the same code, 3 sessions.
+# single_spread: that spread in the 3 single-process baseline sessions (reported, larger: includes per-process effects).
+# Usable as `make ab FLOORS=<this file>` (first two columns).
+dataset,threshold,builtin,applied,worst_row,single_spread,single_worst_row
+RandomUniform,0.118,0.060,0.118,uint32 n=10000,0.063,int64 n=100000
+SortedAscending,0.084,0.060,0.084,int64 n=10000,0.324,uint32 n=100000
+SortedDescending,0.093,0.060,0.093,uint32 n=100000,0.309,int64 n=100000
+ManyRepeated,0.096,0.180,0.180,uint32 n=100000,0.196,int64 n=100000
+NormalGaussian,0.098,0.060,0.098,uint32 n=1000000,0.113,uint32 n=10000000
+Concentrated,0.139,0.120,0.139,uint32 n=100000,0.174,uint32 n=100000
+SmallRangeManyEl,0.133,0.060,0.133,uint32 n=10000,0.104,int64 n=1000000
+HugeRangeFewEl,0.055,0.060,0.060,int64 n=10000000,0.099,uint32 n=10000
+FullRangeExtremes,0.086,0.060,0.086,int64 n=10000,0.071,int64 n=10000
+AdversarialPeeling,0.110,0.060,0.110,int64 n=100000,0.083,int64 n=10000
+NearlySorted,0.121,0.060,0.121,int64 n=1000000,0.165,int64 n=10000
+SortedPlusTail,0.083,0.060,0.083,uint32 n=10000,0.174,int64 n=1000000
+OrganPipe,0.201,0.060,0.201,int64 n=10000,0.122,uint32 n=10000000
+Sawtooth,0.069,0.060,0.069,uint32 n=10000,0.198,int64 n=1000000
+FewDistinct2,0.121,0.060,0.121,int64 n=10000,0.320,int64 n=10000
+FewDistinct16,0.072,0.060,0.072,int64 n=1000000,0.175,uint32 n=100000
+FewDistinct256,0.111,0.060,0.111,int64 n=10000,0.259,int64 n=10000
+AllEqual,0.119,0.060,0.119,int64 n=100000,0.487,int64 n=10000
+Adv1AllEqual,0.100,0.060,0.100,uint32 n=100000,0.573,uint32 n=10000
+Adv2AllDistinct,0.129,0.060,0.129,uint32 n=10000,0.086,int64 n=1000000
+Adv3MassiveDup,0.158,0.060,0.158,uint32 n=10000,0.245,uint32 n=1000000
+Adv4DominantOutliers,0.118,0.060,0.118,int64 n=10000,0.527,uint32 n=10000
+Adv5Alternating,0.118,0.060,0.118,uint32 n=100000,0.544,uint32 n=10000
+Adv6OneBucketFar,0.085,0.060,0.085,uint32 n=100000,0.312,int64 n=1000000
+Adv7MaximalLeaf,0.130,0.060,0.130,uint32 n=100000,0.689,uint32 n=100000
+Adv8TotalCost,0.077,0.060,0.077,uint32 n=10000,0.405,uint32 n=100000
