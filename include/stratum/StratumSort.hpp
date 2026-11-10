@@ -339,6 +339,15 @@ private:
                    std::size_t depth);
     void noteLocalAlgorithm(const char* name);
     void noteMemory(std::size_t bytes);
+    // Total-work counter (objective.md A2): element reads, writes and
+    // comparisons in every phase. notePassWork() records one whole pass
+    // (analyze, scanRange, a distribution step, the join) with its exact
+    // per-element cost; noteElementMoves() records individual reads and
+    // writes inside the local sorts, whose comparisons noteComparisons()
+    // already counts. Empty in a release build, like every wrapper above.
+    void notePassWork(const char* phase, std::size_t reads, std::size_t writes,
+                      std::size_t comparisons, std::size_t bucketOps);
+    void noteElementMoves(std::size_t reads, std::size_t writes);
 
     std::size_t targetElementsPerBin_;   // lambda: target occupancy
     std::size_t leafThreshold_;          // t: base-case size

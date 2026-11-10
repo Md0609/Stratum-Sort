@@ -36,8 +36,10 @@
 // a caller actually gets. Assertions inside the algorithm are active
 // because the build does not define NDEBUG.
 #include "stratum/StratumSort.hpp"
+#include "DatasetGenerator.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -964,6 +966,114 @@ void testParameterCeilings() {
 #endif
 }
 
+#ifdef STRATUM_ENABLE_METRICS
+// ------------------------------------------------------------------
+// 10. Total-work counter (objective.md A2)
+// ------------------------------------------------------------------
+// The counter is only useful if it is exact, deterministic and covers
+// every phase. Pinned here: a hand-computed case down to the last read,
+// the closed forms of the bulk passes, agreement of the refinement row
+// with an independent counter (workByDepth), determinism across instances
+// and reuse, and linear growth on uniform input from n = 1e4 to 1e6.
+void testTotalWorkCounter() {
+    section("10. Total-work counter");
+    using W = stratum::SortMetrics::WorkPhase;
+    auto row = [](const StratumSort<int64_t>& s, W p) { return s.metrics().work(p); };
+    auto same = [](const stratum::SortMetrics::WorkCounts& a, const stratum::SortMetrics::WorkCounts& b) {
+        return a.reads == b.reads && a.writes == b.writes && a.comparisons == b.comparisons &&
+               a.bucketOps == b.bucketOps;
+    };
+
+    // {3, 1, 2} at the defaults, by hand. One bucket, so the distribution
+    // is the memcpy path (3 reads, 3 writes). analyze: 3 reads, 6
+    // comparisons. detectRun: 2 steps x (2 reads, 2 comparisons). The
+    // insertion sort: per key 1 read + 1 final write; inner steps 3
+    // (read + comparison each), 2 of them shifting (1 write each). join:
+    // 3 reads, 3 writes.
+    {
+        std::vector<int64_t> v{3, 1, 2};
+        StratumSort<int64_t> s;
+        s.sort(v);
+        const auto t = s.metrics().totalWork();
+        check(t.reads == 18 && t.writes == 10 && t.comparisons == 13 && t.bucketOps == 0 &&
+                  t.total() == 41,
+              "total work of {3,1,2} is exactly 18 reads, 10 writes, 13 comparisons");
+        check(row(s, W::LocalSort).comparisons == s.metrics().comparisons(),
+              "the local-sort comparisons of the work counter equal comparisons()");
+    }
+
+    std::vector<double> perN;
+    std::vector<double> ns;
+    bool exact = true, deterministic = true, refineAgrees = true, noUnknown = true;
+    for (const std::size_t n : {std::size_t{10000}, std::size_t{100000}, std::size_t{1000000}}) {
+        stratum::testing::DatasetGenerator gen(42);
+        const std::vector<int64_t> base = gen.randomUniform(n);
+
+        std::vector<int64_t> v = base;
+        StratumSort<int64_t> s;
+        s.sort(v);
+        const std::size_t bins = (n + s.targetElementsPerBin() - 1) / s.targetElementsPerBin();
+
+        // Closed forms of the bulk passes.
+        const auto an = row(s, W::Analyze), di = row(s, W::Distribute), jo = row(s, W::Join);
+        exact &= an.reads == n && an.writes == 0 && an.comparisons == 2 * n;
+        exact &= di.reads == 2 * n && di.writes == n && di.bucketOps == bins;
+        exact &= jo.reads == n && jo.writes == n;
+        exact &= row(s, W::LocalSort).comparisons == s.metrics().comparisons();
+        noUnknown &= !s.metrics().hasUnknownWorkPhase();
+
+        // Deterministic: a second instance, and the first one reused.
+        std::vector<int64_t> v2 = base, v3 = base;
+        StratumSort<int64_t> s2;
+        s2.sort(v2);
+        s.sort(v3);
+        for (std::size_t p = 0; p < stratum::SortMetrics::kWorkPhases; ++p) {
+            deterministic &= same(row(s2, static_cast<W>(p)), s.metrics().work(static_cast<W>(p)));
+        }
+        deterministic &= s2.metrics().totalWork().total() == s.metrics().totalWork().total();
+
+        perN.push_back(static_cast<double>(s.metrics().totalWork().total()) / static_cast<double>(n));
+        ns.push_back(static_cast<double>(n));
+        std::cout << "   uniform n = " << n << ": total work " << s.metrics().totalWork().total()
+                  << " (" << perN.back() << " per element)" << std::endl;
+    }
+
+    // An input that does refine: the refinement row must equal the work
+    // the independent workByDepth counter saw (2 reads + 1 write per element
+    // of every split bin), and scanRange must have run on at least those.
+    {
+        stratum::testing::DatasetGenerator gen(42);
+        std::vector<int64_t> v = gen.concentrated(100000);
+        StratumSort<int64_t> s;
+        s.sort(v);
+        std::size_t split = 0;
+        for (const std::size_t w : s.metrics().workByDepth()) split += w;
+        const auto re = row(s, W::Refine), sc = row(s, W::ScanRange);
+        refineAgrees = split > 0 && re.reads == 2 * split && re.writes == split &&
+                       sc.reads >= split && re.bucketOps >= 2 * s.metrics().subdivisions();
+    }
+
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (std::size_t i = 0; i < ns.size(); ++i) {
+        const double x = std::log(ns[i]), y = std::log(perN[i] * ns[i]);
+        sx += x; sy += y; sxx += x * x; sxy += x * y;
+    }
+    const double m = static_cast<double>(ns.size());
+    const double exponent = (m * sxy - sx * sy) / (m * sxx - sx * sx);
+    const double spread = *std::max_element(perN.begin(), perN.end()) /
+                          *std::min_element(perN.begin(), perN.end());
+    std::cout << "   fitted exponent " << exponent << ", work/n max/min " << spread << std::endl;
+
+    check(exact, "analyze, distribute and join match their closed forms exactly");
+    check(noUnknown, "every pass is recorded under a known phase");
+    check(deterministic, "the work counter is identical across instances and reuse");
+    check(refineAgrees, "the refinement row agrees with workByDepth and scanRange covers it");
+    check(exponent >= 0.98 && exponent <= 1.02,
+          "total work grows linearly on uniform input (fitted exponent within 1 +- 0.02)");
+    check(spread <= 1.10, "total work per element varies by at most 10% from n = 1e4 to 1e6");
+}
+#endif
+
 } // namespace
 
 // Allocation limiter for the exception-safety test. Defined at namespace
@@ -1082,6 +1192,9 @@ int main() {
     testDispatchDecoupling();
 #endif
     testParameterCeilings();
+#ifdef STRATUM_ENABLE_METRICS
+    testTotalWorkCounter();
+#endif
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

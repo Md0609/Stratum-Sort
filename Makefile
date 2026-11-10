@@ -65,7 +65,8 @@ ALGO_HEADERS := include/stratum/Config.hpp include/stratum/Metrics.hpp \
                 include/stratum/StratumSort.hpp include/stratum/StratumSort.tpp
 
 .PHONY: all test contract sanitizers fuzz timings examples \
-        research studies package package-verify clean help
+        research studies ab baseline profile counters overhead release-identity \
+        package package-verify clean help
 
 # ============================================================
 # PRODUCT
@@ -78,17 +79,17 @@ all: build/tests build/contract build/contract_research \
      build/timings build/example_basic
 
 # ---- Correctness: TEST configuration, assertions ACTIVE --------------------
-build/tests: tests/main.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
+build/tests: tests/main.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp datasets/Battery.hpp
 	@mkdir -p build
 	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
 # Built in BOTH configurations: release validates what a caller gets,
 # research pins the documented differences between the two.
-build/contract: tests/api_contract.cpp $(ALGO_HEADERS)
+build/contract: tests/api_contract.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
 	@mkdir -p build
 	$(CXX) $(TEST_CXXFLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
-build/contract_research: tests/api_contract.cpp $(ALGO_HEADERS)
+build/contract_research: tests/api_contract.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp
 	@mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(PROD_INC) $(DEF_RESEARCH) $< -o $@
 
@@ -101,12 +102,13 @@ build/sanitizers: tests/edge_sanitizers.cpp $(ALGO_HEADERS) datasets/DatasetGene
 	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
 # ---- Differential fuzz against std::sort -----------------------------------
-build/fuzz: tests/differential_fuzz.cpp $(ALGO_HEADERS)
+# The fuzz also draws from the section 4 battery (datasets/Battery.hpp).
+build/fuzz: tests/differential_fuzz.cpp $(ALGO_HEADERS) datasets/DatasetGenerator.hpp datasets/Battery.hpp
 	@mkdir -p build
 	$(CXX) $(STD) -O1 -g -fsanitize=address,undefined $(WARN_FLAGS) $(PROD_INC) $(DEF_TEST) $< -o $@
 
 # ---- The ONLY binary whose clock may be quoted -----------------------------
-build/timings: benchmarks/timings.cpp $(ALGO_HEADERS) benchmarks/SystemInfo.hpp datasets/DatasetGenerator.hpp
+build/timings: benchmarks/timings.cpp $(ALGO_HEADERS) benchmarks/SystemInfo.hpp datasets/DatasetGenerator.hpp datasets/Battery.hpp
 	@mkdir -p build
 	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) $(DEF_PROD) $< -o $@
 
@@ -132,8 +134,13 @@ sanitizers: build/sanitizers
 fuzz: build/fuzz
 	./build/fuzz $(N)
 
+# Default: n = 1e5 and 1e6, int64_t, the whole section 4 battery, human
+# table. Everything else through TIMINGS_ARGS, e.g.
+#   make timings TIMINGS_ARGS="--sizes all --types all --csv"
+# See research/BENCHMARKS.md. For a VERDICT use `make ab`, not this.
+TIMINGS_ARGS ?=
 timings: build/timings
-	./build/timings
+	./build/timings $(TIMINGS_ARGS)
 
 examples: build/example_basic
 	./build/example_basic
@@ -158,6 +165,9 @@ build/research_%: research/experiments/%.cpp
 	@mkdir -p build
 	$(CXX) $(RESEARCH_CXXFLAGS) $(RESEARCH_INC) $(DEF_RESEARCH) $< -o $@
 
+build/research_WorkCounters: datasets/Battery.hpp datasets/DatasetGenerator.hpp $(ALGO_HEADERS)
+build/research_AdversaryBattery: datasets/Battery.hpp $(ALGO_HEADERS)
+
 research studies: $(RESEARCH_BINARIES)
 ifeq ($(strip $(RESEARCH_SOURCES)),)
 	@echo "No research/ directory here - this is the distributed package."
@@ -165,6 +175,55 @@ ifeq ($(strip $(RESEARCH_SOURCES)),)
 else
 	@echo "$(words $(RESEARCH_BINARIES)) research programs built (not shipped)."
 endif
+
+# ---- Measurement instruments (research/BENCHMARKS.md) --------------------
+# Alternating A/B of two commits in the RELEASE configuration, with the G3
+# verdict table of objective.md section 5. A and B are git revisions, or
+# WORKTREE for the uncommitted include/. Defaults follow section 4: 3
+# sessions x 9 alternated repetitions, n = 1e4..1e7, int64_t. A full run
+# takes roughly half an hour on a 4-core x86 VM; shrink SIZES/SESSIONS for
+# a quick look and say so when quoting it.
+#   make ab A=v0.10.0 B=WORKTREE
+#   make ab A=master B=HEAD SESSIONS=1 SIZES=1e4,1e5 TYPES=int64,uint32
+A ?= master
+B ?= WORKTREE
+ab:
+	@if [ ! -f research/tools/ab_compare.sh ]; then \
+	    echo "make ab needs the repository (research/ is not in the package)."; exit 2; fi
+	SESSIONS=$(or $(SESSIONS),3) REPS=$(or $(REPS),9) WARMUP=$(or $(WARMUP),1) SIZES=$(or $(SIZES),1e4,1e5,1e6,1e7) \
+	TYPES=$(or $(TYPES),int64) DATASETS=$(DATASETS) FLOORS=$(FLOORS) OUT=$(OUT) CXX=$(CXX) \
+	    bash research/tools/ab_compare.sh $(A) $(B)
+
+# For research-only changes: is the release machine code of the working
+# tree byte-identical to BASE's? (research/tools/release_identity.sh)
+BASE ?= master
+release-identity:
+	CXX=$(CXX) bash research/tools/release_identity.sh $(BASE)
+
+# Research-build tools. Their COUNTERS may be quoted; their times never.
+baseline: build/research_ReferenceBaseline
+	./build/research_ReferenceBaseline
+
+profile: build/research_PhaseProfile
+	./build/research_PhaseProfile
+
+# Total-work counter (objective.md A2/A3) over the whole battery; diff two
+# runs for G2. Pass e.g. COUNTERS_ARGS="--sizes 1e3,1e4 --types int64".
+COUNTERS_ARGS ?=
+counters: build/research_WorkCounters
+	./build/research_WorkCounters $(COUNTERS_ARGS)
+
+# One source compiled twice, differing only in STRATUM_ENABLE_METRICS: the
+# cost of the instrumentation itself (research/tools/InstrumentationOverhead.cpp).
+build/overhead_release: research/tools/InstrumentationOverhead.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(PROD_CXXFLAGS) $(PROD_INC) $(DEF_PROD) $< -o $@
+build/overhead_research: research/tools/InstrumentationOverhead.cpp $(ALGO_HEADERS)
+	@mkdir -p build
+	$(CXX) $(STD) $(OPT_FLAGS) $(WARN_FLAGS) -DNDEBUG -DSTRATUM_ENABLE_METRICS $(PROD_INC) $(DEF_RESEARCH) $< -o $@
+overhead: build/overhead_release build/overhead_research
+	./build/overhead_release
+	./build/overhead_research
 
 # ============================================================
 # PACKAGE - the downloadable artefact
@@ -195,6 +254,7 @@ PACKAGE_FILES := \
 	tests/odr_guard_lib.cpp \
 	tests/odr_guard_main.cpp \
 	datasets/DatasetGenerator.hpp \
+	datasets/Battery.hpp \
 	benchmarks/timings.cpp \
 	benchmarks/SystemInfo.hpp \
 	examples/basic.cpp \
@@ -279,3 +339,4 @@ help:
 	@echo "Product:  make all | test | sanitizers | fuzz | timings | examples"
 	@echo "Package:  make package | package-verify   -> dist/$(PKGNAME).zip"
 	@echo "Research: make research       (built, never shipped)"
+	@echo "Measure:  make ab A=<rev> B=<rev|WORKTREE> | baseline | profile | counters | overhead | release-identity BASE=<rev>"

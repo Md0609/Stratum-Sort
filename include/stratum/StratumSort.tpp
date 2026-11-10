@@ -62,6 +62,15 @@ template <typename T>
 void StratumSort<T>::noteMemory(std::size_t bytes) {
     metrics_.addApproxMemory(bytes);
 }
+template <typename T>
+void StratumSort<T>::notePassWork(const char* phase, std::size_t reads, std::size_t writes,
+                                  std::size_t comparisons, std::size_t bucketOps) {
+    metrics_.recordPassWork(phase, reads, writes, comparisons, bucketOps);
+}
+template <typename T>
+void StratumSort<T>::noteElementMoves(std::size_t reads, std::size_t writes) {
+    metrics_.recordLocalSortMoves(reads, writes);
+}
 #else
 template <typename T>
 void StratumSort<T>::beginPhase(const char*) {}
@@ -77,6 +86,11 @@ template <typename T>
 void StratumSort<T>::noteLocalAlgorithm(const char*) {}
 template <typename T>
 void StratumSort<T>::noteMemory(std::size_t) {}
+template <typename T>
+void StratumSort<T>::notePassWork(const char*, std::size_t, std::size_t, std::size_t,
+                                  std::size_t) {}
+template <typename T>
+void StratumSort<T>::noteElementMoves(std::size_t, std::size_t) {}
 #endif
 
 // ============================================================
@@ -377,6 +391,15 @@ void StratumSort<T>::distribute(const std::vector<T>& data, const Partitioning& 
 
     countAndPlace(SourceSlice{data, 0, data.size()}, TargetSlice{bufferA_, 0}, grid, outBucketStart,
                   outBucketSize);
+    // Work model of countAndPlace (see SortMetrics::recordPassWork): two
+    // reads and one write per element plus one unit per bucket, or one
+    // read and one write per element on the single-bucket memcpy path.
+    // The metrics side also books analyze() here (n reads, 2n comparisons):
+    // every distribute() follows analyze() of the same n elements, and a
+    // separate empty call next to analyze() perturbed GCC's register
+    // allocation in the release build (see SortMetrics::recordPassWork).
+    notePassWork("distribute", grid.binCount == 1 ? data.size() : 2 * data.size(), data.size(), 0,
+                 grid.binCount == 1 ? 0 : grid.binCount);
 
     noteMemory(bufferA_.size() * sizeof(T) + bufferB_.size() * sizeof(T));
 }
@@ -430,6 +453,7 @@ typename StratumSort<T>::RefinedRange StratumSort<T>::refine(bool inBufferA,
 
     const std::vector<T>& current = inBufferA ? bufferA_ : bufferB_;
     const ValueRange observed = scanRange(current, start, count);
+    notePassWork("scanRange", count, 0, 2 * (count - 1), 0);
 
     if (observed.minimum == observed.maximum) {
         // Degenerate range: every element is identical, so the bin is
@@ -448,6 +472,7 @@ typename StratumSort<T>::RefinedRange StratumSort<T>::refine(bool inBufferA,
     std::vector<std::size_t> bucketSize;
     countAndPlace(SourceSlice{current, start, count}, TargetSlice{other, start}, grid, bucketStart,
                   bucketSize);
+    notePassWork("refine", 2 * count, count, 0, grid.binCount); // binCount >= 2 here
 
     noteSplit(count, grid.binCount,
               bucketSize.empty() ? 0 : *std::max_element(bucketSize.begin(), bucketSize.end()),
@@ -484,10 +509,16 @@ typename StratumSort<T>::RunShape StratumSort<T>::detectRun(const std::vector<T>
         // Two comparisons per step, both counted: the counter reflects
         // work done, not source lines.
         noteComparisons(2);
+        noteElementMoves(2, 0);
         if (buf[i] < buf[i - 1]) ascending = false;
         if (buf[i] > buf[i - 1]) descending = false;
         if (!ascending && !descending) return RunShape::Unsorted;
     }
+    // A descending range is about to be reversed by sortLeaf: count/2 swaps.
+    // Recorded here, not next to the std::reverse, because an empty call
+    // there measurably perturbed GCC's register allocation in the release
+    // build. The release object code is kept byte-identical (BENCHMARKS.md).
+    noteElementMoves(ascending ? 0 : count - count % 2, ascending ? 0 : count - count % 2);
     return ascending ? RunShape::Ascending : RunShape::Descending;
 }
 
@@ -557,11 +588,14 @@ template <typename T>
 void StratumSort<T>::insertionSort(std::vector<T>& arr, Index left, Index right) {
     for (Index i = left + 1; i <= right; ++i) {
         const T key = arr[i];
+        noteElementMoves(1, 1); // reading the key, and writing it back below
         Index j = i - 1;
         while (j >= left) {
             noteComparisons(1);
+            noteElementMoves(1, 0);
             if (arr[j] <= key) break;
             arr[j + 1] = arr[j];
+            noteElementMoves(0, 1);
             --j;
         }
         arr[j + 1] = key;
@@ -584,13 +618,17 @@ typename StratumSort<T>::Index StratumSort<T>::partition(std::vector<T>& arr, In
 
     const Index mid = left + (right - left) / 2;
 
+    // Work model: an element-vs-element comparison reads 2 elements, a
+    // comparison against the held pivot reads 1, a swap reads 2 and writes 2.
     noteComparisons(3);
-    if (arr[mid] < arr[left]) std::swap(arr[mid], arr[left]);
-    if (arr[right] < arr[left]) std::swap(arr[right], arr[left]);
-    if (arr[right] < arr[mid]) std::swap(arr[right], arr[mid]);
+    noteElementMoves(6, 0);
+    if (arr[mid] < arr[left]) { std::swap(arr[mid], arr[left]); noteElementMoves(2, 2); }
+    if (arr[right] < arr[left]) { std::swap(arr[right], arr[left]); noteElementMoves(2, 2); }
+    if (arr[right] < arr[mid]) { std::swap(arr[right], arr[mid]); noteElementMoves(2, 2); }
 
     const T pivot = arr[mid];
     std::swap(arr[mid], arr[right - 1]);
+    noteElementMoves(3, 2);
 
     Index i = left;
     Index j = right - 1;
@@ -598,15 +636,19 @@ typename StratumSort<T>::Index StratumSort<T>::partition(std::vector<T>& arr, In
         do {
             ++i;
             noteComparisons(1);
+            noteElementMoves(1, 0);
         } while (arr[i] < pivot);
         do {
             --j;
             noteComparisons(1);
+            noteElementMoves(1, 0);
         } while (arr[j] > pivot);
         if (i >= j) break;
         std::swap(arr[i], arr[j]);
+        noteElementMoves(2, 2);
     }
     std::swap(arr[i], arr[right - 1]);
+    noteElementMoves(2, 2);
     return i;
 }
 
@@ -700,15 +742,18 @@ void StratumSort<T>::siftDown(std::vector<T>& arr, Index base, Index root, Index
         Index swapIdx = root;
 
         noteComparisons(1);
+        noteElementMoves(2, 0);
         if (arr[swapIdx] < arr[child]) swapIdx = child;
 
         if (child + 1 <= end) {
             noteComparisons(1);
+            noteElementMoves(2, 0);
             if (arr[swapIdx] < arr[child + 1]) swapIdx = child + 1;
         }
 
         if (swapIdx == root) return;
         std::swap(arr[root], arr[swapIdx]);
+        noteElementMoves(2, 2);
         root = swapIdx;
     }
 }
@@ -735,6 +780,7 @@ void StratumSort<T>::heapSort(std::vector<T>& arr, Index left, Index right) {
     // Extract: swap the maximum to the end and shrink the heap by one.
     for (Index end = right; end > left; --end) {
         std::swap(arr[left], arr[end]);
+        noteElementMoves(2, 2);
         siftDown(arr, left, left, end - 1);
     }
 }
@@ -853,6 +899,9 @@ void StratumSort<T>::sort(std::vector<T>& data) {
     // strong exception guarantee documented in the header: any allocation
     // failure happens before the first write.
     beginPhase("join");
+    // The leaves tile [0, n) exactly once (verified above in a test
+    // build), so the join reads and writes every element exactly once.
+    notePassWork("join", data.size(), data.size(), 0, 0);
     for (const RefinedRange& root : roots) {
         appendLeaves(root, data);
     }

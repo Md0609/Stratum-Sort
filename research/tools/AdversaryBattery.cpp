@@ -12,6 +12,7 @@
 // comparison sort, and comparisons per element. If any leaf exceeds B(n),
 // the theorem is refuted and this program says so.
 #include "stratum/StratumSort.hpp"
+#include "Battery.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -24,40 +25,25 @@ using u64 = unsigned long long;
 using Vec = std::vector<int64_t>;
 static const u64 L = stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN;
 static const u64 D = stratum::MAX_SUBDIVISION_DEPTH;
-static u64 ipow(u64 s, u64 k) { u64 r = 1; for (u64 i = 0; i < k; ++i) r *= s; return r; }
-static bool fits(u64 s, u64 k, u64 lim) { u64 r = 1; for (u64 i = 0; i < k; ++i) { if (r > lim / s) return false; r *= s; } return true; }
 static double Bn(u64 n) {
     return std::min((double)n, std::pow(std::pow((double)L, (double)D + 1) * std::pow(2.0, 64) / (double)n, 1.0 / (double)D));
 }
-static int64_t offv(u64 off) { return (int64_t)((u64)std::numeric_limits<int64_t>::min() + off); }
 
-// The family that saturates the bound: core of s*L-D elements in a span of
+// The eight families live in datasets/Battery.hpp (adversaryFamily), so
+// that timings, the A/B and the fuzz run exactly these inputs. Family 7 is
+// the one that saturates the bound: a core of s*L-D elements in a span of
 // 1, one singleton peeled per level, filler placed so the top-level bucket
-// is exactly wide enough to hold the group.
+// is exactly wide enough to hold the group. Family 8 replicates it k times,
+// so nearly every element ends up in an expensive leaf: it maximises TOTAL
+// cost. Both are built against the lambda and D of THIS build.
+static const stratum::testing::AdversaryTarget kTarget{L, D};
 static Vec maximalLeaf(u64 n) {
-    const u64 s_top = (n + L - 1) / L, lim = (~u64(0)) / s_top;
-    u64 s = 2; while (fits(s + 1, D, lim)) ++s;
-    const u64 C = s * L - D;
-    Vec v; if (C + D > n) return v;
-    v.reserve(n);
-    for (u64 i = 0; i < C; ++i) v.push_back(offv(i % 2 == 0 ? 1 : 0));
-    for (u64 k = 1; k <= D; ++k) v.push_back(offv(ipow(s, k)));
-    while (v.size() < n) v.push_back(offv(s_top * ipow(s, D)));
-    return v;
+    std::mt19937_64 unused(0); // family 7 draws nothing
+    return stratum::testing::adversaryFamily<int64_t>(7, n, kTarget, unused);
 }
-// The same idea replicated k times, so nearly every element ends up in an
-// expensive leaf. This is the family that maximises TOTAL cost.
 static Vec totalCost(u64 nT) {
-    u64 s = 2; while (fits(s + 1, D, ((~u64(0)) / 2 / nT) * L)) ++s;
-    const u64 k = nT / (s * L); if (k < 2) return {};
-    const u64 C = s * L - D, stride = 2 * ipow(s, D + 1);
-    Vec v; v.reserve(k * s * L);
-    for (u64 g = 0; g < k; ++g) {
-        const u64 b = g * stride;
-        for (u64 i = 0; i < C; ++i) v.push_back(offv(b + (i % 2 == 0 ? 1 : 0)));
-        for (u64 q = 1; q <= D; ++q) v.push_back(offv(b + ipow(s, q)));
-    }
-    return v;
+    std::mt19937_64 unused(0); // family 8 draws nothing
+    return stratum::testing::adversaryFamily<int64_t>(8, nT, kTarget, unused);
 }
 
 struct Result { std::size_t worstLeaf; double cmpPerN; std::size_t depth; unsigned intro, quick; bool ok; };
@@ -95,17 +81,17 @@ int main() {
     for (u64 n : sizes) {
         struct Case { const char* name; Vec v; };
         std::vector<Case> cases;
-        { Vec v(n, 42); cases.push_back({"1 all equal", v}); }
-        { Vec v(n); for (u64 i = 0; i < n; ++i) v[i] = (int64_t)i; std::shuffle(v.begin(), v.end(), rng);
-          cases.push_back({"2 all distinct", v}); }
-        { Vec v(n); for (auto& x : v) x = (int64_t)(rng() % 8); cases.push_back({"3 massive duplicates", v}); }
-        { Vec v(n, 1000); for (u64 i = 0; i < n / 1000; ++i) v[i * 1000] = (int64_t)rng();
-          std::shuffle(v.begin(), v.end(), rng); cases.push_back({"4 dominant + outliers", v}); }
-        { Vec v(n); for (u64 i = 0; i < n; ++i) v[i] = (int64_t)(i % 2); cases.push_back({"5 alternating", v}); }
-        { Vec v(n); for (u64 i = 0; i < n; ++i) v[i] = (i < n - 1) ? (int64_t)(rng() % 4) : (int64_t)1e18;
-          cases.push_back({"6 one bucket + far", v}); }
-        { Vec v = maximalLeaf(n); if (!v.empty()) cases.push_back({"7 maximal leaf", v}); }
-        { Vec v = totalCost(n); if (!v.empty()) cases.push_back({"8 total cost", v}); }
+        // Same order as always: families 2, 3, 4 and 6 draw from the shared
+        // rng, so reordering them would change their inputs.
+        static const char* const names[8] = {"1 all equal",           "2 all distinct",
+                                             "3 massive duplicates",  "4 dominant + outliers",
+                                             "5 alternating",         "6 one bucket + far",
+                                             "7 maximal leaf",        "8 total cost"};
+        for (int f = 1; f <= 8; ++f) {
+            Vec v = stratum::testing::adversaryFamily<int64_t>(f, n, kTarget, rng);
+            if (f >= 7 && v.empty()) continue; // not constructible at this n
+            cases.push_back({names[f - 1], std::move(v)});
+        }
 
         for (auto& c : cases) {
             const u64 realN = c.v.size();

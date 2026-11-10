@@ -9,8 +9,10 @@
 // identically without it.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -44,6 +46,57 @@ public:
 
     enum class SubdivisionQuality { Useful, Marginal, Useless };
 
+    // ---- Total work (objective.md A2) ---------------------------------
+    // A deterministic count of everything the algorithm does to elements,
+    // in EVERY phase - not only the comparisons of the local sorts, which
+    // is all comparisons() sees. Exists so that a superlinearity hidden in
+    // the distribution or the refinement cannot stay invisible.
+    //
+    // The cost model, stated once so the numbers mean something:
+    //   reads        an element value loaded from an array. An element-vs-
+    //                element comparison reads 2; a comparison against a
+    //                value held in a local (insertion key, pivot) reads 1;
+    //                a swap reads 2 and writes 2.
+    //   writes       an element value stored into an array.
+    //   comparisons  every comparison involving an element value: the
+    //                min/max tests of analyze and scanRange (2 per element
+    //                after the first) PLUS every comparison of the local
+    //                sorts (exactly what comparisons() counts).
+    //   bucketOps    one unit per bucket per distribution step: the
+    //                histogram, the prefix sum and the child bookkeeping
+    //                are all O(buckets), and a bucket count that outgrew n
+    //                would show up here and nowhere else.
+    //   total()      reads + writes + comparisons + bucketOps.
+    //
+    // Per-pass costs (analyze, scanRange, distribution, join) are exact
+    // closed forms recorded once per pass; the local sorts record each
+    // read and write as it happens. Nothing here depends on the clock.
+    enum class WorkPhase : std::size_t {
+        Analyze, ScanRange, Distribute, Refine, LocalSort, Join, Count
+    };
+    static constexpr std::size_t kWorkPhases = static_cast<std::size_t>(WorkPhase::Count);
+
+    static const char* workPhaseName(WorkPhase p) {
+        static const char* const names[kWorkPhases] = {"analyze", "scanRange", "distribute",
+                                                       "refine",  "localSort", "join"};
+        return names[static_cast<std::size_t>(p)];
+    }
+
+    struct WorkCounts {
+        std::size_t reads = 0;
+        std::size_t writes = 0;
+        std::size_t comparisons = 0;
+        std::size_t bucketOps = 0;
+        std::size_t total() const { return reads + writes + comparisons + bucketOps; }
+        WorkCounts& operator+=(const WorkCounts& o) {
+            reads += o.reads;
+            writes += o.writes;
+            comparisons += o.comparisons;
+            bucketOps += o.bucketOps;
+            return *this;
+        }
+    };
+
     // Thresholds behind SubdivisionQuality: "Useful" requires at least
     // halving the worst-case remaining work; "Useless" means the largest
     // child kept at least 90% of the original problem. These cutoffs come
@@ -71,9 +124,54 @@ public:
         phaseStartTimes_.clear();
         subdivisionRecords_.clear();
         workByDepth_.assign(1, 0);
+        work_.fill(WorkCounts{});
+        unknownWorkPhase_ = false;
     }
 
-    void recordComparisons(std::size_t n) { comparisons_ += n; }
+    // Comparisons are only ever reported by the local sorts, so they also
+    // land in the LocalSort row of the total-work counter.
+    void recordComparisons(std::size_t n) {
+        comparisons_ += n;
+        work_[static_cast<std::size_t>(WorkPhase::LocalSort)].comparisons += n;
+    }
+
+    // One whole pass with a known closed-form cost. 'phase' is one of the
+    // names returned by workPhaseName(); called O(bins) times per sort, so
+    // the string lookup is not on any per-element path.
+    //
+    // "distribute" ALSO books the analyze() pass that always precedes it
+    // over the same n elements (n = 'writes': the top-level distribution
+    // writes every element exactly once): n reads and 2n comparisons. It
+    // is booked here, on the metrics side, so that the release build needs
+    // no wrapper call next to analyze(); an empty call there perturbed
+    // GCC's register allocation, and the release object code is kept
+    // identical (BENCHMARKS.md).
+    void recordPassWork(const char* phase, std::size_t reads, std::size_t writes,
+                        std::size_t comparisons, std::size_t bucketOps) {
+        if (std::strcmp(phase, "distribute") == 0) {
+            WorkCounts& a = work_[static_cast<std::size_t>(WorkPhase::Analyze)];
+            a.reads += writes;
+            a.comparisons += 2 * writes;
+        }
+        for (std::size_t i = 0; i < kWorkPhases; ++i) {
+            if (std::strcmp(phase, workPhaseName(static_cast<WorkPhase>(i))) == 0) {
+                WorkCounts& w = work_[i];
+                w.reads += reads;
+                w.writes += writes;
+                w.comparisons += comparisons;
+                w.bucketOps += bucketOps;
+                return;
+            }
+        }
+        unknownWorkPhase_ = true; // surfaced by hasUnknownWorkPhase(); a test pins it false
+    }
+
+    // Individual reads and writes inside the local sorts.
+    void recordLocalSortMoves(std::size_t reads, std::size_t writes) {
+        WorkCounts& w = work_[static_cast<std::size_t>(WorkPhase::LocalSort)];
+        w.reads += reads;
+        w.writes += writes;
+    }
 
     // Called every time a bin is split during recursive refinement.
     // depthReached is the depth of the children produced by this split
@@ -135,6 +233,14 @@ public:
     }
 
     // ---- accessors ----------------------------------------------------
+    const WorkCounts& work(WorkPhase p) const { return work_[static_cast<std::size_t>(p)]; }
+    WorkCounts totalWork() const {
+        WorkCounts sum;
+        for (const WorkCounts& w : work_) sum += w;
+        return sum;
+    }
+    bool hasUnknownWorkPhase() const { return unknownWorkPhase_; }
+
     std::size_t comparisons() const { return comparisons_; }
     std::size_t subdivisions() const { return subdivisions_; }
     std::size_t maxSubdivisionDepth() const { return maxSubdivisionDepth_; }
@@ -211,6 +317,14 @@ public:
         os << "  Subdivision efficiency (mean reduction): " << std::fixed << std::setprecision(4)
            << subdivisionEfficiency() << "\n";
         os << "  Approx. memory used:  " << approxMemoryBytes_ << " bytes\n";
+        const WorkCounts tw = totalWork();
+        os << "  Total work:           " << tw.total() << " (reads " << tw.reads << ", writes "
+           << tw.writes << ", comparisons " << tw.comparisons << ", bucketOps " << tw.bucketOps
+           << ")\n";
+        for (std::size_t i = 0; i < kWorkPhases; ++i) {
+            os << "  Work [" << workPhaseName(static_cast<WorkPhase>(i))
+               << "]: " << work_[i].total() << "\n";
+        }
         for (const auto& [phase, ms] : phaseDurationsMs_) {
             os << "  Phase [" << phase << "]: " << std::fixed << std::setprecision(3) << ms << " ms\n";
         }
@@ -229,6 +343,8 @@ private:
     std::vector<std::size_t> binSizes_;
     std::vector<SubdivisionRecord> subdivisionRecords_;
     std::vector<std::size_t> workByDepth_{0};
+    std::array<WorkCounts, kWorkPhases> work_{};
+    bool unknownWorkPhase_ = false;
     std::unordered_map<std::string, std::size_t> algorithmUsage_;
     std::unordered_map<std::string, double> phaseDurationsMs_;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> phaseStartTimes_;
