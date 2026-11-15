@@ -110,25 +110,97 @@ StratumSort<T>::StratumSort(std::size_t targetElementsPerBin, std::size_t leafTh
 }
 
 // ============================================================
+// Phase 0: global order probe
+// ============================================================
+// One left-to-right pass that certifies, before anything is allocated or
+// moved, whether the WHOLE input is constant, non-decreasing or
+// non-increasing - duplicates included - and stops at the first element
+// that contradicts the direction it has established.
+//
+//   1. Skip the leading run equal to data[0]. Reaching the end means the
+//      input is constant: sort() returns without touching it.
+//   2. The first element that differs fixes the direction.
+//   3. Continue while that direction holds non-strictly. Reaching the end
+//      means the input is already sorted (ascending: nothing to do) or
+//      sorted backwards (descending: one reversal).
+//
+// COST. Every examined position costs one read and one comparison, plus
+// one comparison where the direction is fixed. On input that is not
+// monotone it stops at the first contradiction - after three elements on
+// average for random data - and on monotone input it reads each element
+// once. It is therefore O(n), with at most n reads and n comparisons.
+//
+// WHY THE FAILED PROBE IS NOT WASTED. When it stops at breakIndex, the
+// prefix [0, breakIndex) is monotone, so its minimum and maximum are its
+// two endpoints. analyze() resumes from breakIndex with that range
+// instead of rescanning the prefix: the probe plus analyze() read each
+// element once (plus the one element that broke the run, re-read by
+// analyze), and on a long monotone prefix they do FEWER comparisons than
+// analyze() alone did (one per prefix element instead of two). The
+// adversary "sorted except the last element" (G6) therefore costs about
+// n + 1 reads and n + 2 comparisons to reach the general path, not 2n.
+//
+// Precondition: data.size() >= 2. sort() returns earlier for n < 2.
+template <typename T>
+typename StratumSort<T>::OrderProbe StratumSort<T>::probeOrder(
+    const std::vector<T>& data) const {
+    assert(data.size() >= 2);
+
+    const std::size_t n = data.size();
+    const T* const a = data.data();
+    OrderProbe probe;
+
+    std::size_t i = 1;
+    while (i < n && a[i] == a[0]) ++i;
+    if (i == n) {
+        probe.shape = GlobalShape::Constant;
+        probe.breakIndex = n;
+        probe.comparisons = n - 1;
+        probe.prefix.minimum = probe.prefix.maximum = a[0];
+        return probe;
+    }
+
+    // a[i] != a[i-1] == a[0]: one more comparison fixes the direction.
+    const bool ascending = a[i] > a[i - 1];
+    ++i;
+    if (ascending) {
+        while (i < n && !(a[i] < a[i - 1])) ++i;
+    } else {
+        while (i < n && !(a[i] > a[i - 1])) ++i;
+    }
+
+    // Positions 1 .. min(i, n-1) were each compared once; the direction
+    // test is the extra one.
+    probe.comparisons = (i < n ? i : n - 1) + 1;
+    probe.breakIndex = i;
+    probe.shape = i < n ? GlobalShape::Unsorted
+                        : (ascending ? GlobalShape::Ascending : GlobalShape::Descending);
+    probe.prefix.minimum = ascending ? a[0] : a[i - 1];
+    probe.prefix.maximum = ascending ? a[i - 1] : a[0];
+    return probe;
+}
+
+// ============================================================
 // Phase 1: analysis
 // ============================================================
-// One pass computing the minimum and maximum.
+// One pass computing the minimum and maximum, starting from the range of
+// the monotone prefix the probe already certified (see probeOrder).
 //
 // WHY IT CANNOT BE FUSED WITH ANYTHING. Every later formula - span,
 // interval width, bucket index - is defined relative to the observed
 // range, and the range is not known until the last element has been seen.
 // So this pass has to complete before the next one can start.
 //
-// Precondition: data is non-empty. sort() returns earlier for n < 2.
+// Precondition: the probe stopped inside data (breakIndex < size).
 template <typename T>
-typename StratumSort<T>::ValueRange StratumSort<T>::analyze(
-    const std::vector<T>& data) const {
-    assert(!data.empty());
+typename StratumSort<T>::ValueRange StratumSort<T>::analyze(const std::vector<T>& data,
+                                                                     const OrderProbe& probe) const {
+    assert(probe.breakIndex >= 1 && probe.breakIndex < data.size());
 
-    ValueRange range;
-    range.minimum = data[0];
-    range.maximum = data[0];
-    for (const T value : data) {
+    ValueRange range = probe.prefix;
+    const std::size_t n = data.size();
+    for (std::size_t i = probe.breakIndex; i < n; ++i) {
+        const T value = data[i];
         if (value < range.minimum) range.minimum = value;
         if (value > range.maximum) range.maximum = value;
     }
@@ -394,10 +466,7 @@ void StratumSort<T>::distribute(const std::vector<T>& data, const Partitioning& 
     // Work model of countAndPlace (see SortMetrics::recordPassWork): two
     // reads and one write per element plus one unit per bucket, or one
     // read and one write per element on the single-bucket memcpy path.
-    // The metrics side also books analyze() here (n reads, 2n comparisons):
-    // every distribute() follows analyze() of the same n elements, and a
-    // separate empty call next to analyze() perturbed GCC's register
-    // allocation in the release build (see SortMetrics::recordPassWork).
+    // probe + analyze() are booked by sort() itself (phase "analyze").
     notePassWork("distribute", grid.binCount == 1 ? data.size() : 2 * data.size(), data.size(), 0,
                  grid.binCount == 1 ? 0 : grid.binCount);
 
@@ -856,9 +925,38 @@ void StratumSort<T>::sort(std::vector<T>& data) {
 #endif
     if (data.size() < 2) return;
 
+    const std::size_t n = data.size();
+
+    // Phase 0. Globally ordered input finishes here, before any buffer is
+    // reserved, any element is distributed or the caller's array is
+    // written - except for the in-place reversal of a descending input,
+    // which cannot throw (T is integral), so the strong exception
+    // guarantee holds on every path.
     beginPhase("analyze");
-    const ValueRange range = analyze(data);
+    const OrderProbe probe = probeOrder(data);
+    if (probe.shape != GlobalShape::Unsorted) {
+        endPhase("analyze");
+        // Work model: the probe read all n elements. A reversal reads and
+        // writes every element but the middle one (count/2 swaps), booked
+        // in the join row: like the join, it writes the final output.
+        notePassWork("analyze", n, 0, probe.comparisons, 0);
+        if (probe.shape == GlobalShape::Descending) {
+            beginPhase("join");
+            std::reverse(data.begin(), data.end());
+            notePassWork("join", n - n % 2, n - n % 2, 0, 0);
+            endPhase("join");
+        }
+        noteLocalAlgorithm(probe.shape == GlobalShape::Descending ? "GlobalReversed"
+                           : probe.shape == GlobalShape::Constant ? "GlobalConstant"
+                                                                  : "GlobalSorted");
+        return;
+    }
+    const ValueRange range = analyze(data, probe);
     endPhase("analyze");
+    // Work model of probe + analyze: the probe read breakIndex + 1
+    // elements (the last one broke the run), analyze reads n - breakIndex
+    // and does two comparisons per element read.
+    notePassWork("analyze", n + 1, 0, probe.comparisons + 2 * (n - probe.breakIndex), 0);
 
     const Partitioning grid = planPartition(range, data.size());
 
@@ -944,7 +1042,12 @@ std::vector<typename StratumSort<T>::LeafView> StratumSort<T>::debugPartitionOnl
         return leaves;
     }
 
-    const ValueRange range = analyze(data);
+    // The probe is part of sort()'s analysis; a globally ordered input
+    // still goes through the partition here, because the introspection
+    // describes the partition the general path would build.
+    const OrderProbe probe = probeOrder(data);
+    ValueRange range = probe.prefix;
+    if (probe.shape == GlobalShape::Unsorted) range = analyze(data, probe);
     const Partitioning grid = planPartition(range, data.size());
 
     std::vector<std::size_t> bucketStart;
