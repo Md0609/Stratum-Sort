@@ -262,6 +262,67 @@ if it happens to short-circuit the single-bucket case before dividing.
 That is luck, not a contract, and it is exactly the kind of thing that
 breaks when someone later reorders two checks.
 
+## 5A. Phase 0 — the global order probe (SS-2)
+
+Before `analyze`, one left-to-right pass decides whether the **whole**
+input is already in order, so that sorted, reversed and constant inputs
+finish before any buffer is reserved or any element is distributed.
+
+```
+i = 1
+while i < n and a[i] == a[0]:   i += 1          # leading run equal to a[0]
+if i == n:                      return          # constant: nothing to do
+up = a[i] > a[i-1];  i += 1                     # the first difference fixes the direction
+while i < n and (up ? a[i] >= a[i-1] : a[i] <= a[i-1]):   i += 1
+if i == n:  if not up: reverse(a)               # ordered: done (ascending) or one reversal
+            return
+# otherwise: a[0..i) is monotone; continue with analyze from i
+```
+
+**Correctness.** The order is tested non-strictly, so duplicates never
+break it: a non-decreasing input is returned as is, and a non-increasing
+one is reversed, which yields the non-decreasing permutation (for integral
+keys equal values are indistinguishable, so the reversal's lack of
+stability is unobservable — the same argument as `detectRun`, §9). A
+leading equal run is absorbed before the direction is fixed, so `5 5 3 1`
+is recognised as non-increasing and `5 5 5` as constant. The probe never
+writes; the reversal is in place and cannot throw for integral `T`, so the
+strong exception guarantee of `sort()` holds on every path, and the fast
+paths allocate nothing at all.
+
+**The failed probe is not wasted (the hand-off).** When the probe stops at
+`i < n`, the prefix `a[0..i)` is monotone, so its minimum and maximum are
+its endpoints `a[0]` and `a[i−1]`. `analyze` starts from that range and
+scans only `a[i..n)`. Probe plus `analyze` therefore read `n + 1` elements
+(`a[i]` twice) and do `(i + 1) + 2(n − i)` comparisons, against `n` reads
+and `2n` comparisons for `analyze` alone: **at most one extra read, and
+never more comparisons**. On random data the probe stops after three
+elements on average; on the G6 adversary *sorted except the last element*
+(`i = n − 1`) it reaches the general path with `n + 1` reads and `n + 2`
+comparisons instead of the `2n`-plus-`2n` of a probe followed by a rescan.
+
+**Cost.**
+
+| path | reads | writes | comparisons |
+|---|---|---|---|
+| constant | `n` | `0` | `n − 1` |
+| non-decreasing | `n` | `0` | `n` |
+| non-increasing | `n` + `2⌊n/2⌋` (reversal) | `2⌊n/2⌋` | `n` |
+| not monotone, probe stops at `i` | `n + 1` (probe + `analyze`) | — | `(i + 1) + 2(n − i) ≤ 2n` |
+
+So Phase 0 is `Θ(n)` on every path, with explicit constants, and on the
+general path it replaces `analyze`'s cost by one that is never larger
+than it by more than one read. It changes none of the five properties of
+the algorithm (objective.md §2): no merge, no other algorithm family, no
+platform-specific code; it is exactly the "pre-pass `O(n)` with early exit"
+that objective.md §2 allows.
+
+**What it does not do.** It recognises only inputs that are monotone *as a
+whole*. Almost-sorted inputs (one element out of place) go through the
+general path, exactly as before; they are SS-3's subject, not this
+phase's. A mechanism that tried to exploit long monotone *runs* would need
+to combine them — a merge — which objective.md §2 places outside the idea.
+
 ## 6. Distribution: count, then place
 
 Moving elements into buckets is a two-pass counting step, and it is the
@@ -690,7 +751,7 @@ ones at `O(1)` each.
 
 | phase | per bin | summed | why |
 |---|---|---|---|
-| `analyze` | — | `Θ(n)` | one pass, once |
+| probe (§5A) + `analyze` | — | `Θ(n)` | one pass in total, once: `n + 1` reads and `≤ 2n` comparisons on the general path |
 | `planPartition` / `planRefinement` | `O(1)` | `O(N)` | fixed arithmetic per node (F2) |
 | `countAndPlace` | `O(m + s) = O(m)` | `O((D+1)·n) = O(n)` | two passes over `m` plus `O(s)` bookkeeping; F1b per level, F2 for `s` |
 | `scanRange` | `O(m)` | `O((D+1)·n) = O(n)` | one pass per bin that passes the size/depth test — splitting nodes **and** degenerate-range leaves; disjoint per depth (F1b) |
@@ -964,7 +1025,7 @@ T(n)  =  T_analyze + T_distribute + T_refine + T_leaves + T_append + T_destroy
 
 | term | bound | from |
 |---|---|---|
-| `T_analyze` | `≤ c·n` | one pass, two comparisons per element |
+| `T_analyze` | `≤ c·(n + 1)` | probe (§5A) plus `analyze`: `n + 1` reads and at most two comparisons per element. On a globally ordered input `T(n) = T_analyze (+ n for a reversal)` and every other term is `0` |
 | `T_distribute` | `≤ c·(4n + s_top) ≤ c·(5n + 1)` | zeroing both buffers, then `countAndPlace(n, s_top)` with `s_top ≤ n/λ + 1` |
 | `T_refine` | `≤ c·D·(3n + 2n/λ) + c·N` | per depth, `scanRange` and `countAndPlace` over disjoint bins (F1b) with `Σ s < 2n/λ` (F2); allocations `O(n)` words (§8.5, H3) |
 | `T_leaves` | `≤ (2 + max(32, 192 + c₀, c·log₂ L))·n + c·N` | `detectRun` plus the §8.6 branch of each leaf, summed over leaves that tile `[0, n)` (F1a); `sortRefined` visits `N` nodes |
@@ -977,7 +1038,8 @@ Every coefficient is a function of `Λ`, `D` and `w` alone, so
 T(n)  ≤  C(Λ, D, w) · n  +  C′      ⟹      T(n) = O(n)
 ```
 
-and, since `analyze` reads all `n` elements and the join writes all `n`,
+and, since every path reads all `n` elements (the probe reaches the end
+on the fast paths; probe plus `analyze` cover `[0, n)` otherwise),
 
 ```
 T(n)  ≥  n      ⟹      T(n) = Ω(n)      ⟹      T(n) = Θ(n)
@@ -1018,6 +1080,20 @@ named invariant:
 4. **Exploit duplicates.** This is the attack that breaks the *false*
    bound of §8.7, and it is exactly why the real proof never counts
    distinct values. Lemma 3's `σ ≥ ⌈m/λ⌉` holds for multisets.
+5. **Make the global order probe (§5A) pay twice.** The probe's worst
+   input is one that stays monotone until the very end and then breaks —
+   *sorted except the last element*, or a non-increasing input with runs
+   of duplicates and a final maximum (both in the battery since SS-2, as
+   `SortedExceptLast` and `ReversedDupExceptLast`). Blocked by the
+   hand-off: `analyze` resumes at the break with the prefix's endpoints as
+   its range, so the probe's reads are not repeated and the total of the
+   two is `n + 1` reads and `n + 2` comparisons — less than `analyze`
+   alone did before the probe existed. Breaking at the start (`i = 1` or
+   `2`) costs three reads. Duplicates cannot hide a direction change: the
+   test is non-strict both ways, and a leading equal run is absorbed
+   before the direction is fixed. No input makes Phase 0 cost more than
+   `n + 1` reads and `2n` comparisons, and the counter of G2 confirms it
+   on every dataset of the battery.
 
 An adversary can still saturate the bound — a construction reaching
 `2 048` at `n = 10⁶` exists, against a proven ceiling of `B(10⁶) ≈ 9 268` —
