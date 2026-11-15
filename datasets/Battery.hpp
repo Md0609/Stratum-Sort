@@ -14,6 +14,13 @@
 //   new (8)        NearlySorted, SortedPlusTail, OrganPipe, Sawtooth,
 //                  FewDistinct x3 (2/16/256), AllEqual;
 //   adversary (8)  the eight families of research/tools/AdversaryBattery.
+//   probe (2)      SS-2 / G6: inputs built to defeat the global order probe
+//                  of StratumSort::sort - SortedExceptLast (ascending, the
+//                  last element the minimum) and ReversedDupExceptLast
+//                  (non-increasing with runs of 3 duplicates, the last
+//                  element the maximum). Both make the probe run to n - 1
+//                  and then fall back to the general path. Appended at the
+//                  end so that indices 0..25 keep their meaning.
 //
 // THE ADVERSARIES ARE BUILT AGAINST THE CONFIGURATION BEING MEASURED.
 // AdversarialPeeling and adversary families 7 and 8 depend on lambda and
@@ -285,6 +292,7 @@ inline const std::vector<BatteryEntry>& battery() {
         {"Adv3MassiveDup", "adversary"},    {"Adv4DominantOutliers", "adversary"},
         {"Adv5Alternating", "adversary"},   {"Adv6OneBucketFar", "adversary"},
         {"Adv7MaximalLeaf", "adversary"},   {"Adv8TotalCost", "adversary"},
+        {"SortedExceptLast", "probe"},      {"ReversedDupExceptLast", "probe"},
     };
     return entries;
 }
@@ -361,6 +369,16 @@ std::vector<T> batteryDataset(std::size_t index, std::size_t n, const AdversaryT
         }
         case 17: // AllEqual
             return std::vector<T>(n, static_cast<T>(42));
+        case 26: { // SortedExceptLast: 1, 2, ..., n-1, then 0
+            std::vector<T> v = generate<T>(n, [](std::size_t i) { return i + 1; });
+            if (n >= 1) v[n - 1] = static_cast<T>(0);
+            return v;
+        }
+        case 27: { // ReversedDupExceptLast: runs of 3 equal values descending, then the max + 1
+            std::vector<T> v = generate<T>(n, [n](std::size_t i) { return (n - 1 - i) / 3; });
+            if (n >= 1) v[n - 1] = static_cast<T>(n / 3 + 1);
+            return v;
+        }
         default:
             if (index >= 18 && index < 26)
                 return adversaryFamily<T>(static_cast<int>(index - 17), n, cfg, rng);

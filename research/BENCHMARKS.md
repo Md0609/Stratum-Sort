@@ -76,13 +76,15 @@ flag.
 
 One definition, in `datasets/Battery.hpp`, used by `timings`, the A/B,
 `make counters`, the differential fuzz and `research_AdversaryBattery`, so
-"all the benchmarks" means the same 26 inputs everywhere:
+"all the benchmarks" means the same 28 inputs everywhere (26 from SS-0,
+plus the two probe adversaries SS-2 added for G6):
 
 | Group | Datasets |
 |---|---|
 | current (10) | RandomUniform, SortedAscending, SortedDescending, ManyRepeated, NormalGaussian, Concentrated, SmallRangeManyEl, HugeRangeFewEl, FullRangeExtremes, AdversarialPeeling |
 | new (8) | NearlySorted (ascending + `n/100` random transpositions), SortedPlusTail (ascending, last 1 % replaced by uniform values in `[0, n)`), OrganPipe (`0…peak…0`), Sawtooth (ascending runs of 1000), FewDistinct2 / 16 / 256 (k values evenly spread over `[0, 2³⁰)`), AllEqual |
 | adversary (8) | Adv1AllEqual … Adv8TotalCost: the eight families of `research/tools/AdversaryBattery.cpp`, which now takes them from the same header |
+| probe (2) | SortedExceptLast (`1, 2, …, n−1`, then `0`) and ReversedDupExceptLast (non-increasing runs of 3 equal values, then the maximum + 1): the G6 attempts to defeat the global order probe of SS-2 (`ALGORITHM.md` §5A) — monotone up to `n − 1`, so the probe runs to the end and then the general path follows. Appended at indices 26–27, so 0–25 keep their meaning. The SS-1 baseline predates them: they have no baseline row and no measured floor, so the A/B applies the built-in 6 % threshold |
 
 - **Bit-for-bit continuity.** For `int64_t` the ten current datasets are
   `DatasetGenerator`'s own output, unchanged (pinned by `tests/main.cpp`),

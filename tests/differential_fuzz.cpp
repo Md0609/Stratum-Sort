@@ -48,6 +48,7 @@
 static std::mt19937_64 rng(0xC0FFEE);
 static long long cases = 0;
 static long long batteryCases = 0;
+static long long probeCases = 0;
 
 template <typename T>
 void oneCase() {
@@ -56,8 +57,12 @@ void oneCase() {
     const std::size_t t = std::uniform_int_distribution<std::size_t>(0, 200)(rng);
 
     // Random distribution shape, biased towards the nasty ones. Shapes 6
-    // and 7 draw a dataset of the section 4 battery instead.
-    const int shape = std::uniform_int_distribution<int>(0, 7)(rng);
+    // and 7 draw a dataset of the section 4 battery instead. Shape 8 aims
+    // at the global order probe (SS-2, G6): an input sorted ascending or
+    // descending - with many duplicates half the time - that is then left
+    // alone or broken at its last element, its first element or one
+    // random adjacent pair.
+    const int shape = std::uniform_int_distribution<int>(0, 8)(rng);
     const T lo = std::numeric_limits<T>::min();
     const T hi = std::numeric_limits<T>::max();
     stratum::StratumSort<T> sorter(lambda, t);
@@ -71,11 +76,11 @@ void oneCase() {
         v = stratum::testing::batteryDataset<T>(dataset, n, target, rng());
         ++batteryCases;
     }
-    if (shape < 6) v.resize(n);
+    if (shape < 6 || shape == 8) v.resize(n);
     std::uniform_int_distribution<long long> full(static_cast<long long>(lo),
                                                   static_cast<long long>(hi));
     for (auto& x : v) {
-        if (shape >= 6) break;
+        if (shape == 6 || shape == 7) break;
         switch (shape) {
             case 0: x = static_cast<T>(full(rng)); break;                       // whole universe
             case 1: x = static_cast<T>(std::uniform_int_distribution<int>(0, 3)(rng)); break;
@@ -83,11 +88,25 @@ void oneCase() {
             case 3: x = (rng() & 1) ? lo : hi; break;                           // both extremes only
             case 4: x = static_cast<T>(full(rng) / 2); break;
             case 5: x = static_cast<T>(std::uniform_int_distribution<int>(-2, 2)(rng)); break;
+            case 8: x = (n & 1) ? static_cast<T>(full(rng))
+                                : static_cast<T>(std::uniform_int_distribution<int>(0, 5)(rng));
+                    break;
+        }
+    }
+    if (shape == 8 && n > 1) {
+        std::sort(v.begin(), v.end());
+        if (rng() & 1) std::reverse(v.begin(), v.end());
+        switch (rng() % 4) {
+            case 0: break;                                           // left ordered
+            case 1: v[n - 1] = static_cast<T>(full(rng)); break;     // broken at the end
+            case 2: v[0] = static_cast<T>(full(rng)); break;         // broken at the start
+            case 3: { const std::size_t k = rng() % (n - 1); std::swap(v[k], v[k + 1]); break; }
         }
     }
     // Plant the extremes sometimes, so the maximal span is actually hit.
     // Never on a battery dataset: it would destroy the shape being tested.
     if (shape < 6 && n > 1 && (rng() & 1)) { v[0] = lo; v[n - 1] = hi; }
+    if (shape == 8) ++probeCases;
 
     std::vector<T> expected = v;
     std::sort(expected.begin(), expected.end());
@@ -97,7 +116,7 @@ void oneCase() {
     if (v != expected) {
         std::printf("MISMATCH  type=%zub n=%zu lambda=%zu t=%zu shape=%d dataset=%s\n",
                     sizeof(T), v.size(), lambda, t, shape,
-                    shape >= 6 ? stratum::testing::battery()[dataset].name : "-");
+                    (shape == 6 || shape == 7) ? stratum::testing::battery()[dataset].name : "-");
         std::exit(1);
     }
 }
@@ -116,6 +135,7 @@ int main(int argc, char** argv) {
             case 7: oneCase<uint64_t>(); break;
         }
     }
-    std::printf("OK: %lld cases (%lld from the section 4 battery), no disagreement with std::sort\n",
-                cases, batteryCases);
+    std::printf("OK: %lld cases (%lld from the section 4 battery, %lld ordered/broken-order probe"
+                " cases), no disagreement with std::sort\n",
+                cases, batteryCases, probeCases);
 }

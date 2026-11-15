@@ -108,7 +108,7 @@ bool batterySweepFor(std::size_t n, const char* typeName) {
     bool ok = true;
     for (std::size_t i = 0; i < battery().size(); ++i) {
         const std::vector<T> v = batteryDataset<T>(i, n, target);
-        const bool shortAllowed = i >= 24; // Adv7MaximalLeaf, Adv8TotalCost
+        const bool shortAllowed = i == 24 || i == 25; // Adv7MaximalLeaf, Adv8TotalCost
         bool here = sortsLikeStd(v) && v == batteryDataset<T>(i, n, target) &&
                     (v.size() == n || (shortAllowed && v.size() <= n));
         if (!here) std::cout << "  battery FAIL: " << battery()[i].name << " " << typeName
@@ -156,9 +156,22 @@ void runBatterySweep() {
             ok &= built;
         }
     }
-    ok &= battery().size() == 26 && batteryIndex("AllEqual") == 17 &&
-          batteryIndex("Adv8TotalCost") == 25 && batteryIndex("nope") == battery().size();
-    std::cout << "Section 4 battery (26 datasets x int64/uint32): " << (ok ? "PASS" : "FAIL") << "\n";
+    // The SS-2 probe adversaries (G6) really are "monotone except the last
+    // element": the first n - 1 are ordered, the whole is not.
+    {
+        const AdversaryTarget target{stratum::DEFAULT_TARGET_ELEMENTS_PER_BIN,
+                                     stratum::MAX_SUBDIVISION_DEPTH};
+        const auto a = batteryDataset<int64_t>(26, 1000, target);
+        const auto d = batteryDataset<int64_t>(27, 1000, target);
+        ok &= std::is_sorted(a.begin(), a.end() - 1) && !std::is_sorted(a.begin(), a.end());
+        ok &= std::is_sorted(d.rbegin() + 1, d.rend()) && !std::is_sorted(d.rbegin(), d.rend()) &&
+              !std::is_sorted(d.begin(), d.end()) &&
+              std::adjacent_find(d.begin(), d.end()) != d.end();
+    }
+    ok &= battery().size() == 28 && batteryIndex("AllEqual") == 17 &&
+          batteryIndex("Adv8TotalCost") == 25 && batteryIndex("SortedExceptLast") == 26 &&
+          batteryIndex("ReversedDupExceptLast") == 27 && batteryIndex("nope") == battery().size();
+    std::cout << "Section 4 battery (28 datasets x int64/uint32): " << (ok ? "PASS" : "FAIL") << "\n";
     assert(ok);
 }
 

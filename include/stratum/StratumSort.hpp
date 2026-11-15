@@ -255,8 +255,22 @@ private:
         std::size_t start;
     };
 
+    // ---- Phase 0: global order probe ---------------------------------
+    // Result of probeOrder(): how the whole input is ordered, and - when
+    // it is not monotone - where the monotone prefix ended and that
+    // prefix's own range, which analyze() resumes from.
+    enum class GlobalShape { Constant, Ascending, Descending, Unsorted };
+    struct OrderProbe {
+        GlobalShape shape = GlobalShape::Unsorted;
+        std::size_t breakIndex = 0; // first index outside the monotone prefix
+        std::size_t comparisons = 0;
+        ValueRange prefix;          // range of [0, breakIndex)
+    };
+    OrderProbe probeOrder(const std::vector<T>& data) const;
+
     // ---- Phase 1: analysis ------------------------------------------
-    ValueRange analyze(const std::vector<T>& data) const;
+    // Range of the whole input, continuing from the probe's prefix.
+    ValueRange analyze(const std::vector<T>& data, const OrderProbe& probe) const;
 
     // ---- Interval formulas ------------------------------------------
     Partitioning planPartition(const ValueRange& range, std::size_t length) const;

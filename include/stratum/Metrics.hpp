@@ -139,20 +139,13 @@ public:
     // names returned by workPhaseName(); called O(bins) times per sort, so
     // the string lookup is not on any per-element path.
     //
-    // "distribute" ALSO books the analyze() pass that always precedes it
-    // over the same n elements (n = 'writes': the top-level distribution
-    // writes every element exactly once): n reads and 2n comparisons. It
-    // is booked here, on the metrics side, so that the release build needs
-    // no wrapper call next to analyze(); an empty call there perturbed
-    // GCC's register allocation, and the release object code is kept
-    // identical (BENCHMARKS.md).
+    // "analyze" covers the global order probe and analyze() together
+    // (StratumSort::sort books both, including on the early exits where no
+    // distribution follows). Until SS-2 the analyze() row was booked here,
+    // as a side effect of "distribute"; that no longer holds, because a
+    // globally ordered input never reaches the distribution.
     void recordPassWork(const char* phase, std::size_t reads, std::size_t writes,
                         std::size_t comparisons, std::size_t bucketOps) {
-        if (std::strcmp(phase, "distribute") == 0) {
-            WorkCounts& a = work_[static_cast<std::size_t>(WorkPhase::Analyze)];
-            a.reads += writes;
-            a.comparisons += 2 * writes;
-        }
         for (std::size_t i = 0; i < kWorkPhases; ++i) {
             if (std::strcmp(phase, workPhaseName(static_cast<WorkPhase>(i))) == 0) {
                 WorkCounts& w = work_[i];

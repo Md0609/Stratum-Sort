@@ -123,7 +123,11 @@ The things worth knowing before choosing this over `std::sort`:
 - **Not thread-safe per instance** (one instance owns scratch buffers).
   Separate instances are independent.
 - **Uses `Θ(n)` extra memory** where `std::sort` uses `O(log n)`.
-- **Loses to `std::sort` on already-sorted input**, by about 6×.
+- **Loses to `std::sort` on already-sorted input**, by about 6× — as
+  measured for v0.10.0 on the M4. Unreleased (SS-2): a global order probe
+  now finishes sorted, reversed and constant input in one pass; on Linux
+  x86_64 it wins on all three at every size (`research/baselines/raw/ss2-ab-linux-x86_64.md`).
+  The M4 has not been re-measured, so the tables below still describe v0.10.0.
 - **The default λ is tuned to a cache size** — roughly `n·64/λ ≲ L2`. The
   default suits `n ≈ 10⁶` with a 4 MiB L2; much larger inputs want a
   larger λ.

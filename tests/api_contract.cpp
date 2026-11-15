@@ -985,8 +985,10 @@ void testTotalWorkCounter() {
     };
 
     // {3, 1, 2} at the defaults, by hand. One bucket, so the distribution
-    // is the memcpy path (3 reads, 3 writes). analyze: 3 reads, 6
-    // comparisons. detectRun: 2 steps x (2 reads, 2 comparisons). The
+    // is the memcpy path (3 reads, 3 writes). Order probe: reads 3, 1, 2;
+    // 1 == 3? (1), 1 > 3? fixes "descending" (2), 2 > 1? breaks it (3).
+    // analyze resumes at index 2 with the prefix range {1, 3}: 1 read,
+    // 2 comparisons. So the analyze row is 4 reads, 5 comparisons. detectRun: 2 steps x (2 reads, 2 comparisons). The
     // insertion sort: per key 1 read + 1 final write; inner steps 3
     // (read + comparison each), 2 of them shifting (1 write each). join:
     // 3 reads, 3 writes.
@@ -995,9 +997,11 @@ void testTotalWorkCounter() {
         StratumSort<int64_t> s;
         s.sort(v);
         const auto t = s.metrics().totalWork();
-        check(t.reads == 18 && t.writes == 10 && t.comparisons == 13 && t.bucketOps == 0 &&
+        check(t.reads == 19 && t.writes == 10 && t.comparisons == 12 && t.bucketOps == 0 &&
                   t.total() == 41,
-              "total work of {3,1,2} is exactly 18 reads, 10 writes, 13 comparisons");
+              "total work of {3,1,2} is exactly 19 reads, 10 writes, 12 comparisons");
+        check(row(s, W::Analyze).reads == 4 && row(s, W::Analyze).comparisons == 5,
+              "probe + analyze of {3,1,2} is exactly 4 reads, 5 comparisons");
         check(row(s, W::LocalSort).comparisons == s.metrics().comparisons(),
               "the local-sort comparisons of the work counter equal comparisons()");
     }
@@ -1016,7 +1020,17 @@ void testTotalWorkCounter() {
 
         // Closed forms of the bulk passes.
         const auto an = row(s, W::Analyze), di = row(s, W::Distribute), jo = row(s, W::Join);
-        exact &= an.reads == n && an.writes == 0 && an.comparisons == 2 * n;
+        // Probe + analyze: the probe stops at the first index b that
+        // breaks the monotone prefix (computed independently here), reading
+        // b + 1 elements with b + 1 comparisons; analyze re-reads a[b] and
+        // the rest, with 2 comparisons each.
+        std::size_t b = 1;
+        while (base[b] == base[0]) ++b;
+        const bool up = base[b] > base[b - 1];
+        ++b;
+        while (b < n && (up ? base[b] >= base[b - 1] : base[b] <= base[b - 1])) ++b;
+        exact &= b < n;
+        exact &= an.reads == n + 1 && an.writes == 0 && an.comparisons == (b + 1) + 2 * (n - b);
         exact &= di.reads == 2 * n && di.writes == n && di.bucketOps == bins;
         exact &= jo.reads == n && jo.writes == n;
         exact &= row(s, W::LocalSort).comparisons == s.metrics().comparisons();
@@ -1178,6 +1192,172 @@ void reportTerminate() {
     std::_Exit(70); // no atexit handlers, no abort dialog, still a failure
 }
 
+
+// ------------------------------------------------------------------
+// 11. Global order probe (objective.md SS-2)
+// ------------------------------------------------------------------
+// Globally ordered input - constant, non-decreasing or non-increasing,
+// duplicates included - finishes before any buffer is reserved. Pinned
+// here: the result equals std::sort for every admitted key type at the
+// extremes of its universe; the inputs built to defeat the probe ("sorted
+// except the last element", descending runs of duplicates broken at the
+// end or the start) take the general path and still sort correctly; a fast
+// call and a general call can follow each other on one instance in either
+// order; and, in a release build, the fast path performs no allocation at
+// all. In a research build: the exact work of the fast path, and that it
+// books no distribution.
+template <typename T>
+bool globalOrderCasesFor() {
+    using L = std::numeric_limits<T>;
+    const T lo = L::min(), hi = L::max();
+    std::vector<std::vector<T>> cases;
+    const std::size_t sizes[] = {2, 3, 31, 32, 33, 1000, 5000};
+    for (const std::size_t n : sizes) {
+        std::vector<T> asc(n), dupAsc(n), constant(n, hi), extremes(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            asc[i] = static_cast<T>(lo + static_cast<T>(i % 100)); // ascending, wraps only for tiny T
+            dupAsc[i] = static_cast<T>(i / 3);
+            extremes[i] = i < n / 2 ? lo : hi;
+        }
+        std::sort(asc.begin(), asc.end());
+        std::sort(dupAsc.begin(), dupAsc.end());
+        std::vector<T> desc = asc, dupDesc = dupAsc, extremesDesc = extremes;
+        std::reverse(desc.begin(), desc.end());
+        std::reverse(dupDesc.begin(), dupDesc.end());
+        std::reverse(extremesDesc.begin(), extremesDesc.end());
+        for (const auto& v : {asc, dupAsc, desc, dupDesc, constant, extremes, extremesDesc}) {
+            cases.push_back(v);
+            // Defeat attempts: break the order at the very end, at the very
+            // start, and just after a leading run of equal values.
+            std::vector<T> endBroken = v, startBroken = v;
+            endBroken.back() = endBroken.back() == lo ? hi : lo;
+            if (endBroken.back() == v[n - 2]) endBroken.back() = static_cast<T>(v[n - 2] + 1);
+            startBroken.front() = startBroken.front() == hi ? lo : hi;
+            cases.push_back(endBroken);
+            cases.push_back(startBroken);
+            if (n >= 4) {
+                std::vector<T> midBroken = v;
+                std::swap(midBroken[n / 2], midBroken[n / 2 + 1]);
+                cases.push_back(midBroken);
+            }
+        }
+    }
+    bool ok = true;
+    StratumSort<T> reused; // one instance through fast and general calls alternately
+    for (const auto& c : cases) {
+        std::vector<T> expected = c, fresh = c, again = c;
+        std::sort(expected.begin(), expected.end());
+        StratumSort<T> s;
+        s.sort(fresh);
+        reused.sort(again);
+        ok &= fresh == expected && again == expected;
+    }
+    return ok;
+}
+
+void testGlobalOrder() {
+    section("11. Global order probe");
+    bool ok = globalOrderCasesFor<int64_t>() && globalOrderCasesFor<uint64_t>() &&
+              globalOrderCasesFor<int32_t>() && globalOrderCasesFor<uint32_t>() &&
+              globalOrderCasesFor<int16_t>() && globalOrderCasesFor<uint16_t>() &&
+              globalOrderCasesFor<int8_t>() && globalOrderCasesFor<uint8_t>();
+    check(ok, "ordered, reversed, constant and defeat-attempt inputs equal std::sort for all key types");
+
+    // Fast, general, fast, general on one instance with the same n.
+    {
+        std::mt19937_64 rng(7);
+        std::vector<int64_t> random(4096);
+        for (auto& x : random) x = static_cast<int64_t>(rng());
+        std::vector<int64_t> sortedIn = random;
+        std::sort(sortedIn.begin(), sortedIn.end());
+        std::vector<int64_t> reversedIn(sortedIn.rbegin(), sortedIn.rend());
+        StratumSort<int64_t> s;
+        bool seq = true;
+        for (int round = 0; round < 2; ++round) {
+            std::vector<int64_t> a = reversedIn, b = random, c = sortedIn;
+            s.sort(a);
+            s.sort(b);
+            s.sort(c);
+            seq &= a == sortedIn && b == sortedIn && c == sortedIn;
+        }
+        check(seq, "fast and general calls alternate on one instance without interference");
+    }
+
+#ifndef STRATUM_ENABLE_METRICS
+    // Release build: the fast path allocates nothing, so with an allocation
+    // budget of zero it cannot throw, while the general path must.
+    {
+        std::vector<int64_t> asc(5000), desc(5000), eq(5000, -3);
+        for (std::size_t i = 0; i < asc.size(); ++i) asc[i] = static_cast<int64_t>(i / 2);
+        desc.assign(asc.rbegin(), asc.rend());
+        std::vector<int64_t> unsortedIn = asc;
+        std::swap(unsortedIn.front(), unsortedIn.back());
+        bool fastThrew = false, generalThrew = false;
+        StratumSort<int64_t> s;
+        g_allocSeen = 0;
+        g_allocSkipped = 0;
+        g_allocBudget = 0;
+        g_allocLimiterOn = true;
+        try {
+            s.sort(asc);
+            s.sort(desc);
+            s.sort(eq);
+        } catch (const std::bad_alloc&) {
+            fastThrew = true;
+        }
+        const std::size_t fastAllocs = g_allocSeen + g_allocSkipped;
+        try {
+            s.sort(unsortedIn);
+        } catch (const std::bad_alloc&) {
+            generalThrew = true;
+        }
+        g_allocLimiterOn = false;
+        check(!fastThrew && fastAllocs == 0,
+              "release: ascending, descending and constant inputs sort with zero allocations");
+        check(generalThrew && unsortedIn.front() == asc.back(),
+              "release: the general path still allocates, and leaves its input intact on failure");
+    }
+#else
+    // Research build: exact work of the fast path. n = 1000.
+    {
+        using W = stratum::SortMetrics::WorkPhase;
+        const std::size_t n = 1000;
+        std::vector<int64_t> asc(n), eq(n, 5);
+        for (std::size_t i = 0; i < n; ++i) asc[i] = static_cast<int64_t>(i / 4);
+        std::vector<int64_t> desc(asc.rbegin(), asc.rend());
+        StratumSort<int64_t> s;
+        bool exact = true;
+
+        s.sort(asc); // n reads; n - 1 position tests + 1 direction test
+        const auto& m = s.metrics();
+        exact &= m.work(W::Analyze).reads == n && m.work(W::Analyze).comparisons == n;
+        exact &= m.work(W::Distribute).total() == 0 && m.work(W::LocalSort).total() == 0 &&
+                 m.work(W::Join).total() == 0 && m.work(W::Refine).total() == 0;
+        exact &= m.algorithmUsage().count("GlobalSorted") == 1 && m.approxMemoryBytes() == 0;
+
+        s.sort(desc); // as above, plus a reversal: n reads and n writes (n even)
+        exact &= m.work(W::Analyze).reads == n && m.work(W::Analyze).comparisons == n;
+        exact &= m.work(W::Join).reads == n && m.work(W::Join).writes == n;
+        exact &= m.work(W::Distribute).total() == 0 && m.algorithmUsage().count("GlobalReversed") == 1;
+
+        s.sort(eq); // n reads, n - 1 equality tests
+        exact &= m.work(W::Analyze).reads == n && m.work(W::Analyze).comparisons == n - 1;
+        exact &= m.totalWork().total() == 2 * n - 1 && m.algorithmUsage().count("GlobalConstant") == 1;
+
+        // Sorted except the last element: the probe runs to n - 1 and the
+        // general path follows, with probe + analyze costing n + 1 reads and
+        // n + 2 comparisons instead of the 2n of a rescan.
+        std::vector<int64_t> tail(n);
+        for (std::size_t i = 0; i < n; ++i) tail[i] = static_cast<int64_t>(i);
+        tail.back() = -1;
+        s.sort(tail);
+        exact &= m.work(W::Analyze).reads == n + 1 && m.work(W::Analyze).comparisons == n + 2;
+        exact &= m.work(W::Distribute).writes == n && !m.hasUnknownWorkPhase();
+        check(exact, "the fast path books exactly its own work and no distribution");
+    }
+#endif
+}
+
 int main() {
     std::set_terminate(reportTerminate);
     std::cout << "=== StratumSort - API contract tests ===\n";
@@ -1195,6 +1375,7 @@ int main() {
 #ifdef STRATUM_ENABLE_METRICS
     testTotalWorkCounter();
 #endif
+    testGlobalOrder();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     if (g_failures != 0) {

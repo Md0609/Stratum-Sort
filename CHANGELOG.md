@@ -3,6 +3,30 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Global order probe (SS-2).** `sort()` first certifies, in one `O(n)`
+  pass with early exit, whether the whole input is constant,
+  non-decreasing or non-increasing (duplicates included). Such inputs
+  return before any buffer is reserved — unchanged, or reversed in place —
+  and perform no heap allocation. Other inputs continue with the general
+  path; the probe hands the range of its monotone prefix to `analyze`,
+  which resumes instead of rescanning, so the general path does at most
+  one extra read and no extra comparison (`research/ALGORITHM.md` §5A).
+  Public API, key types and the strong exception guarantee are unchanged.
+- Battery: `SortedExceptLast` and `ReversedDupExceptLast` (G6 attempts to
+  defeat the probe), appended at indices 26–27; the differential fuzz gains
+  an ordered / broken-order shape; API contract section 11.
+
+### Changed
+- Research build: the `analyze` row of the total-work counter is booked by
+  `sort()` itself (probe plus `analyze`), no longer as a side effect of
+  `distribute`, because globally ordered input never reaches the
+  distribution. The fast paths record `GlobalSorted`, `GlobalReversed` or
+  `GlobalConstant` in `algorithmUsage()`; a reversal is booked in the
+  `join` row.
+
 ## [0.10.0] — unreleased
 
 Fixes a correctness defect that shipped in 0.9.0, makes the `Θ(n)`
