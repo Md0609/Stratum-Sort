@@ -140,9 +140,17 @@ StratumSort<T>::StratumSort(std::size_t targetElementsPerBin, std::size_t leafTh
 // adversary "sorted except the last element" (G6) therefore costs about
 // n + 1 reads and n + 2 comparisons to reach the general path, not 2n.
 //
+// WHY 'inline'. Only a hint, and standard C++. Measured (SS-2, GCC 13,
+// Xeon): emitted as a separate function, the probe was placed ahead of the
+// local sorts and shifted their alignment, and the A/B showed uint32
+// OrganPipe and Sawtooth up to 20% slower although the work counter fell
+// and standalone timings did not move. Inlined into sort(), the hot code
+// keeps its layout and those rows return to parity. A layout effect, not
+// work: see the SS-2 delivery notes before "simplifying" this away.
+//
 // Precondition: data.size() >= 2. sort() returns earlier for n < 2.
 template <typename T>
-typename StratumSort<T>::OrderProbe StratumSort<T>::probeOrder(
+inline typename StratumSort<T>::OrderProbe StratumSort<T>::probeOrder(
     const std::vector<T>& data) const {
     assert(data.size() >= 2);
 
